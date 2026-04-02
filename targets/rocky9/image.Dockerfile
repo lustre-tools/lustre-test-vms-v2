@@ -97,8 +97,10 @@ ExecStart=-/sbin/agetty --autologin root -o '-p -f root' --keep-baud 115200,3840
 EOF
 
 # Networking init: read IP/GW/hostname from kernel cmdline
-COPY common/rc.local /etc/rc.local
-RUN chmod +x /etc/rc.local
+RUN mkdir -p /etc/rc.d
+COPY common/rc.local /etc/rc.d/rc.local
+RUN chmod +x /etc/rc.d/rc.local \
+    && ln -sf /etc/rc.d/rc.local /etc/rc.local
 
 # fstab -- root on /dev/vda
 COPY <<'EOF' /etc/fstab
