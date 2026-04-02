@@ -140,8 +140,13 @@ def _export_to_ext4(container_tag, image_path):
         export_proc = subprocess.Popen(
             ["podman", "export", container_id],
             stdout=subprocess.PIPE)
+        # --no-same-owner: don't try to chown (needs root)
+        # --exclude='dev/*': skip device nodes (can't create
+        #   as non-root; mke2fs creates them as regular files
+        #   anyway -- the VM kernel populates /dev at boot)
         tar_proc = subprocess.Popen(
-            ["tar", "-C", tmpdir, "-xf", "-"],
+            ["tar", "-C", tmpdir, "-xf", "-",
+             "--no-same-owner", "--exclude=dev/*"],
             stdin=export_proc.stdout)
         export_proc.stdout.close()
         tar_proc.communicate()
@@ -153,6 +158,13 @@ def _export_to_ext4(container_tag, image_path):
         if tar_proc.returncode != 0:
             raise subprocess.CalledProcessError(
                 tar_proc.returncode, ["tar"])
+
+        # Create minimal /dev structure (VM kernel
+        # populates the rest via devtmpfs at boot)
+        dev_dir = Path(tmpdir) / "dev"
+        dev_dir.mkdir(exist_ok=True)
+        for d in ["pts", "shm", "mqueue"]:
+            (dev_dir / d).mkdir(exist_ok=True)
 
         # Remove the podman container now that we have the files
         subprocess.run(
