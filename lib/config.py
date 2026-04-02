@@ -25,7 +25,8 @@ class TargetConfig:
         self._target = configparser.ConfigParser()
         self._target.read(self.target_dir / "target.conf")
 
-        self._kernel = configparser.ConfigParser()
+        self._kernel = configparser.RawConfigParser()
+        self._kernel.optionxform = str  # preserve case
         self._kernel.read(self.target_dir / "kernel.conf")
 
     @property
