@@ -30,7 +30,7 @@ RUN cat /tmp/packages-base.txt \
     && dnf clean all
 
 # Source-built tools: IOR, mdtest, iozone, pjdfstest, FlameGraph
-RUN dnf -y install gcc gcc-c++ make autoconf automake libtool git curl \
+RUN dnf -y --allowerasing install gcc gcc-c++ make autoconf automake libtool git curl \
     && export PATH=/usr/lib64/openmpi/bin:$PATH \
     && cd /tmp \
     && curl -sL https://github.com/hpc/ior/releases/download/4.0.0/ior-4.0.0.tar.gz | tar xz \
