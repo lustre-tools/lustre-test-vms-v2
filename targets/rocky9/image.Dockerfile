@@ -26,7 +26,7 @@ RUN cat /tmp/packages-base.txt \
     | grep -v '^\s*#' | grep -v '^\s*$' \
     | grep -v '^kernel-devel$' \
     | sort -u \
-    | xargs dnf -y install \
+    | xargs dnf -y --allowerasing install \
     && dnf clean all
 
 # Source-built tools: IOR, mdtest, iozone, pjdfstest, FlameGraph
