@@ -276,7 +276,16 @@ done
 # Record kernel version in build tree
 echo "$KVER" > "$BUILD_TREE/kernel-version"
 
+# Install kernel modules to output for VM deployment
+echo "--- Installing modules..."
+MODULES_DIR=/output/modules
+rm -rf "$MODULES_DIR"
+make INSTALL_MOD_PATH="$MODULES_DIR" modules_install \
+	2>&1 | tail -3
+echo "    Modules: $(du -sh "$MODULES_DIR" | cut -f1)"
+
 echo "=== Kernel build complete ==="
 echo "    vmlinux: $(du -h /output/vmlinux | cut -f1)"
 echo "    vmlinuz: $(du -h /output/vmlinuz | cut -f1)"
 echo "    build-tree: $(du -sh "$BUILD_TREE" | cut -f1)"
+echo "    modules: $(du -sh "$MODULES_DIR" | cut -f1)"
