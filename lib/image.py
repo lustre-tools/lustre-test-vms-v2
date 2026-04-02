@@ -34,11 +34,16 @@ def _run(cmd, **kwargs):
     )
 
 
-def _need_root():
-    if os.geteuid() != 0:
-        raise PermissionError(
-            "Image build requires root (mount, losetup). "
-            "Run with sudo or use: sudo ltvm build-image <target>")
+def _check_mke2fs():
+    """Verify mke2fs supports -d (populate from directory)."""
+    result = subprocess.run(
+        ["mke2fs", "-V"],
+        capture_output=True, text=True)
+    # -d support was added in e2fsprogs 1.43 (2016)
+    version_str = result.stderr + result.stdout
+    if "mke2fs" not in version_str:
+        raise RuntimeError(
+            "mke2fs not found; install e2fsprogs")
 
 
 def _container_image_tag(target_config):
@@ -57,7 +62,7 @@ def build_image(target_config, force=False):
         target_config: TargetConfig instance
         force: rebuild even if inputs unchanged
     """
-    _need_root()
+    _check_mke2fs()
 
     if not force and not target_config.is_stale("image"):
         log.info("Image for %s is up to date, skipping "
@@ -113,41 +118,30 @@ def build_image(target_config, force=False):
 def _export_to_ext4(container_tag, image_path):
     """Create a raw ext4 image from a container's filesystem.
 
-    1. Create empty ext4 file
-    2. Mount via loop device
-    3. podman create + podman export | tar extract
-    4. Unmount
-    5. resize2fs -M to shrink
+    Entirely rootless using mke2fs -d (populate from directory).
+
+    1. podman create + podman export | tar into temp directory
+    2. mke2fs -d <dir> to create populated ext4 image
+    3. resize2fs -M to shrink
     """
+    tmpdir = None
     tmpfile = None
-    mountpoint = None
     container_id = None
 
     try:
-        # Create empty ext4 image
-        tmpfile = tempfile.mktemp(
-            suffix=".ext4", prefix="ltvm-image-")
-        _run(["dd", "if=/dev/zero", f"of={tmpfile}",
-              "bs=1M", f"count={_IMAGE_SIZE_MB}",
-              "status=none"])
-        _run(["mkfs.ext4", "-q", tmpfile])
+        # Export container filesystem to a temp directory
+        tmpdir = tempfile.mkdtemp(prefix="ltvm-rootfs-")
 
-        # Mount it
-        mountpoint = tempfile.mkdtemp(prefix="ltvm-mnt-")
-        _run(["mount", "-o", "loop", tmpfile, mountpoint])
-
-        # Create a container (not started) and export
         result = _run(["podman", "create", container_tag])
         container_id = result.stdout.strip()
 
         log.info("Extracting container %s into %s ...",
-                 container_id[:12], mountpoint)
-        # Pipeline: podman export | tar extract
+                 container_id[:12], tmpdir)
         export_proc = subprocess.Popen(
             ["podman", "export", container_id],
             stdout=subprocess.PIPE)
         tar_proc = subprocess.Popen(
-            ["tar", "-C", mountpoint, "-xf", "-"],
+            ["tar", "-C", tmpdir, "-xf", "-"],
             stdin=export_proc.stdout)
         export_proc.stdout.close()
         tar_proc.communicate()
@@ -160,36 +154,46 @@ def _export_to_ext4(container_tag, image_path):
             raise subprocess.CalledProcessError(
                 tar_proc.returncode, ["tar"])
 
-        # Unmount before resize
-        _run(["umount", mountpoint])
+        # Remove the podman container now that we have the files
+        subprocess.run(
+            ["podman", "rm", "-f", container_id],
+            capture_output=True)
+        container_id = None
 
-        # Check filesystem, then shrink to minimum size
-        _run(["e2fsck", "-fy", tmpfile])
+        # Create ext4 image populated from the directory.
+        # mke2fs -d is rootless -- no mount/loop needed.
+        tmpfile = tempfile.mktemp(
+            suffix=".ext4", prefix="ltvm-image-")
+
+        log.info("Creating ext4 image with mke2fs -d ...")
+        _run([
+            "mke2fs",
+            "-t", "ext4",
+            "-d", tmpdir,
+            "-b", "4096",
+            "-L", "rootfs",
+            tmpfile,
+            f"{_IMAGE_SIZE_MB}M",
+        ])
+
+        # Shrink to minimum size
         _run(["resize2fs", "-M", tmpfile])
 
-        # Move to final location (shutil handles cross-fs)
+        # Move to final location
         if image_path.exists():
             image_path.unlink()
         shutil.move(tmpfile, str(image_path))
-        tmpfile = None  # prevent cleanup
+        tmpfile = None
 
         return image_path
 
     finally:
-        # Clean up on error
         if container_id:
             subprocess.run(
                 ["podman", "rm", "-f", container_id],
                 capture_output=True)
-        # Try unmount if still mounted
-        if mountpoint:
-            subprocess.run(
-                ["umount", mountpoint],
-                capture_output=True)
-            try:
-                os.rmdir(mountpoint)
-            except OSError:
-                pass
+        if tmpdir and os.path.exists(tmpdir):
+            shutil.rmtree(tmpdir, ignore_errors=True)
         if tmpfile and os.path.exists(tmpfile):
             os.unlink(tmpfile)
 
