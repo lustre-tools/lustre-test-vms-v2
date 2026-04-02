@@ -142,10 +142,11 @@ COPY <<'EOF' /etc/modprobe.d/no-drm.conf
 blacklist drm
 EOF
 
-# Make all files user-readable so rootless mke2fs -d can
-# read them when building the ext4 image. The VM boots as
-# root so restricted perms are restored by the OS.
-RUN chmod -R u+r / 2>/dev/null || true
+# Make restricted files user-readable so rootless mke2fs -d
+# can read them. Only target specific files (shadow, etc.)
+# rather than chmod -R / which breaks sshd key permissions.
+RUN chmod u+r /etc/shadow /etc/shadow- \
+        /etc/gshadow /etc/gshadow- 2>/dev/null || true
 
 # Clean up caches
 RUN dnf clean all && rm -rf /var/cache/dnf /tmp/*
