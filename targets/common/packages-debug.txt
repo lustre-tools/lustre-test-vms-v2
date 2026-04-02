@@ -1,0 +1,40 @@
+# packages-debug.txt -- profiling, tracing, and debug tools
+
+# Performance / profiling
+perf
+sysstat
+kernel-tools
+numatop
+valgrind
+
+# BPF / eBPF tracing
+bcc-tools
+bpftrace
+
+# Traditional tracing
+trace-cmd
+systemtap
+strace
+ltrace
+
+# Tuning
+tuna
+
+# Networking diagnostics
+ethtool
+tcpdump
+conntrack-tools
+
+# NUMA / topology
+numactl
+numad
+hwloc
+
+# Block I/O tracing
+blktrace
+iproute-tc
+iotop
+
+# Monitoring
+htop
+tmux

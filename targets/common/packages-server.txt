@@ -1,0 +1,27 @@
+# packages-server.txt -- Lustre server dependencies
+# Packages needed to build/run Lustre servers
+
+# Filesystem
+e2fsprogs
+device-mapper
+
+# Kernel module build deps
+elfutils-devel
+elfutils-libelf-devel
+kernel-devel
+fuse-libs
+
+# Library deps for Lustre userspace
+libmount-devel
+libyaml-devel
+libaio-devel
+json-c-devel
+
+# NFS (for MGS config export, interop testing)
+nfs-utils
+
+# Quota support
+quota
+
+# SCSI utilities (for device management)
+sg3_utils

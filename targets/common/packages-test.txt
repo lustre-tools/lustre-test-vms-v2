@@ -1,0 +1,39 @@
+# packages-test.txt -- test runtime dependencies
+# Benchmarks, MPI, POSIX test tools, test framework deps
+
+# MPI (needed by IOR, mdtest)
+openmpi
+openmpi-devel
+
+# Filesystem benchmark tools (dnf-installable)
+fio
+bonnie++
+dbench
+
+# Test framework dependencies
+attr
+acl
+bc
+perl
+pdsh
+pdsh-rcmd-ssh
+
+# Filesystem / block utilities
+nfs-utils
+sg3_utils
+quota
+
+# Networking test tools
+iperf3
+
+# Misc test deps
+rsync
+jq
+lsof
+psmisc
+
+# Source-built tools (not in repos, built during image creation):
+# - IOR + mdtest (from github.com/hpc/ior)
+# - iozone (from iozone.org)
+# - pjdfstest (from github.com/pjd/pjdfstest)
+# - FlameGraph (from github.com/brendangregg/FlameGraph)

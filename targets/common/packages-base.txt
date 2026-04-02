@@ -1,0 +1,55 @@
+# packages-base.txt -- packages every VM image needs
+# Core OS bootstrap, networking, SSH, basic utilities
+
+# Core OS
+basesystem
+bash
+coreutils
+systemd
+passwd
+sudo
+hostname
+kmod
+util-linux
+less
+which
+findutils
+procps-ng
+tar
+gzip
+xz
+
+# Package management
+dnf
+
+# Networking
+NetworkManager
+iproute
+iputils
+openssh-server
+openssh-clients
+
+# Editors
+vim-minimal
+vim-enhanced
+
+# File transfer / sync
+rsync
+
+# Filesystem tools
+e2fsprogs
+device-mapper
+
+# Crash analysis / kdump
+kexec-tools
+crash
+
+# Python (needed for drgn, tooling)
+python3
+python3-pip
+python3-devel
+
+# Misc utilities
+jq
+lsof
+psmisc

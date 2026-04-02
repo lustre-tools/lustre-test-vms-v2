@@ -1,0 +1,41 @@
+# packages-dev.txt -- build container / development packages
+# Compilers, build tools, kernel build deps
+
+# Compilers
+gcc
+gcc-c++
+gcc-gfortran
+make
+
+# Autotools
+autoconf
+automake
+libtool
+
+# Debugging symbols / build tools
+elfutils-devel
+elfutils-libelf-devel
+
+# Kernel module build
+kernel-devel
+fuse-libs
+
+# Library build deps for Lustre
+libmount-devel
+libyaml-devel
+libaio-devel
+json-c-devel
+
+# Parser generators (needed by some test tools)
+flex
+bison
+
+# VCS
+git
+
+# Debuggers
+gdb
+lldb
+
+# Python build deps
+python3-devel
