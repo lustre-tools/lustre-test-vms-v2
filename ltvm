@@ -18,6 +18,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from lib.config import TargetConfig, list_targets
 from lib.kernel import build_kernel, kernel_status
 from lib.image import build_image, image_status
+from lib.validate import validate_target, print_results
 from lib import runtime
 
 log = logging.getLogger("ltvm")
@@ -619,6 +620,40 @@ def cmd_cluster(args):
 
 
 # ------------------------------------------------------------------
+# Subcommand: validate
+# ------------------------------------------------------------------
+
+def cmd_validate(args):
+    """Run validation checks on a built target."""
+    use_json = args.json
+    tc, err = _load_target(args.target, use_json)
+    if err is not None:
+        return err
+
+    lustre_tree = None
+    if args.lustre_tree:
+        lustre_tree = Path(args.lustre_tree).resolve()
+        if not lustre_tree.is_dir():
+            return _error(
+                f"Lustre tree not found: {lustre_tree}",
+                use_json)
+
+    try:
+        summary = validate_target(
+            tc, lustre_tree=lustre_tree,
+            verbose=args.verbose)
+    except Exception as e:
+        return _error(f"Validation failed: {e}", use_json)
+
+    if use_json:
+        print(json.dumps(summary, indent=2))
+    else:
+        print_results(summary, verbose=args.verbose)
+
+    return EXIT_OK if summary["all_passed"] else EXIT_ERROR
+
+
+# ------------------------------------------------------------------
 # Argument parsing
 # ------------------------------------------------------------------
 
@@ -712,6 +747,18 @@ def build_parser():
         "--lustre-tree",
         help="Lustre source tree (needed for kernel rebuilds)")
     sp.set_defaults(func=cmd_update)
+
+    # -- validate --
+    sp = sub.add_parser(
+        "validate", parents=[common],
+        help="Validate a built target (boot, packages, "
+             "optional Lustre deploy)")
+    sp.add_argument("target")
+    sp.add_argument(
+        "--lustre-tree",
+        help="Path to Lustre build tree "
+             "(enables deploy+mount checks)")
+    sp.set_defaults(func=cmd_validate)
 
     # -- vm --
     sp = sub.add_parser(
