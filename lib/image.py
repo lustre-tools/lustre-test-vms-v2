@@ -137,27 +137,14 @@ def _export_to_ext4(container_tag, image_path):
 
         log.info("Extracting container %s into %s ...",
                  container_id[:12], tmpdir)
-        export_proc = subprocess.Popen(
-            ["podman", "export", container_id],
-            stdout=subprocess.PIPE)
-        # --no-same-owner: don't try to chown (needs root)
-        # --exclude='dev/*': skip device nodes (can't create
-        #   as non-root; mke2fs creates them as regular files
-        #   anyway -- the VM kernel populates /dev at boot)
-        tar_proc = subprocess.Popen(
-            ["tar", "-C", tmpdir, "-xf", "-",
-             "--no-same-owner", "--exclude=dev/*"],
-            stdin=export_proc.stdout)
-        export_proc.stdout.close()
-        tar_proc.communicate()
-
-        if export_proc.wait() != 0:
-            raise subprocess.CalledProcessError(
-                export_proc.returncode,
-                ["podman", "export"])
-        if tar_proc.returncode != 0:
-            raise subprocess.CalledProcessError(
-                tar_proc.returncode, ["tar"])
+        # Use shell pipeline for reliable podman export | tar
+        # (Python Popen pipelines can have buffering issues)
+        _run([
+            "bash", "-c",
+            f"podman export {container_id} | "
+            f"tar -C {tmpdir} -xf - "
+            f"--no-same-owner --exclude='dev/*'"
+        ], capture_output=False)
 
         # Create minimal /dev structure (VM kernel
         # populates the rest via devtmpfs at boot)
