@@ -21,11 +21,6 @@ VM_SH = "vm.py"
 DEPLOY_SH = "deploy-lustre.sh"
 
 
-def _run_raw(cmd: list[str], timeout: int | None = None) -> RunResult:
-    """Run a command list as-is (no sudo prefix)."""
-    return _run_impl(cmd, timeout)
-
-
 def _run(cmd: list[str], timeout: int | None = None) -> RunResult:
     """Run a command list under sudo, capture output, return result dict."""
     full = ["sudo"] + cmd
@@ -194,21 +189,31 @@ def deploy(
     return _run(cmd, timeout=300)
 
 
+def lustre_mount(vm_name: str) -> RunResult:
+    """Start Lustre on a VM that has already been deployed.
+
+    Runs llmount.sh from the standard test framework location
+    (/usr/lib64/lustre/tests/) inside the VM.  deploy-lustre.sh
+    always rsyncs the test framework there (not to the host build
+    path), so this is independent of where the build tree lives on
+    the host.
+
+    The VM must have been deployed with deploy() first.
+    """
+    return vm_exec(
+        vm_name,
+        "cd /usr/lib64/lustre/tests"
+        " && LUSTRE=/usr/lib64/lustre bash llmount.sh",
+        timeout=180,
+    )
+
+
 def _deploy_kernel_modules(vm_name: str, lib_modules_path: Path) -> RunResult:
-    """Rsync kernel modules into the VM and run depmod.
+    """Copy kernel modules into the VM and run depmod.
 
     lib_modules_path: path to lib/modules/ containing
     <version>/ subdirectories.
     """
-    # Rsync the modules tree into the VM
-    res = _run(
-        [VM_SH, "exec", "--timeout", "5", vm_name, "mkdir -p /lib/modules"]
-    )
-    if not res["ok"]:
-        return res
-
-    # Use vm.sh cp-to for the module tree
-    # First find the version directory
     versions = [d for d in lib_modules_path.iterdir() if d.is_dir()]
     if not versions:
         return {
@@ -218,19 +223,8 @@ def _deploy_kernel_modules(vm_name: str, lib_modules_path: Path) -> RunResult:
         }
 
     for ver_dir in versions:
-        ver = ver_dir.name
-        # Tar up the module directory and extract on VM
-        # (more reliable than rsync for large trees)
-        res = _run_raw(
-            [
-                "bash",
-                "-c",
-                f"sudo tar -C {lib_modules_path} -cf - {ver} "
-                f"| ssh root@$(sudo {VM_SH} exec --timeout 5 "
-                f"{vm_name} 'hostname -I' 2>/dev/null | "
-                f"tr -d '[:space:]') "
-                f"'tar -C /lib/modules -xf -'",
-            ],
+        res = _run(
+            [VM_SH, "cp-to", vm_name, str(ver_dir), "/lib/modules/"],
             timeout=120,
         )
         if not res["ok"]:

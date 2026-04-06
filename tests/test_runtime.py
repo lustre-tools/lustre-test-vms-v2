@@ -171,6 +171,114 @@ class TestVmExec:
         assert mock.call_args[1]["timeout"] == 90
 
 
+class TestVmExecDefaults:
+    @patch("lib.runtime._run")
+    def test_default_timeout_120(self, mock: MagicMock) -> None:
+        mock.return_value = _OK
+        vm_exec("test-vm", "echo hello")
+        cmd = mock.call_args[0][0]
+        assert "120" in cmd
+        assert mock.call_args[1]["timeout"] == 150
+
+
+class TestVmCreateDefaults:
+    @patch("lib.runtime._run")
+    def test_default_vcpus_and_mem(self, mock: MagicMock) -> None:
+        mock.return_value = _OK
+        vm_create("test-vm")
+        cmd = mock.call_args[0][0]
+        assert "2" in cmd
+        assert "4096" in cmd
+
+
+class TestVmEnsureDefaults:
+    @patch("lib.runtime._run")
+    def test_default_vcpus_and_mem(self, mock: MagicMock) -> None:
+        mock.return_value = _OK
+        vm_ensure("test-vm")
+        cmd = mock.call_args[0][0]
+        assert "2" in cmd
+        assert "4096" in cmd
+
+    @patch("lib.runtime._run")
+    def test_no_disks_flags_omitted(self, mock: MagicMock) -> None:
+        mock.return_value = _OK
+        vm_ensure("test-vm")
+        cmd = mock.call_args[0][0]
+        assert "--mdt-disks" not in cmd
+        assert "--ost-disks" not in cmd
+
+
+class TestVmCreateNonDefaultDisks:
+    @patch("lib.runtime._run")
+    def test_mdt_only(self, mock: MagicMock) -> None:
+        mock.return_value = _OK
+        vm_create("test-vm", mdt_disks=2)
+        cmd = mock.call_args[0][0]
+        assert "--mdt-disks" in cmd
+        idx = cmd.index("--mdt-disks")
+        assert cmd[idx + 1] == "2"
+        assert "--ost-disks" not in cmd
+
+    @patch("lib.runtime._run")
+    def test_ost_only(self, mock: MagicMock) -> None:
+        mock.return_value = _OK
+        vm_create("test-vm", ost_disks=5)
+        cmd = mock.call_args[0][0]
+        assert "--ost-disks" in cmd
+        idx = cmd.index("--ost-disks")
+        assert cmd[idx + 1] == "5"
+        assert "--mdt-disks" not in cmd
+
+    @patch("lib.runtime._run")
+    def test_both_mdt_and_ost(self, mock: MagicMock) -> None:
+        mock.return_value = _OK
+        vm_create("test-vm", mdt_disks=2, ost_disks=4)
+        cmd = mock.call_args[0][0]
+        mdt_idx = cmd.index("--mdt-disks")
+        ost_idx = cmd.index("--ost-disks")
+        assert cmd[mdt_idx + 1] == "2"
+        assert cmd[ost_idx + 1] == "4"
+
+
+class TestVmEnsureNonDefaultDisks:
+    @patch("lib.runtime._run")
+    def test_mdt_only(self, mock: MagicMock) -> None:
+        mock.return_value = _OK
+        vm_ensure("test-vm", mdt_disks=3)
+        cmd = mock.call_args[0][0]
+        idx = cmd.index("--mdt-disks")
+        assert cmd[idx + 1] == "3"
+        assert "--ost-disks" not in cmd
+
+    @patch("lib.runtime._run")
+    def test_ost_only(self, mock: MagicMock) -> None:
+        mock.return_value = _OK
+        vm_ensure("test-vm", ost_disks=6)
+        cmd = mock.call_args[0][0]
+        idx = cmd.index("--ost-disks")
+        assert cmd[idx + 1] == "6"
+        assert "--mdt-disks" not in cmd
+
+    @patch("lib.runtime._run")
+    def test_both_mdt_and_ost(self, mock: MagicMock) -> None:
+        mock.return_value = _OK
+        vm_ensure("test-vm", mdt_disks=2, ost_disks=4)
+        cmd = mock.call_args[0][0]
+        mdt_idx = cmd.index("--mdt-disks")
+        ost_idx = cmd.index("--ost-disks")
+        assert cmd[mdt_idx + 1] == "2"
+        assert cmd[ost_idx + 1] == "4"
+
+    @patch("lib.runtime._run")
+    def test_custom_vcpus_and_mem(self, mock: MagicMock) -> None:
+        mock.return_value = _OK
+        vm_ensure("test-vm", vcpus=8, mem=16384)
+        cmd = mock.call_args[0][0]
+        assert "8" in cmd
+        assert "16384" in cmd
+
+
 class TestVmList:
     @patch("lib.runtime._run")
     def test_plain_list(self, mock: MagicMock) -> None:
@@ -379,6 +487,21 @@ class TestDeployKernelModules:
         assert "depmod" in " ".join(depmod_cmd)
 
     @patch("lib.runtime._run")
+    def test_multiple_version_dirs(self, mock_run: MagicMock) -> None:
+        """Multiple version dirs each get a cp-to call."""
+        mock_run.return_value = _OK
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lib_mods = Path(tmpdir)
+            (lib_mods / "5.14.0-1").mkdir()
+            (lib_mods / "5.14.0-2").mkdir()
+            result = _deploy_kernel_modules("my-vm", lib_mods)
+        assert result["ok"] is True
+        # 2 cp-to + 1 depmod = 3
+        assert mock_run.call_count == 3
+        for call in mock_run.call_args_list[:2]:
+            assert "cp-to" in call[0][0]
+
+    @patch("lib.runtime._run")
     def test_cp_failure_returns_early(self, mock_run: MagicMock) -> None:
         """If cp-to fails, return early without calling depmod."""
         mock_run.return_value = _FAIL
@@ -388,6 +511,44 @@ class TestDeployKernelModules:
             result = _deploy_kernel_modules("my-vm", lib_mods)
         assert result["ok"] is False
         assert mock_run.call_count == 1
+
+    @patch("lib.runtime._run")
+    def test_second_cp_failure_skips_rest(self, mock_run: MagicMock) -> None:
+        """If second cp-to fails, depmod is not called."""
+        mock_run.side_effect = [_OK, _FAIL]
+        with tempfile.TemporaryDirectory() as tmpdir:
+            lib_mods = Path(tmpdir)
+            (lib_mods / "5.14.0-1").mkdir()
+            (lib_mods / "5.14.0-2").mkdir()
+            result = _deploy_kernel_modules("my-vm", lib_mods)
+        assert result["ok"] is False
+        assert mock_run.call_count == 2
+
+
+class TestLustreMount:
+    @patch("lib.runtime._run")
+    def test_mount_calls_vm_exec(self, mock_run: MagicMock) -> None:
+        """lustre_mount calls vm_exec with llmount.sh."""
+        from lib.runtime import lustre_mount
+
+        mock_run.return_value = _OK
+        result = lustre_mount("my-vm", build_path="/some/lustre")
+        assert result["ok"] is True
+        cmd = mock_run.call_args[0][0]
+        assert "exec" in cmd
+        assert "my-vm" in cmd
+        assert "llmount.sh" in " ".join(cmd)
+
+    @patch("lib.runtime._run")
+    def test_mount_timeout_180(self, mock_run: MagicMock) -> None:
+        """lustre_mount uses 180s inner timeout (210s outer)."""
+        from lib.runtime import lustre_mount
+
+        mock_run.return_value = _OK
+        lustre_mount("my-vm", build_path="/some/lustre")
+        cmd = mock_run.call_args[0][0]
+        assert "180" in cmd
+        assert mock_run.call_args[1]["timeout"] == 210
 
 
 class TestClusterCreate:

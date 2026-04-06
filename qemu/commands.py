@@ -185,6 +185,8 @@ def cmd_ensure(args: argparse.Namespace) -> None:
     if info_path.exists():
         vm = VMInfo.load(name)
         if is_running(vm):
+            wait_for_ssh(vm.ip, 30)
+            register_ssh_name(vm.name, vm.ip)
             if args.json:
                 print(
                     json.dumps(
