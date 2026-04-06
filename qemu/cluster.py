@@ -6,6 +6,7 @@ import argparse
 import os
 import subprocess
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from .commands import cmd_create
@@ -55,17 +56,16 @@ def parse_node_spec(spec: str) -> ClusterNode:
     )
 
 
-def generate_local_sh(
-    cluster: ClusterInfo,
-    build_path: str = "",
-) -> str:
-    """Generate cfg/local.sh content for a multi-node cluster."""
+def generate_local_sh(cluster: ClusterInfo) -> str:
+    """Generate cfg/local.sh content for a multi-node cluster.
+
+    Paths reference /usr/lib64/lustre, where deploy-lustre.sh always
+    installs the test framework (same as single-node deploy).
+    """
     mgs = cluster.mgs_node()
     mds_list = cluster.mds_nodes()
     oss_list = cluster.oss_nodes()
     client_list = cluster.client_nodes()
-
-    lustre_dir = f"{build_path}/lustre" if build_path else ""
 
     lines = [
         f"# Cluster: {cluster.name}",
@@ -74,13 +74,11 @@ def generate_local_sh(
         "FSNAME=lustre",
         "NETTYPE=tcp",
         "",
+        "LUSTRE=/usr/lib64/lustre",
+        "RLUSTRE=/usr/lib64/lustre",
+        "RPWD=/usr/lib64/lustre/tests",
+        "",
     ]
-
-    if lustre_dir:
-        lines.append(f"LUSTRE={lustre_dir}")
-        lines.append(f"RLUSTRE={lustre_dir}")
-        lines.append(f"RPWD={lustre_dir}/tests")
-        lines.append("")
 
     lines.append(f"mgs_HOST={mgs.name}")
     lines.append(f"MGSNID={mgs.ip}@tcp")
@@ -249,6 +247,42 @@ def cmd_cluster_create(args: argparse.Namespace) -> None:
     )
 
 
+def _deploy_one_node(node_name: str, build: str) -> tuple[str, int, str]:
+    """Deploy Lustre to one cluster node via deploy-lustre.sh.
+
+    Returns (node_name, returncode, combined_output).
+    """
+    r = subprocess.run(
+        ["sudo", "deploy-lustre.sh", "--vm", node_name, "--build", build],
+        capture_output=True,
+        text=True,
+        timeout=300,
+    )
+    combined = r.stdout
+    if r.stderr:
+        combined = combined + r.stderr if combined else r.stderr
+    return node_name, r.returncode, combined.rstrip("\n")
+
+
+def _write_cluster_local_sh(
+    node_ip: str, local_sh: str, ssh_opts: list[str]
+) -> None:
+    """Write cluster local.sh to the standard test location on a node."""
+    cfg_path = "/usr/lib64/lustre/tests/cfg/local.sh"
+    subprocess.run(
+        ["sshpass", "-p", "initial0", "ssh"]
+        + ssh_opts
+        + [
+            f"root@{node_ip}",
+            f"mkdir -p /usr/lib64/lustre/tests/cfg && cat > {cfg_path}",
+        ],
+        input=local_sh,
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+
 def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     cluster = ClusterInfo.load(args.name)
     nodes = cluster.get_nodes()
@@ -259,6 +293,32 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
 
     print(f"=== Deploying to cluster '{cluster.name}' ===")
     print(f"    Build: {build}")
+    print(f"    Deploying to {len(nodes)} nodes in parallel...")
+
+    # Deploy to all nodes in parallel using deploy-lustre.sh -- same
+    # as single-node deploy, just run concurrently.
+    failed = []
+    with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
+        futures = {
+            executor.submit(_deploy_one_node, node.name, build): node
+            for node in nodes
+        }
+        for future in as_completed(futures):
+            node = futures[future]
+            name, rc, output = future.result()
+            if rc != 0:
+                print(f"\n--- {name}: FAILED (rc={rc}) ---\n{output}")
+                failed.append(name)
+            else:
+                print(f"  {name}: deployed")
+
+    if failed:
+        die(f"deploy-lustre.sh failed for: {', '.join(failed)}")
+
+    # Overwrite single-node local.sh with the cluster topology config.
+    local_sh = generate_local_sh(cluster)
+    print("\n--- Distributing cluster config (local.sh)...")
+    print(local_sh)
 
     ssh_opts = [
         "-o",
@@ -268,171 +328,20 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
         "-o",
         "LogLevel=ERROR",
     ]
-
     for node in nodes:
         vm = VMInfo.load(node.name)
-        ip = vm.ip
-        print(
-            f"\n--- Deploying to {node.name} ({'+'.join(node.roles)})...",
-        )
-
-        parent = str(Path(build).parent)
-        run(
-            ["sshpass", "-p", "initial0", "ssh"]
-            + ssh_opts
-            + [f"root@{ip}", f"mkdir -p {parent}"],
-            capture_output=True,
-            timeout=10,
-        )
-
-        print(f"  rsync {build} -> {node.name}:{build}")
-        r = run(
-            [
-                "sshpass",
-                "-p",
-                "initial0",
-                "rsync",
-                "-a",
-                "--delete",
-                "-e",
-                "ssh " + " ".join(ssh_opts),
-                "--exclude=.git",
-                "--exclude=*.o",
-                "--exclude=*.cmd",
-                "--exclude=*.mod",
-                f"{build}/",
-                f"root@{ip}:{build}/",
-            ],
-            capture_output=False,
-            timeout=300,
-        )
-        if r.returncode != 0:
-            die(f"rsync failed for {node.name}")
-
-        kver_r = run(
-            ["sshpass", "-p", "initial0", "ssh"]
-            + ssh_opts
-            + [f"root@{ip}", "uname -r"],
-            capture_output=True,
-            timeout=10,
-        )
-        kver = kver_r.stdout.strip()
-
-        run(
-            ["sshpass", "-p", "initial0", "ssh"]
-            + ssh_opts
-            + [
-                f"root@{ip}",
-                f"mkdir -p /lib/modules/{kver}/extra/lustre && "
-                f"find {build} -name '*.ko' "
-                f"-not -path '*/kconftest*' "
-                f"-exec cp {{}} "
-                f"/lib/modules/{kver}/extra/lustre/ \\; && "
-                f"depmod -a {kver}",
-            ],
-            capture_output=True,
-            timeout=30,
-        )
-
-        run(
-            ["sshpass", "-p", "initial0", "ssh"]
-            + ssh_opts
-            + [
-                f"root@{ip}",
-                f"cp -f {build}/lustre/utils/.libs/"
-                f"liblustreapi.so* /usr/lib64/ 2>/dev/null; "
-                f"cp -f {build}/lnet/utils/lnetconfig/.libs/"
-                f"liblnetconfig.so* /usr/lib64/ 2>/dev/null; "
-                f"ldconfig",
-            ],
-            capture_output=True,
-            timeout=10,
-        )
-
-        run(
-            ["sshpass", "-p", "initial0", "ssh"]
-            + ssh_opts
-            + [
-                f"root@{ip}",
-                f"for b in lctl mkfs.lustre mount.lustre "
-                f"tunefs.lustre lnetctl; do "
-                f"src={build}/lustre/utils/.libs/$b; "
-                f"[ -f $src ] && cp -f $src /usr/sbin/; done; "
-                f"src={build}/lnet/utils/.libs/lnetctl; "
-                f"[ -f $src ] && cp -f $src /usr/sbin/; "
-                f"for b in lfs lustre_rmmod; do "
-                f"src={build}/lustre/utils/.libs/$b; "
-                f"[ -f $src ] && cp -f $src /usr/bin/; done; "
-                f"src={build}/lustre/utils/lustre_rmmod; "
-                f"[ -f $src ] && cp -f $src /usr/sbin/; "
-                f"cp -f {build}/lustre/utils/.libs/"
-                f"mount_osd_*.so /usr/lib64/ 2>/dev/null; true",
-            ],
-            capture_output=True,
-            timeout=10,
-        )
-
-        run(
-            ["sshpass", "-p", "initial0", "ssh"]
-            + ssh_opts
-            + [
-                f"root@{ip}",
-                f"for d in {build}/lustre/utils "
-                f"{build}/lnet/utils "
-                f"{build}/lnet/utils/lnetconfig; do "
-                f"[ -d $d/.libs ] || continue; "
-                f"for f in $d/.libs/*; do "
-                f"[ -f $f ] && [ ! -h $f ] && "
-                f"b=$(basename $f) && "
-                f"[ -f $d/$b ] && head -1 $d/$b 2>/dev/null | "
-                f"grep -q libtool && "
-                f"cp -f $f $d/$b; "
-                f"done; done; true",
-            ],
-            capture_output=True,
-            timeout=30,
-        )
-
-        run(
-            ["sshpass", "-p", "initial0", "ssh"]
-            + ssh_opts
-            + [
-                f"root@{ip}",
-                f"rm -f {build}/lustre/ptlrpc/gss/ptlrpc_gss.ko",
-            ],
-            capture_output=True,
-            timeout=10,
-        )
-
-        print(f"  {node.name}: deployed")
-
-    local_sh = generate_local_sh(cluster, build_path=build)
-    print("\n--- Distributing cluster config (local.sh)...")
-
-    cfg_path = f"{build}/lustre/tests/cfg/local.sh"
-    for node in nodes:
-        vm = VMInfo.load(node.name)
-        run(
-            ["sshpass", "-p", "initial0", "ssh"]
-            + ssh_opts
-            + [
-                f"root@{vm.ip}",
-                f"cat > {cfg_path} << 'LOCALEOF'\n{local_sh}LOCALEOF",
-            ],
-            capture_output=True,
-            timeout=10,
-        )
-        print(f"  {node.name}: local.sh deployed")
-
-    print("\n--- Cluster config (local.sh):")
-    print(local_sh)
+        _write_cluster_local_sh(vm.ip, local_sh, ssh_opts)
+        print(f"  {node.name}: local.sh written")
 
     if args.mount:
         print("=== Mounting Lustre filesystem ===")
         mgs = cluster.mgs_node()
         mgs_vm = VMInfo.load(mgs.name)
 
-        mount_cmd = f"cd {build}/lustre/tests && bash llmount.sh"
+        mount_cmd = (
+            "cd /usr/lib64/lustre/tests"
+            " && LUSTRE=/usr/lib64/lustre bash llmount.sh"
+        )
         if args.server_only:
             mount_cmd += " --server-only"
 

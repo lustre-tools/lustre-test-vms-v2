@@ -9,6 +9,9 @@ Two dependency levels:
 * ``TestLustreDeploy`` -- focuses on the deploy step itself (sync,
   depmod, module install).  Same dependency.
 
+* ``TestOSTCount`` -- verify that different OST counts passed to
+  vm_ensure() are reflected in the mounted Lustre filesystem.
+
 Set ``LTVM_LUSTRE_TREE`` to the path of a built Lustre tree that
 matches the VM kernel.  Tests are skipped when the variable is unset
 or the tree has no .ko files.
@@ -30,11 +33,21 @@ from pathlib import Path
 
 import pytest
 
-from lib.runtime import deploy, lustre_mount, vm_destroy, vm_ensure, vm_exec
+from lib.vmctl import deploy, lustre_mount, vm_destroy, vm_ensure, vm_exec
 
 # ---------------------------------------------------------------------------
-# Build tree resolution
+# Prerequisite checks
 # ---------------------------------------------------------------------------
+
+BASE_IMAGE = Path("/opt/firecracker/images/rocky9-base.ext4")
+
+skip_no_image = pytest.mark.skipif(
+    not BASE_IMAGE.exists(),
+    reason=(
+        f"Base VM image not found: {BASE_IMAGE}. "
+        "Build or provision the base image first."
+    ),
+)
 
 
 def _find_lustre_tree() -> Path | None:
@@ -118,6 +131,7 @@ def mounted_vm(request: pytest.FixtureRequest) -> str:  # type: ignore[return]
 
 
 @pytest.mark.e2e
+@skip_no_image
 @skip_no_tree
 class TestLustreDeploy:
     """Verify deploy-lustre.sh syncs modules and binaries correctly."""
@@ -134,15 +148,26 @@ class TestLustreDeploy:
 
     def test_modules_present(self, deployed_vm: str) -> None:
         """Lustre .ko files are present at the expected path after deploy."""
-        assert LUSTRE_TREE is not None
         result = vm_exec(
             deployed_vm,
-            f"find {LUSTRE_TREE}/lustre -name '*.ko' | head -5",
+            "find /lib/modules -name '*.ko' -path '*/lustre/*' | head -5",
             timeout=15,
         )
         assert result["ok"] and result["output"].strip(), (
-            f"No .ko files found under {LUSTRE_TREE}/lustre in VM: "
+            f"No Lustre .ko files found under /lib/modules in VM: "
             f"{result['output']}"
+        )
+
+    def test_llmount_script_present(self, deployed_vm: str) -> None:
+        """llmount.sh is present at the standard test location."""
+        result = vm_exec(
+            deployed_vm,
+            "test -f /usr/lib64/lustre/tests/llmount.sh",
+            timeout=10,
+        )
+        assert result["ok"], (
+            "llmount.sh not found at /usr/lib64/lustre/tests/llmount.sh "
+            f"after deploy (rc={result['returncode']})"
         )
 
 
@@ -152,14 +177,14 @@ class TestLustreDeploy:
 
 
 @pytest.mark.e2e
+@skip_no_image
 @skip_no_tree
 class TestLustreMount:
     """Verify Lustre mounts and provides a working filesystem."""
 
     def test_mount_via_lustre_mount(self, deployed_vm: str) -> None:
         """lustre_mount() starts Lustre after a deploy-only step."""
-        assert LUSTRE_TREE is not None
-        result = lustre_mount(deployed_vm, build_path=LUSTRE_TREE)
+        result = lustre_mount(deployed_vm)
         assert result["ok"], (
             f"lustre_mount() failed (rc={result['returncode']}):\n"
             f"{result['output']}"
@@ -231,3 +256,109 @@ class TestLustreMount:
         assert "stripe" in result["output"].lower(), (
             f"Expected stripe info, got: {result['output']}"
         )
+
+
+# ---------------------------------------------------------------------------
+# TestOSTCount -- verify OST count is reflected in mounted Lustre
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.e2e
+@skip_no_image
+@skip_no_tree
+class TestOSTCount:
+    """Verify that the number of OST disks configured on VM creation
+    is reflected in the mounted Lustre filesystem.
+
+    deploy-lustre.sh generates cfg/local.sh based on available block
+    devices, so the OST count should match exactly.
+    """
+
+    @pytest.mark.parametrize("ost_count", [1, 2, 3])
+    def test_ost_count_in_lfs_df(
+        self, ost_count: int, request: pytest.FixtureRequest
+    ) -> None:
+        """lfs df shows exactly ost_count OST entries."""
+        assert LUSTRE_TREE is not None
+        name = _vm_name(request.node.name)
+        vm_ensure(
+            name,
+            vcpus=2,
+            mem=4096,
+            mdt_disks=1,
+            ost_disks=ost_count,
+        )
+        try:
+            result = deploy(name, build_path=LUSTRE_TREE, mount=True)
+            assert result["ok"], (
+                f"deploy --mount failed for {ost_count} OSTs "
+                f"(rc={result['returncode']}):\n{result['output']}"
+            )
+            result = vm_exec(
+                name,
+                "lfs df /mnt/lustre | grep -c 'OST'",
+                timeout=15,
+            )
+            assert result["ok"], f"lfs df failed: {result['output']}"
+            found = int(result["output"].strip())
+            assert found == ost_count, (
+                f"Expected {ost_count} OST entries in lfs df, got {found}"
+            )
+        finally:
+            vm_destroy(name)
+
+    @pytest.mark.parametrize("ost_count", [1, 3])
+    def test_ost_count_in_lctl_dl(
+        self, ost_count: int, request: pytest.FixtureRequest
+    ) -> None:
+        """lctl dl shows exactly ost_count obdfilter devices."""
+        assert LUSTRE_TREE is not None
+        name = _vm_name(request.node.name)
+        vm_ensure(
+            name,
+            vcpus=2,
+            mem=4096,
+            mdt_disks=1,
+            ost_disks=ost_count,
+        )
+        try:
+            result = deploy(name, build_path=LUSTRE_TREE, mount=True)
+            assert result["ok"], (
+                f"deploy --mount failed for {ost_count} OSTs "
+                f"(rc={result['returncode']}):\n{result['output']}"
+            )
+            result = vm_exec(
+                name,
+                "lctl dl | grep -c obdfilter",
+                timeout=15,
+            )
+            assert result["ok"], f"lctl dl failed: {result['output']}"
+            found = int(result["output"].strip())
+            assert found == ost_count, (
+                f"Expected {ost_count} obdfilter devices in lctl dl, "
+                f"got {found}"
+            )
+        finally:
+            vm_destroy(name)
+
+    def test_mdt_count_single(self, request: pytest.FixtureRequest) -> None:
+        """A VM created with mdt_disks=1 has exactly one MDT after mount."""
+        assert LUSTRE_TREE is not None
+        name = _vm_name(request.node.name)
+        vm_ensure(name, vcpus=2, mem=4096, mdt_disks=1, ost_disks=2)
+        try:
+            result = deploy(name, build_path=LUSTRE_TREE, mount=True)
+            assert result["ok"], (
+                f"deploy --mount failed "
+                f"(rc={result['returncode']}):\n{result['output']}"
+            )
+            result = vm_exec(
+                name,
+                "lfs df /mnt/lustre | grep -c 'MDT'",
+                timeout=15,
+            )
+            assert result["ok"], f"lfs df failed: {result['output']}"
+            found = int(result["output"].strip())
+            assert found == 1, f"Expected 1 MDT in lfs df, got {found}"
+        finally:
+            vm_destroy(name)

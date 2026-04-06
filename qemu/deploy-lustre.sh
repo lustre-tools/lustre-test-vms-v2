@@ -97,6 +97,21 @@ $SSHPASS ssh $SSH_OPTS ${REMOTE} "which rsync" &>/dev/null || {
 KVER=$($SSHPASS ssh $SSH_OPTS ${REMOTE} uname -r)
 echo "    VM kernel: ${KVER}"
 
+# Check that Lustre modules match the VM kernel
+if ${DEPLOY_MODULES}; then
+	SAMPLE_KO=$(find "${BUILD_DIR}/lustre" -name 'lustre.ko' -type f 2>/dev/null | head -1)
+	if [[ -n "${SAMPLE_KO}" ]]; then
+		MOD_VER=$(modinfo -F vermagic "${SAMPLE_KO}" | awk '{print $1}')
+		if [[ "${MOD_VER}" != "${KVER}" ]]; then
+			echo "ERROR: kernel mismatch"
+			echo "  Lustre modules built for: ${MOD_VER}"
+			echo "  VM running kernel:        ${KVER}"
+			echo "  Rebuild Lustre or fix the VM kernel."
+			exit 1
+		fi
+	fi
+fi
+
 MODDIR="/lib/modules/${KVER}/extra/lustre"
 
 # Detect VM OS -- use ID field (rocky vs ubuntu) and VERSION_ID
