@@ -55,6 +55,14 @@ class TargetConfig:
         self._data: dict[str, Any] = {**defaults, **raw}
         self._kernels: dict[str, Any] = self._data.get("kernels", {})
 
+        status = self._data.get("status", "working")
+        if status not in ("working", "experimental"):
+            raise ValueError(
+                f"Target {name!r} has status={status!r} and is not "
+                f"available for use. Only 'working' and 'experimental' "
+                f"targets can be built."
+            )
+
     # ------------------------------------------------------------------
     # OS metadata
     # ------------------------------------------------------------------

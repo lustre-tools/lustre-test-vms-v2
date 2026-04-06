@@ -70,6 +70,34 @@ class TestTargetConfigUnknown:
         ):
             cfg.TargetConfig("nonexistent")
 
+    def test_planned_target_raises(self, tmp_targets: Path) -> None:
+        import lib.config as cfg
+
+        data = {
+            "defaults": {"arch": "x86_64", "os_family": "rhel", "server": True},
+            "targets": {
+                "rocky8": {
+                    "os_name": "rocky",
+                    "os_version": "8",
+                    "container_image": "rockylinux:8",
+                    "status": "planned",
+                    "kernels": {"default": "4.18-rhel8"},
+                }
+            },
+        }
+        _write_targets_yaml(tmp_targets / "targets", data)
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+            pytest.raises(ValueError, match="status='planned'"),
+        ):
+            cfg.TargetConfig("rocky8")
+
 
 class TestResolveKernel:
     def test_explicit_kernel(self, tmp_targets: Path) -> None:
