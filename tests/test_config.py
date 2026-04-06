@@ -7,8 +7,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+import yaml
 
-from tests.conftest import _make_config
+from tests.conftest import _ROCKY9_YAML, _make_config, _write_targets_yaml
 
 
 class TestTargetConfigProperties:
@@ -22,7 +23,7 @@ class TestTargetConfigProperties:
 
     def test_os_version(self, tmp_targets: Path) -> None:
         tc = _make_config(tmp_targets)
-        assert tc.os_version == "9"
+        assert tc.os_version == "9.7"
 
     def test_server(self, tmp_targets: Path) -> None:
         tc = _make_config(tmp_targets)
@@ -34,7 +35,7 @@ class TestTargetConfigProperties:
 
     def test_container_image(self, tmp_targets: Path) -> None:
         tc = _make_config(tmp_targets)
-        assert tc.container_image == "rockylinux:9"
+        assert tc.container_image == "rockylinux:9.7"
 
     def test_lustre_target(self, tmp_targets: Path) -> None:
         tc = _make_config(tmp_targets)
@@ -46,8 +47,11 @@ class TestTargetConfigProperties:
 
     def test_kernel_config_overrides(self, tmp_targets: Path) -> None:
         tc = _make_config(tmp_targets)
-        overrides = tc.kernel_config_overrides
-        assert overrides == {"CONFIG_XEN_PVH": "y"}
+        assert tc.kernel_config_overrides == {"CONFIG_XEN_PVH": "y"}
+
+    def test_status(self, tmp_targets: Path) -> None:
+        tc = _make_config(tmp_targets)
+        assert tc.status == "working"
 
 
 class TestTargetConfigUnknown:
@@ -57,6 +61,11 @@ class TestTargetConfigUnknown:
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
             patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
             pytest.raises(ValueError, match="Unknown target"),
         ):
             cfg.TargetConfig("nonexistent")
@@ -70,6 +79,15 @@ class TestResolveKernel:
     def test_default_kernel(self, tmp_targets: Path) -> None:
         tc = _make_config(tmp_targets)
         assert tc.resolve_kernel(None) == "5.14-rhel9.7"
+
+    def test_prefix_scan_finds_full_version_dir(
+        self, tmp_targets: Path
+    ) -> None:
+        tc = _make_config(tmp_targets)
+        kernels = tmp_targets / "output" / "rocky9" / "kernels"
+        full = "5.14-rhel9.7-5.14.0-611.13.1.el9_7_lustre"
+        (kernels / full).mkdir(parents=True)
+        assert tc.resolve_kernel("5.14-rhel9.7") == full
 
 
 class TestKernelOutputDir:
@@ -159,20 +177,19 @@ class TestInputHash:
         tc = _make_config(tmp_targets)
         h1 = tc.input_hash("container")
         df = tmp_targets / "targets" / "rocky9" / "container.Dockerfile"
-        df.write_text("FROM rockylinux:9\nRUN echo changed\n")
+        df.write_text("FROM rockylinux:9.7\nRUN echo changed\n")
         h2 = tc.input_hash("container")
         assert h1 != h2
 
     def test_kernel_hash_changes_with_override(self, tmp_targets: Path) -> None:
         tc = _make_config(tmp_targets)
         h1 = tc.input_hash("kernel")
-        # Modify kernel.conf to add an override
-        kc = tmp_targets / "targets" / "rocky9" / "kernel.conf"
-        kc.write_text(
-            "[kernel]\nlustre_target = 5.14-rhel9.7\n\n"
-            "[config]\nCONFIG_XEN_PVH=y\nCONFIG_NEW=m\n"
+        # Add a new kernel config override via targets.yaml
+        data = yaml.safe_load(
+            (tmp_targets / "targets" / "targets.yaml").read_text()
         )
-        # Need fresh TargetConfig to pick up changes
+        data["targets"]["rocky9"]["kernels"]["config"]["CONFIG_NEW"] = "m"
+        _write_targets_yaml(tmp_targets / "targets", data)
         tc2 = _make_config(tmp_targets)
         h2 = tc2.input_hash("kernel")
         assert h1 != h2
@@ -183,6 +200,11 @@ class TestInputHash:
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
             patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
         ):
             tc = cfg.TargetConfig("rocky9")
             h1 = tc.input_hash("image")
@@ -200,10 +222,14 @@ class TestInputHash:
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
             patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
         ):
             tc = cfg.TargetConfig("rocky9")
             h1 = tc.input_hash("image")
-            # Modify server packages
             pkg = tmp_targets / "targets" / "common" / "packages-server.txt"
             pkg.write_text("nfs-utils\nextra-server-pkg\n")
             h2 = tc.input_hash("image")
@@ -213,16 +239,13 @@ class TestInputHash:
         self, tmp_targets: Path
     ) -> None:
         """Image hash for non-server target ignores server packages."""
-        # Make target non-server
-        tc_conf = tmp_targets / "targets" / "rocky9" / "target.conf"
-        tc_conf.write_text(
-            "[target]\nos_family = rhel\nos_name = rocky\n"
-            "os_version = 9\nserver = no\narch = x86_64\n"
-            "container_image = rockylinux:9\n"
+        data = yaml.safe_load(
+            (tmp_targets / "targets" / "targets.yaml").read_text()
         )
+        data["targets"]["rocky9"]["server"] = False
+        _write_targets_yaml(tmp_targets / "targets", data)
         tc = _make_config(tmp_targets)
         h1 = tc.input_hash("image")
-        # Modify server packages -- should NOT change hash
         pkg = tmp_targets / "targets" / "common" / "packages-server.txt"
         pkg.write_text("nfs-utils\nextra-server-pkg\n")
         h2 = tc.input_hash("image")
@@ -243,9 +266,8 @@ class TestStaleness:
         tc = _make_config(tmp_targets)
         tc.write_meta("container")
         assert tc.is_stale("container") is False
-        # Change input
         df = tmp_targets / "targets" / "rocky9" / "container.Dockerfile"
-        df.write_text("FROM rockylinux:9\nRUN echo changed\n")
+        df.write_text("FROM rockylinux:9.7\nRUN echo changed\n")
         assert tc.is_stale("container") is True
 
     def test_kernel_staleness(self, tmp_targets: Path) -> None:
@@ -260,7 +282,6 @@ class TestStaleness:
         tc = _make_config(tmp_targets)
         tc.write_meta("kernel", kernel="custom-kernel")
         assert tc.is_stale("kernel", kernel="custom-kernel") is False
-        # Different kernel name should still be stale
         assert tc.is_stale("kernel", kernel="other-kernel") is True
 
 
@@ -299,26 +320,75 @@ class TestWriteMeta:
         assert meta_path.exists()
 
 
+class TestDeclaredKernels:
+    def test_returns_available_list(self, tmp_targets: Path) -> None:
+        tc = _make_config(tmp_targets)
+        result = tc.declared_kernels()
+        assert result == ["5.14-rhel9.7", "5.14-rhel9.5"]
+
+    def test_default_always_included(self, tmp_targets: Path) -> None:
+        tc = _make_config(tmp_targets)
+        assert tc.default_kernel in tc.declared_kernels()
+
+    def test_default_not_duplicated(self, tmp_targets: Path) -> None:
+        tc = _make_config(tmp_targets)
+        result = tc.declared_kernels()
+        assert result.count(tc.default_kernel) == 1
+
+    def test_custom_available_list(self, tmp_targets: Path) -> None:
+        data = yaml.safe_load(
+            (tmp_targets / "targets" / "targets.yaml").read_text()
+        )
+        data["targets"]["rocky9"]["kernels"]["available"] = [
+            "5.14-rhel9.7",
+            "6.1-rhel9.7",
+        ]
+        _write_targets_yaml(tmp_targets / "targets", data)
+        tc = _make_config(tmp_targets)
+        result = tc.declared_kernels()
+        assert "5.14-rhel9.7" in result
+        assert "6.1-rhel9.7" in result
+
+
 class TestListTargets:
     def test_finds_targets(self, tmp_targets: Path) -> None:
         import lib.config as cfg
 
-        with patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"):
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+        ):
             targets = cfg.list_targets()
         assert "rocky9" in targets
 
-    def test_ignores_common(self, tmp_targets: Path) -> None:
-        """common/ has no target.conf, so it's not a target."""
+    def test_returns_all_declared(self, tmp_targets: Path) -> None:
         import lib.config as cfg
 
-        with patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"):
-            targets = cfg.list_targets()
-        assert "common" not in targets
+        data = {
+            "targets": {
+                "rocky9": _ROCKY9_YAML["targets"]["rocky9"],
+                "ubuntu2404": {
+                    "os_name": "ubuntu",
+                    "os_version": "24.04",
+                    "container_image": "ubuntu:24.04",
+                    "server": False,
+                    "kernels": {"default": "5.15-ubuntu24", "available": []},
+                },
+            }
+        }
+        _write_targets_yaml(tmp_targets / "targets", data)
 
-    def test_ignores_dirs_without_target_conf(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
-
-        (tmp_targets / "targets" / "bogus").mkdir()
-        with patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"):
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+        ):
             targets = cfg.list_targets()
-        assert "bogus" not in targets
+        assert set(targets) == {"rocky9", "ubuntu2404"}

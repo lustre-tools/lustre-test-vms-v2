@@ -1,108 +1,131 @@
-"""Target configuration parsing for ltvm."""
+"""Target configuration for ltvm.
+
+Single source of truth: targets/targets.yaml
+Dockerfiles and package lists live in targets/<name>/.
+"""
 
 from __future__ import annotations
 
-import configparser
 import hashlib
 import json
 from pathlib import Path
+from typing import Any
+
+import yaml
 
 REPO_ROOT = Path(__file__).parent.parent
 TARGETS_DIR = REPO_ROOT / "targets"
 OUTPUT_DIR = REPO_ROOT / "output"
+TARGETS_YAML = TARGETS_DIR / "targets.yaml"
+
+_DEFAULTS = {
+    "arch": "x86_64",
+    "os_family": "rhel",
+    "server": True,
+}
+
+
+def _load_registry() -> dict[str, Any]:
+    """Load and return the full targets.yaml registry."""
+    if not TARGETS_YAML.exists():
+        raise FileNotFoundError(f"Target registry not found: {TARGETS_YAML}")
+    with TARGETS_YAML.open() as f:
+        data: dict[str, Any] = yaml.safe_load(f)
+        return data
 
 
 class TargetConfig:
-    """Parsed target configuration."""
+    """Parsed configuration for a single build target."""
 
     def __init__(self, name: str) -> None:
         self.name = name
         self.target_dir = TARGETS_DIR / name
         self.output_dir = OUTPUT_DIR / name
 
-        if not self.target_dir.exists():
-            raise ValueError(f"Unknown target: {name} (no {self.target_dir})")
+        registry = _load_registry()
+        targets = registry.get("targets", {})
+        if name not in targets:
+            raise ValueError(
+                f"Unknown target: {name!r} (not in {TARGETS_YAML})"
+            )
 
-        self._target = configparser.ConfigParser()
-        self._target.read(self.target_dir / "target.conf")
+        defaults = {**_DEFAULTS, **registry.get("defaults", {})}
+        raw = targets[name]
+        # Merge defaults under target fields
+        self._data: dict[str, Any] = {**defaults, **raw}
+        self._kernels: dict[str, Any] = self._data.get("kernels", {})
 
-        self._kernel = configparser.RawConfigParser()
-        self._kernel.optionxform = str  # type: ignore[assignment]  # preserve case
-        self._kernel.read(self.target_dir / "kernel.conf")
+    # ------------------------------------------------------------------
+    # OS metadata
+    # ------------------------------------------------------------------
 
     @property
     def os_family(self) -> str:
-        return self._target.get("target", "os_family")
+        return str(self._data["os_family"])
 
     @property
     def os_name(self) -> str:
-        return self._target.get("target", "os_name")
+        return str(self._data["os_name"])
 
     @property
     def os_version(self) -> str:
-        return self._target.get("target", "os_version")
+        return str(self._data["os_version"])
 
     @property
     def server(self) -> bool:
-        return self._target.getboolean("target", "server")
+        return bool(self._data["server"])
 
     @property
     def arch(self) -> str:
-        return self._target.get("target", "arch")
+        return str(self._data["arch"])
 
     @property
     def container_image(self) -> str:
-        return self._target.get("target", "container_image")
+        return str(self._data["container_image"])
 
     @property
-    def lustre_target(self) -> str:
-        """Default kernel lustre target name.
+    def status(self) -> str:
+        return str(self._data.get("status", "unknown"))
 
-        Reads [kernel] default; falls back to legacy lustre_target key.
-        """
-        if self._kernel.has_option("kernel", "default"):
-            return self._kernel.get("kernel", "default")
-        return self._kernel.get("kernel", "lustre_target")
+    # ------------------------------------------------------------------
+    # Kernel metadata
+    # ------------------------------------------------------------------
 
     @property
     def default_kernel(self) -> str:
-        """The default kernel name (from kernel.conf [kernel] default)."""
-        return self.lustre_target
+        """Default lustre target name (short form, e.g. 5.14-rhel9.7)."""
+        return str(self._kernels["default"])
+
+    @property
+    def lustre_target(self) -> str:
+        """Alias for default_kernel (backward compat)."""
+        return self.default_kernel
 
     def declared_kernels(self) -> list[str]:
-        """Return kernel target names declared in [kernels] section.
-
-        These are the lustre target names (short form, e.g. 5.14-rhel9.7)
-        configured in kernel.conf.  The default kernel is always included.
-        """
-        names: list[str] = []
-        if self._kernel.has_section("kernels"):
-            names.extend(self._kernel.options("kernels"))
-        default = self.default_kernel
-        if default not in names:
-            names.insert(0, default)
-        return names
+        """Lustre target names declared as available in targets.yaml."""
+        available = self._kernels.get("available", [])
+        result = list(available)
+        if self.default_kernel not in result:
+            result.insert(0, self.default_kernel)
+        return result
 
     @property
     def kernel_config_overrides(self) -> dict[str, str]:
-        """Microvm-specific kernel config overrides."""
-        overrides: dict[str, str] = {}
-        if self._kernel.has_section("config"):
-            overrides.update(dict(self._kernel.items("config")))
-        return overrides
+        """Kernel .config overrides from targets.yaml kernels.config."""
+        return dict(self._kernels.get("config", {}))
 
     def resolve_kernel(self, kernel: str | None = None) -> str:
-        """Resolve a kernel name (short or full) to the built directory name.
+        """Resolve a kernel name (short or full) to the built dir name.
 
         Kernel directories are named <lustre_target>-<full_version>
         (e.g. 5.14-rhel9.7-5.14.0-611.13.1.el9_7_lustre).
 
         Resolution order:
-          1. If kernel is None, use the default (lustre_target from config).
+          1. If kernel is None, use default_kernel.
           2. Exact directory match.
-          3. Prefix match: scan for dirs starting with <kernel>-.
-             If multiple match, pick the lexicographically latest.
-          4. Return the name as-is (e.g. for a new build not yet on disk).
+          3. Prefix match: scan for dirs starting with <kernel>-,
+             pick the lexicographically latest.
+          4. Return name as-is (for new builds not yet on disk).
         """
         name = kernel if kernel is not None else self.default_kernel
         kernels_dir = self.output_dir / "kernels"
@@ -114,7 +137,7 @@ class TargetConfig:
         if (kernels_dir / name).is_dir():
             return name
 
-        # Prefix match (short name → full-version dir)
+        # Prefix match (short name -> full-version dir)
         prefix = name + "-"
         candidates = sorted(
             d.name
@@ -127,17 +150,15 @@ class TargetConfig:
         return name
 
     def kernel_output_dir(self, kernel: str | None = None) -> Path:
-        """Return the output directory for a kernel build.
+        """Return the output directory for a kernel.
 
-        When kernel is None, the default kernel (lustre_target) is used.
-        Kernels are stored under output/<target>/kernels/<name>-<version>/.
-        Accepts both short names (5.14-rhel9.7) and full names
+        Accepts short names (5.14-rhel9.7) or full names
         (5.14-rhel9.7-5.14.0-611.13.1.el9_7_lustre).
         """
         return self.output_dir / "kernels" / self.resolve_kernel(kernel)
 
     def available_kernels(self) -> list[str]:
-        """Return a sorted list of built kernel directory names."""
+        """Return sorted list of built kernel directory names."""
         kernels_dir = self.output_dir / "kernels"
         if not kernels_dir.exists():
             return []
@@ -149,13 +170,12 @@ class TargetConfig:
     def container_output_dir(self) -> Path:
         return self.output_dir / "container"
 
-    def input_hash(self, artifact: str, kernel: str | None = None) -> str:
-        """Hash the inputs for an artifact to detect staleness.
+    # ------------------------------------------------------------------
+    # Staleness and metadata
+    # ------------------------------------------------------------------
 
-        artifact: 'container', 'kernel', or 'image'
-        kernel: kernel name override for artifact=='kernel'; defaults to
-                lustre_target when None.
-        """
+    def input_hash(self, artifact: str, kernel: str | None = None) -> str:
+        """Hash inputs for an artifact to detect staleness."""
         h = hashlib.sha256()
 
         if artifact == "container":
@@ -183,7 +203,6 @@ class TargetConfig:
         return h.hexdigest()[:16]
 
     def _kernel_meta_file(self, kernel: str | None) -> Path:
-        """Return the meta.json path for a kernel artifact."""
         return (
             self.output_dir
             / "kernels"
@@ -192,11 +211,7 @@ class TargetConfig:
         )
 
     def is_stale(self, artifact: str, kernel: str | None = None) -> bool:
-        """Check if an artifact needs rebuilding.
-
-        For artifact=='kernel', kernel selects which kernel to check;
-        defaults to the configured lustre_target.
-        """
+        """Check if an artifact needs rebuilding."""
         if artifact == "kernel":
             meta_file = self._kernel_meta_file(kernel)
         else:
@@ -211,11 +226,7 @@ class TargetConfig:
     def write_meta(
         self, artifact: str, kernel: str | None = None, **extra: object
     ) -> None:
-        """Write build metadata after successful build.
-
-        For artifact=='kernel', kernel selects which kernel's metadata to
-        write; defaults to the configured lustre_target.
-        """
+        """Write build metadata after a successful build."""
         if artifact == "kernel":
             out_dir = self._kernel_meta_file(kernel).parent
         else:
@@ -241,9 +252,6 @@ class TargetConfig:
 
 
 def list_targets() -> list[str]:
-    """Return names of all configured targets."""
-    targets = []
-    for d in sorted(TARGETS_DIR.iterdir()):
-        if d.is_dir() and (d / "target.conf").exists():
-            targets.append(d.name)
-    return targets
+    """Return names of all targets declared in targets.yaml."""
+    registry = _load_registry()
+    return list(registry.get("targets", {}).keys())

@@ -19,6 +19,7 @@ from lib.kernel import (
     parse_lustre_target,
     resolve_lustre_files,
 )
+from tests.conftest import _make_config
 
 
 class TestShellVar:
@@ -293,65 +294,22 @@ class TestEnsureContainerImage:
 # ------------------------------------------------------------------
 
 
-def _make_target_cfg(tmp_targets: Path):
-    """Build a TargetConfig pointing at tmp_targets without touching
-    the real TARGETS_DIR / OUTPUT_DIR globals."""
-    import configparser
-
-    from lib.config import TargetConfig
-
-    cfg = TargetConfig.__new__(TargetConfig)
-    cfg.name = "rocky9"
-    cfg.target_dir = tmp_targets / "targets" / "rocky9"
-    cfg.output_dir = tmp_targets / "output" / "rocky9"
-    cfg._target = configparser.ConfigParser()
-    cfg._target.read(cfg.target_dir / "target.conf")
-    cfg._kernel = configparser.RawConfigParser()
-    cfg._kernel.optionxform = str
-    cfg._kernel.read(cfg.target_dir / "kernel.conf")
-    return cfg
-
-
 class TestBuildConfigFragment:
     def test_contains_common_fragment(self, tmp_targets: Path) -> None:
-        import lib.config
-
-        original = lib.config.TARGETS_DIR
-        lib.config.TARGETS_DIR = tmp_targets / "targets"
-        try:
-            cfg = _make_target_cfg(tmp_targets)
-            frag = _build_config_fragment(cfg)
-        finally:
-            lib.config.TARGETS_DIR = original
-
+        cfg = _make_config(tmp_targets)
+        frag = _build_config_fragment(cfg)
         assert "CONFIG_VIRTIO=y" in frag
         assert "CONFIG_9P_FS=y" in frag
 
     def test_contains_target_overrides(self, tmp_targets: Path) -> None:
-        import lib.config
-
-        original = lib.config.TARGETS_DIR
-        lib.config.TARGETS_DIR = tmp_targets / "targets"
-        try:
-            cfg = _make_target_cfg(tmp_targets)
-            frag = _build_config_fragment(cfg)
-        finally:
-            lib.config.TARGETS_DIR = original
-
-        # kernel.conf has CONFIG_XEN_PVH=y in [config]
+        cfg = _make_config(tmp_targets)
+        frag = _build_config_fragment(cfg)
+        # targets.yaml has CONFIG_XEN_PVH=y in kernels.config
         assert "CONFIG_XEN_PVH=y" in frag
 
     def test_ends_with_newline(self, tmp_targets: Path) -> None:
-        import lib.config
-
-        original = lib.config.TARGETS_DIR
-        lib.config.TARGETS_DIR = tmp_targets / "targets"
-        try:
-            cfg = _make_target_cfg(tmp_targets)
-            frag = _build_config_fragment(cfg)
-        finally:
-            lib.config.TARGETS_DIR = original
-
+        cfg = _make_config(tmp_targets)
+        frag = _build_config_fragment(cfg)
         assert frag.endswith("\n")
 
     def test_no_common_fragment_still_returns_overrides(
@@ -361,17 +319,8 @@ class TestBuildConfigFragment:
             tmp_targets / "targets" / "common" / "kernel-config.fragment"
         )
         common_frag.unlink()
-
-        import lib.config
-
-        original = lib.config.TARGETS_DIR
-        lib.config.TARGETS_DIR = tmp_targets / "targets"
-        try:
-            cfg = _make_target_cfg(tmp_targets)
-            frag = _build_config_fragment(cfg)
-        finally:
-            lib.config.TARGETS_DIR = original
-
+        cfg = _make_config(tmp_targets)
+        frag = _build_config_fragment(cfg)
         assert "CONFIG_XEN_PVH=y" in frag
         assert "CONFIG_VIRTIO=y" not in frag
 
@@ -383,105 +332,55 @@ class TestBuildConfigFragment:
 
 class TestKernelStatus:
     def test_no_meta_returns_not_built(self, tmp_targets: Path) -> None:
-        import lib.config
-
-        original_targets = lib.config.TARGETS_DIR
-        original_output = lib.config.OUTPUT_DIR
-        lib.config.TARGETS_DIR = tmp_targets / "targets"
-        lib.config.OUTPUT_DIR = tmp_targets / "output"
-        try:
-            cfg = _make_target_cfg(tmp_targets)
-            result = kernel_status(cfg)
-        finally:
-            lib.config.TARGETS_DIR = original_targets
-            lib.config.OUTPUT_DIR = original_output
-
+        cfg = _make_config(tmp_targets)
+        result = kernel_status(cfg)
         assert result["built"] is False
         assert result["stale"] is True
 
     def test_matching_hash_returns_not_stale(self, tmp_targets: Path) -> None:
-        import lib.config
-
-        original_targets = lib.config.TARGETS_DIR
-        original_output = lib.config.OUTPUT_DIR
-        lib.config.TARGETS_DIR = tmp_targets / "targets"
-        lib.config.OUTPUT_DIR = tmp_targets / "output"
-        try:
-            cfg = _make_target_cfg(tmp_targets)
-            input_hash = cfg.input_hash("kernel")
-            kernel_dir = cfg.kernel_output_dir()
-            kernel_dir.mkdir(parents=True, exist_ok=True)
-            meta = {
-                "input_hash": input_hash,
-                "kernel_version": "5.14.0-503.26.1.el9_7",
-                "srpm": "kernel-5.14.0-503.26.1.el9_7.src.rpm",
-            }
-            (kernel_dir / "meta.json").write_text(
-                json.dumps(meta, indent=2) + "\n"
-            )
-            result = kernel_status(cfg)
-        finally:
-            lib.config.TARGETS_DIR = original_targets
-            lib.config.OUTPUT_DIR = original_output
-
+        cfg = _make_config(tmp_targets)
+        input_hash = cfg.input_hash("kernel")
+        kernel_dir = cfg.kernel_output_dir()
+        kernel_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "input_hash": input_hash,
+            "kernel_version": "5.14.0-503.26.1.el9_7",
+            "srpm": "kernel-5.14.0-503.26.1.el9_7.src.rpm",
+        }
+        (kernel_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+        result = kernel_status(cfg)
         assert result["built"] is True
         assert result["stale"] is False
         assert result["kernel_version"] == "5.14.0-503.26.1.el9_7"
 
     def test_stale_hash_returns_stale(self, tmp_targets: Path) -> None:
-        import lib.config
-
-        original_targets = lib.config.TARGETS_DIR
-        original_output = lib.config.OUTPUT_DIR
-        lib.config.TARGETS_DIR = tmp_targets / "targets"
-        lib.config.OUTPUT_DIR = tmp_targets / "output"
-        try:
-            cfg = _make_target_cfg(tmp_targets)
-            kernel_dir = cfg.kernel_output_dir()
-            kernel_dir.mkdir(parents=True, exist_ok=True)
-            meta = {
-                "input_hash": "deadbeefdeadbeef",
-                "kernel_version": "5.14.0-503.26.1.el9_7",
-                "srpm": "kernel-5.14.0-503.26.1.el9_7.src.rpm",
-            }
-            (kernel_dir / "meta.json").write_text(
-                json.dumps(meta, indent=2) + "\n"
-            )
-            result = kernel_status(cfg)
-        finally:
-            lib.config.TARGETS_DIR = original_targets
-            lib.config.OUTPUT_DIR = original_output
-
+        cfg = _make_config(tmp_targets)
+        kernel_dir = cfg.kernel_output_dir()
+        kernel_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "input_hash": "deadbeefdeadbeef",
+            "kernel_version": "5.14.0-503.26.1.el9_7",
+            "srpm": "kernel-5.14.0-503.26.1.el9_7.src.rpm",
+        }
+        (kernel_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+        result = kernel_status(cfg)
         assert result["built"] is True
         assert result["stale"] is True
 
     def test_meta_fields_propagated(self, tmp_targets: Path) -> None:
-        import lib.config
-
-        original_targets = lib.config.TARGETS_DIR
-        original_output = lib.config.OUTPUT_DIR
-        lib.config.TARGETS_DIR = tmp_targets / "targets"
-        lib.config.OUTPUT_DIR = tmp_targets / "output"
-        try:
-            cfg = _make_target_cfg(tmp_targets)
-            input_hash = cfg.input_hash("kernel")
-            kernel_dir = cfg.kernel_output_dir()
-            kernel_dir.mkdir(parents=True, exist_ok=True)
-            meta = {
-                "input_hash": input_hash,
-                "kernel_version": "5.14.0-503.26.1.el9_7",
-                "srpm": "kernel-5.14.0-503.26.1.el9_7.src.rpm",
-                "lnxmaj": "5.14.0",
-                "lnxrel": "503.26.1.el9_7",
-            }
-            (kernel_dir / "meta.json").write_text(
-                json.dumps(meta, indent=2) + "\n"
-            )
-            result = kernel_status(cfg)
-        finally:
-            lib.config.TARGETS_DIR = original_targets
-            lib.config.OUTPUT_DIR = original_output
-
+        cfg = _make_config(tmp_targets)
+        input_hash = cfg.input_hash("kernel")
+        kernel_dir = cfg.kernel_output_dir()
+        kernel_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "input_hash": input_hash,
+            "kernel_version": "5.14.0-503.26.1.el9_7",
+            "srpm": "kernel-5.14.0-503.26.1.el9_7.src.rpm",
+            "lnxmaj": "5.14.0",
+            "lnxrel": "503.26.1.el9_7",
+        }
+        (kernel_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+        result = kernel_status(cfg)
         assert result["lnxmaj"] == "5.14.0"
         assert result["lnxrel"] == "503.26.1.el9_7"
         assert result["srpm"] == "kernel-5.14.0-503.26.1.el9_7.src.rpm"

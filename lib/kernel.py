@@ -204,12 +204,11 @@ def _build_config_fragment(target_config: TargetConfig) -> str:
 
     Returns the fragment text.
     """
-    from .config import TARGETS_DIR
-
     lines = []
 
-    # Common fragment
-    common = TARGETS_DIR / "common" / "kernel-config.fragment"
+    # Common fragment -- targets_dir is target_dir's parent (targets/)
+    targets_dir = target_config.target_dir.parent
+    common = targets_dir / "common" / "kernel-config.fragment"
     if common.exists():
         lines.append(common.read_text())
 

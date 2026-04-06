@@ -1,0 +1,61 @@
+# ltvm target registry
+#
+# Each target defines an OS + kernel set for building and testing Lustre.
+# Dockerfiles and package lists live in targets/<name>/.
+#
+# Fields:
+#   os_name:         short OS name (rocky, ubuntu, ...)
+#   os_version:      OS release version string
+#   os_family:       rhel or debian (default: rhel)
+#   arch:            cpu arch (default: x86_64)
+#   server:          build server-side Lustre (default: true)
+#   container_image: base image for the build container Dockerfile
+#   status:          working | planned | experimental
+#   kernels.default: lustre target name used when --kernel not specified
+#   kernels.available: all lustre target names for this OS
+#   kernels.config:  kernel .config overrides (merged with common fragment)
+
+defaults:
+  arch: x86_64
+  os_family: rhel
+  server: true
+
+targets:
+  rocky9:
+    os_name: rocky
+    os_version: "9.7"
+    container_image: rockylinux:9.7
+    status: working
+    kernels:
+      default: 5.14-rhel9.7
+      available:
+        - 5.14-rhel9.7
+        - 5.14-rhel9.5
+      config:
+        CONFIG_XEN_PVH: "y"
+
+  rocky8:
+    os_name: rocky
+    os_version: "8.10"
+    container_image: rockylinux:8.10
+    status: planned
+    kernels:
+      default: 4.18-rhel8.10
+      available:
+        - 4.18-rhel8.10
+      config:
+        CONFIG_XEN_PVH: "y"
+
+  ubuntu2404:
+    os_name: ubuntu
+    os_version: "24.04"
+    os_family: debian
+    container_image: ubuntu:24.04
+    server: false
+    status: planned
+    kernels:
+      default: 5.15-ubuntu24
+      available:
+        - 5.15-ubuntu24
+      config:
+        CONFIG_XEN_PVH: "y"

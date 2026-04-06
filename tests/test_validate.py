@@ -27,6 +27,7 @@ from lib.validate import (
     check_vm_boot,
     check_vm_kernel_version,
     print_results,
+    validate_target,
 )
 
 # ---------------------------------------------------------------------------
@@ -1413,3 +1414,199 @@ class TestPrintResults:
         out = capsys.readouterr().out
         assert "PASS" in out
         assert "FAIL" in out
+
+
+# ---------------------------------------------------------------------------
+# TestValidateTarget  (mocks all sub-functions)
+# ---------------------------------------------------------------------------
+
+
+def _pass(name: str = "x") -> CheckResult:
+    return CheckResult(name, True, "", 0.0)
+
+
+def _fail(name: str = "x") -> CheckResult:
+    return CheckResult(name, False, "err", 0.0)
+
+
+class TestValidateTarget:
+    """validate_target() orchestration tests -- all I/O sub-functions mocked."""
+
+    def _fake_target(self, tmp_path: Path) -> SimpleNamespace:
+        out = tmp_path / "out"
+        out.mkdir(parents=True)
+        return SimpleNamespace(name="testarch", output_dir=out)
+
+    @patch("lib.validate._vm_destroy")
+    @patch("lib.validate._vm_ensure")
+    @patch("lib.validate.check_artifacts")
+    def test_artifacts_fail_returns_early_no_vm(
+        self,
+        mock_artifacts: MagicMock,
+        mock_ensure: MagicMock,
+        mock_destroy: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """Artifacts check fails -> summary returned early, no VM created."""
+        mock_artifacts.return_value = _fail("Artifacts exist")
+        tc = self._fake_target(tmp_path)
+        result = validate_target(tc)
+        assert result["all_passed"] is False
+        mock_ensure.assert_not_called()
+        mock_destroy.assert_not_called()
+
+    @patch("lib.validate._vm_destroy")
+    @patch("lib.validate._vm_ensure")
+    @patch("lib.validate.check_no_lustre")
+    @patch("lib.validate.check_packages")
+    @patch("lib.validate.check_networking")
+    @patch("lib.validate.check_vm_kernel_version")
+    @patch("lib.validate.check_vm_boot")
+    @patch("lib.validate.check_version_consistency")
+    @patch("lib.validate.check_artifacts")
+    def test_all_pass_no_lustre_tree(
+        self,
+        mock_artifacts: MagicMock,
+        mock_version: MagicMock,
+        mock_boot: MagicMock,
+        mock_kver: MagicMock,
+        mock_net: MagicMock,
+        mock_pkgs: MagicMock,
+        mock_nolustre: MagicMock,
+        mock_ensure: MagicMock,
+        mock_destroy: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """All checks pass without lustre_tree -> all_passed=True."""
+        for m in (
+            mock_artifacts,
+            mock_version,
+            mock_boot,
+            mock_kver,
+            mock_net,
+            mock_pkgs,
+            mock_nolustre,
+        ):
+            m.return_value = _pass()
+        tc = self._fake_target(tmp_path)
+        result = validate_target(tc)
+        assert result["all_passed"] is True
+        mock_ensure.assert_called_once()
+        mock_destroy.assert_called_once()
+
+    @patch("lib.validate._vm_destroy")
+    @patch("lib.validate._vm_ensure")
+    @patch("lib.validate.check_vm_boot")
+    @patch("lib.validate.check_version_consistency")
+    @patch("lib.validate.check_artifacts")
+    def test_vm_boot_fails_returns_early_destroy_called(
+        self,
+        mock_artifacts: MagicMock,
+        mock_version: MagicMock,
+        mock_boot: MagicMock,
+        mock_ensure: MagicMock,
+        mock_destroy: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """check_vm_boot fails -> early return, _vm_destroy still called."""
+        mock_artifacts.return_value = _pass()
+        mock_version.return_value = _pass()
+        mock_boot.return_value = _fail("Virgin VM boot")
+        tc = self._fake_target(tmp_path)
+        result = validate_target(tc)
+        assert result["all_passed"] is False
+        mock_destroy.assert_called_once()
+
+    @patch("lib.validate._vm_destroy")
+    @patch("lib.validate._vm_ensure")
+    @patch("lib.validate.check_basic_io")
+    @patch("lib.validate.check_lustre_deploy")
+    @patch("lib.validate.check_no_lustre")
+    @patch("lib.validate.check_packages")
+    @patch("lib.validate.check_networking")
+    @patch("lib.validate.check_vm_kernel_version")
+    @patch("lib.validate.check_vm_boot")
+    @patch("lib.validate.check_version_consistency")
+    @patch("lib.validate.check_artifacts")
+    def test_lustre_tree_provided_all_pass(
+        self,
+        mock_artifacts: MagicMock,
+        mock_version: MagicMock,
+        mock_boot: MagicMock,
+        mock_kver: MagicMock,
+        mock_net: MagicMock,
+        mock_pkgs: MagicMock,
+        mock_nolustre: MagicMock,
+        mock_ldeploy: MagicMock,
+        mock_bio: MagicMock,
+        mock_ensure: MagicMock,
+        mock_destroy: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """lustre_tree provided, all pass -> second VM with disks, both destroyed."""
+        for m in (
+            mock_artifacts,
+            mock_version,
+            mock_boot,
+            mock_kver,
+            mock_net,
+            mock_pkgs,
+            mock_nolustre,
+            mock_ldeploy,
+            mock_bio,
+        ):
+            m.return_value = _pass()
+        tc = self._fake_target(tmp_path)
+        lustre_tree = tmp_path / "lustre-release"
+        lustre_tree.mkdir()
+        result = validate_target(tc, lustre_tree=lustre_tree)
+        assert result["all_passed"] is True
+        assert mock_ensure.call_count == 2
+        assert mock_destroy.call_count == 2
+        # Second ensure call must include mdt_disks=1 and ost_disks=3
+        second_call_kwargs = mock_ensure.call_args_list[1][1]
+        assert second_call_kwargs.get("mdt_disks") == 1
+        assert second_call_kwargs.get("ost_disks") == 3
+
+    @patch("lib.validate._vm_destroy")
+    @patch("lib.validate._vm_ensure")
+    @patch("lib.validate.check_lustre_deploy")
+    @patch("lib.validate.check_no_lustre")
+    @patch("lib.validate.check_packages")
+    @patch("lib.validate.check_networking")
+    @patch("lib.validate.check_vm_kernel_version")
+    @patch("lib.validate.check_vm_boot")
+    @patch("lib.validate.check_version_consistency")
+    @patch("lib.validate.check_artifacts")
+    def test_lustre_deploy_fails_destroy_still_called(
+        self,
+        mock_artifacts: MagicMock,
+        mock_version: MagicMock,
+        mock_boot: MagicMock,
+        mock_kver: MagicMock,
+        mock_net: MagicMock,
+        mock_pkgs: MagicMock,
+        mock_nolustre: MagicMock,
+        mock_ldeploy: MagicMock,
+        mock_ensure: MagicMock,
+        mock_destroy: MagicMock,
+        tmp_path: Path,
+    ) -> None:
+        """lustre_tree provided, deploy fails -> early return, both destroys called."""
+        for m in (
+            mock_artifacts,
+            mock_version,
+            mock_boot,
+            mock_kver,
+            mock_net,
+            mock_pkgs,
+            mock_nolustre,
+        ):
+            m.return_value = _pass()
+        mock_ldeploy.return_value = _fail("Lustre deploy + mount")
+        tc = self._fake_target(tmp_path)
+        lustre_tree = tmp_path / "lustre-release"
+        lustre_tree.mkdir()
+        result = validate_target(tc, lustre_tree=lustre_tree)
+        assert result["all_passed"] is False
+        assert mock_destroy.call_count == 2

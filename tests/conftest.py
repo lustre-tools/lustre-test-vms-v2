@@ -8,9 +8,34 @@ from typing import TYPE_CHECKING
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 if TYPE_CHECKING:
     from lib.config import TargetConfig
+
+_ROCKY9_YAML: dict = {
+    "defaults": {"arch": "x86_64", "os_family": "rhel", "server": True},
+    "targets": {
+        "rocky9": {
+            "os_name": "rocky",
+            "os_version": "9.7",
+            "container_image": "rockylinux:9.7",
+            "status": "working",
+            "kernels": {
+                "default": "5.14-rhel9.7",
+                "available": ["5.14-rhel9.7", "5.14-rhel9.5"],
+                "config": {"CONFIG_XEN_PVH": "y"},
+            },
+        }
+    },
+}
+
+
+def _write_targets_yaml(targets_dir: Path, data: dict | None = None) -> None:
+    """Write targets.yaml into targets_dir."""
+    (targets_dir / "targets.yaml").write_text(
+        yaml.dump(data or _ROCKY9_YAML, default_flow_style=False)
+    )
 
 
 def _make_config(tmp_targets: Path) -> TargetConfig:
@@ -20,6 +45,11 @@ def _make_config(tmp_targets: Path) -> TargetConfig:
     with (
         patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
         patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+        patch.object(
+            cfg,
+            "TARGETS_YAML",
+            tmp_targets / "targets" / "targets.yaml",
+        ),
     ):
         return cfg.TargetConfig("rocky9")
 
@@ -40,28 +70,10 @@ def tmp_targets(tmp_path: Path) -> Path:
 
     rocky9 = tmp_path / "targets" / "rocky9"
     rocky9.mkdir(parents=True)
-    (rocky9 / "target.conf").write_text(
-        textwrap.dedent("""\
-            [target]
-            os_family = rhel
-            os_name = rocky
-            os_version = 9
-            server = yes
-            arch = x86_64
-            container_image = rockylinux:9
-        """)
-    )
-    (rocky9 / "kernel.conf").write_text(
-        textwrap.dedent("""\
-            [kernel]
-            lustre_target = 5.14-rhel9.7
+    (rocky9 / "container.Dockerfile").write_text("FROM rockylinux:9.7\n")
+    (rocky9 / "image.Dockerfile").write_text("FROM rockylinux:9.7\n")
 
-            [config]
-            CONFIG_XEN_PVH=y
-        """)
-    )
-    (rocky9 / "container.Dockerfile").write_text("FROM rockylinux:9\n")
-    (rocky9 / "image.Dockerfile").write_text("FROM rockylinux:9\n")
+    _write_targets_yaml(tmp_path / "targets")
 
     # Also create output dir
     (tmp_path / "output" / "rocky9").mkdir(parents=True)

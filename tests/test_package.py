@@ -500,6 +500,30 @@ class TestPackageTarget:
         assert isinstance(manifest["has_lustre"], bool)
         assert isinstance(manifest["size_bytes"], int)
 
+    def test_dest_dir_none_lands_in_output_dir_parent(
+        self, tmp_path: Path
+    ) -> None:
+        """dest_dir=None -> tarball placed in output_dir.parent."""
+        output_dir = _setup_package_artifacts(tmp_path, kernel_version="1.0")
+
+        def mock_run(cmd, *args, **kwargs):
+            result = MagicMock()
+            result.returncode = 0
+            for arg in cmd:
+                if ".tar." in arg:
+                    Path(arg).write_bytes(b"x" * 512)
+            return result
+
+        with patch("subprocess.run", side_effect=mock_run):
+            tarball = package_target(
+                "my-target",
+                output_dir,
+                kernel="test-kernel",
+                dest_dir=None,
+            )
+
+        assert tarball.parent == output_dir.parent
+
     def test_manifest_has_lustre_true(self, tmp_path: Path) -> None:
         output_dir = _setup_package_artifacts(
             tmp_path, kernel_version="1.0", with_lustre=True
