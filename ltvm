@@ -439,7 +439,9 @@ def cmd_package(args: argparse.Namespace) -> int:
             print("Snapshotting Lustre tree...")
         try:
             snapshot_lustre(
-                lustre_path, tc.output_dir, kernel=kernel,
+                lustre_path,
+                tc.output_dir,
+                kernel=kernel,
             )
         except Exception as e:
             return _error(f"Lustre snapshot failed: {e}", use_json)
@@ -449,7 +451,8 @@ def cmd_package(args: argparse.Namespace) -> int:
 
     try:
         tarball = package_target(
-            args.target, tc.output_dir,
+            args.target,
+            tc.output_dir,
             kernel=kernel,
             dest_dir=getattr(args, "output", None),
         )
@@ -481,10 +484,7 @@ def _find_release_url(
     URL for the first match.
     """
     if release == "latest":
-        api = (
-            f"https://api.github.com/repos/{GITHUB_REPO}"
-            f"/releases/latest"
-        )
+        api = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
     else:
         api = (
             f"https://api.github.com/repos/{GITHUB_REPO}"
@@ -493,7 +493,8 @@ def _find_release_url(
 
     r = subprocess.run(
         ["curl", "-fsSL", api],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if r.returncode != 0:
         raise RuntimeError(
@@ -514,13 +515,11 @@ def _find_release_url(
         if kernel and kernel not in name:
             continue
         if name.endswith((".tar.zst", ".tar.gz")):
-            url = asset["browser_download_url"]
-            return url
+            return str(asset["browser_download_url"])
 
     # No match found -- list what's available
     avail = [
-        a["name"] for a in assets
-        if a["name"].endswith((".tar.zst", ".tar.gz"))
+        a["name"] for a in assets if a["name"].endswith((".tar.zst", ".tar.gz"))
     ]
     avail_str = "\n  ".join(avail) if avail else "(none)"
     kernel_hint = f" --kernel {kernel}" if kernel else ""
@@ -543,12 +542,13 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     if not url:
         if not use_json:
             print(
-                f"Looking up {args.target} from "
-                f"GitHub release ({release})..."
+                f"Looking up {args.target} from GitHub release ({release})..."
             )
         try:
             url = _find_release_url(
-                args.target, kernel=kernel, release=release,
+                args.target,
+                kernel=kernel,
+                release=release,
             )
         except RuntimeError as e:
             return _error(str(e), use_json)
@@ -590,16 +590,15 @@ def cmd_publish(args: argparse.Namespace) -> int:
         tarball = Path(tarball_path)
         if not tarball.exists():
             return _error(
-                f"Tarball not found: {tarball}", use_json,
+                f"Tarball not found: {tarball}",
+                use_json,
             )
     else:
         # Look for existing tarball in output/
         pattern = f"{args.target}-*.tar.zst"
         candidates = sorted(tc.output_dir.parent.glob(pattern))
         if kernel:
-            candidates = [
-                c for c in candidates if kernel in c.name
-            ]
+            candidates = [c for c in candidates if kernel in c.name]
         if not candidates:
             return _error(
                 f"No tarball found matching {pattern}",
@@ -622,15 +621,21 @@ def cmd_publish(args: argparse.Namespace) -> int:
     if not use_json:
         print(f"  Tag: {tag}")
         print(f"  Tarball: {tarball}")
-        print(f"  Size: {tarball.stat().st_size / (1024*1024):.0f} MB")
+        print(f"  Size: {tarball.stat().st_size / (1024 * 1024):.0f} MB")
 
     # Create release (ok if it already exists)
     subprocess.run(
         [
-            "gh", "release", "create", tag,
-            "--repo", GITHUB_REPO,
-            "--title", tag,
-            "--notes", f"Pre-built artifacts for {args.target}",
+            "gh",
+            "release",
+            "create",
+            tag,
+            "--repo",
+            GITHUB_REPO,
+            "--title",
+            tag,
+            "--notes",
+            f"Pre-built artifacts for {args.target}",
         ],
         capture_output=True,
     )
@@ -638,22 +643,24 @@ def cmd_publish(args: argparse.Namespace) -> int:
     # Upload asset
     r = subprocess.run(
         [
-            "gh", "release", "upload", tag,
+            "gh",
+            "release",
+            "upload",
+            tag,
             str(tarball),
-            "--repo", GITHUB_REPO,
+            "--repo",
+            GITHUB_REPO,
             "--clobber",
         ],
     )
     if r.returncode != 0:
         return _error(
-            f"Upload failed (rc={r.returncode})", use_json,
+            f"Upload failed (rc={r.returncode})",
+            use_json,
             hint="Check 'gh auth status' for credentials",
         )
 
-    url = (
-        f"https://github.com/{GITHUB_REPO}"
-        f"/releases/tag/{tag}"
-    )
+    url = f"https://github.com/{GITHUB_REPO}/releases/tag/{tag}"
     if not use_json:
         print(f"  Published: {url}")
 
@@ -695,7 +702,9 @@ def cmd_install(args: argparse.Namespace) -> int:
 
     try:
         installed = install_target(
-            args.target, tc.output_dir, kernel=kernel,
+            args.target,
+            tc.output_dir,
+            kernel=kernel,
         )
     except Exception as e:
         return _error(f"Install failed: {e}", use_json)
@@ -990,8 +999,12 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if build_arg == ".":
         # Check for packaged Lustre tree first
         packaged = (
-            ltvm_root / "output" / target / "kernels"
-            / resolved_kernel / "lustre"
+            ltvm_root
+            / "output"
+            / target
+            / "kernels"
+            / resolved_kernel
+            / "lustre"
         )
         if packaged.is_dir():
             build_path = packaged
@@ -1008,8 +1021,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     # Auto-detect kernel modules from ltvm output
     kernel_modules = None
     mods_path = (
-        ltvm_root / "output" / target / "kernels"
-        / resolved_kernel / "modules"
+        ltvm_root / "output" / target / "kernels" / resolved_kernel / "modules"
     )
     if mods_path.is_dir():
         kernel_modules = str(mods_path)
@@ -1488,7 +1500,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- deploy --
     sp = sub.add_parser(
-        "deploy", parents=[common, kernel_arg],
+        "deploy",
+        parents=[common, kernel_arg],
         help="Deploy Lustre to a VM",
     )
     sp.add_argument("vm", help="VM name")

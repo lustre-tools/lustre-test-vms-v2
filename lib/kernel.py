@@ -263,6 +263,20 @@ def build_kernel(
     log.info("Kernel config: %s", lustre_config)
     log.info("Patches to apply: %d", len(lustre_patches))
 
+    # Compute the full output directory name: <lustre_target>-<lnxmaj>-<lnxrel>
+    # e.g. 5.14-rhel9.7-5.14.0-611.13.1.el9_7_lustre
+    full_name = (
+        f"{lustre_target}-{target_info['lnxmaj']}-{target_info['lnxrel']}"
+    )
+    log.info("Kernel output directory: kernels/%s", full_name)
+
+    # Migrate old short-name directory if it exists (one-time migration)
+    old_out = target_config.output_dir / "kernels" / lustre_target
+    new_out = target_config.output_dir / "kernels" / full_name
+    if old_out.exists() and not new_out.exists():
+        log.info("Migrating kernel dir: %s -> %s", old_out.name, new_out.name)
+        old_out.rename(new_out)
+
     # Download SRPM
     cache_dir = target_config.output_dir / "cache"
     srpm_path = download_srpm(target_info["srpm"], cache_dir)
@@ -270,8 +284,8 @@ def build_kernel(
     # Ensure container image
     image_tag = _ensure_container_image(target_config)
 
-    # Prepare output directory
-    kernel_out = target_config.kernel_output_dir(kernel=lustre_target)
+    # Prepare output directory (use full name)
+    kernel_out = target_config.output_dir / "kernels" / full_name
     kernel_out.mkdir(parents=True, exist_ok=True)
     build_tree = kernel_out / "build-tree"
 
@@ -360,7 +374,7 @@ def build_kernel(
         "vmlinuz_bytes": vmlinuz_size,
         "built_at": datetime.now(timezone.utc).isoformat(),
     }
-    target_config.write_meta("kernel", kernel=lustre_target, **meta)
+    target_config.write_meta("kernel", kernel=full_name, **meta)
 
     log.info("Kernel build complete")
     return meta

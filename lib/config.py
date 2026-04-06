@@ -56,12 +56,32 @@ class TargetConfig:
 
     @property
     def lustre_target(self) -> str:
+        """Default kernel lustre target name.
+
+        Reads [kernel] default; falls back to legacy lustre_target key.
+        """
+        if self._kernel.has_option("kernel", "default"):
+            return self._kernel.get("kernel", "default")
         return self._kernel.get("kernel", "lustre_target")
 
     @property
     def default_kernel(self) -> str:
-        """The default kernel name (lustre_target from kernel.conf)."""
+        """The default kernel name (from kernel.conf [kernel] default)."""
         return self.lustre_target
+
+    def declared_kernels(self) -> list[str]:
+        """Return kernel target names declared in [kernels] section.
+
+        These are the lustre target names (short form, e.g. 5.14-rhel9.7)
+        configured in kernel.conf.  The default kernel is always included.
+        """
+        names: list[str] = []
+        if self._kernel.has_section("kernels"):
+            names.extend(self._kernel.options("kernels"))
+        default = self.default_kernel
+        if default not in names:
+            names.insert(0, default)
+        return names
 
     @property
     def kernel_config_overrides(self) -> dict[str, str]:
@@ -72,19 +92,52 @@ class TargetConfig:
         return overrides
 
     def resolve_kernel(self, kernel: str | None = None) -> str:
-        """Return the kernel name to use, falling back to the default."""
-        return kernel if kernel is not None else self.default_kernel
+        """Resolve a kernel name (short or full) to the built directory name.
+
+        Kernel directories are named <lustre_target>-<full_version>
+        (e.g. 5.14-rhel9.7-5.14.0-611.13.1.el9_7_lustre).
+
+        Resolution order:
+          1. If kernel is None, use the default (lustre_target from config).
+          2. Exact directory match.
+          3. Prefix match: scan for dirs starting with <kernel>-.
+             If multiple match, pick the lexicographically latest.
+          4. Return the name as-is (e.g. for a new build not yet on disk).
+        """
+        name = kernel if kernel is not None else self.default_kernel
+        kernels_dir = self.output_dir / "kernels"
+
+        if not kernels_dir.exists():
+            return name
+
+        # Exact match
+        if (kernels_dir / name).is_dir():
+            return name
+
+        # Prefix match (short name → full-version dir)
+        prefix = name + "-"
+        candidates = sorted(
+            d.name
+            for d in kernels_dir.iterdir()
+            if d.is_dir() and d.name.startswith(prefix)
+        )
+        if candidates:
+            return candidates[-1]
+
+        return name
 
     def kernel_output_dir(self, kernel: str | None = None) -> Path:
         """Return the output directory for a kernel build.
 
         When kernel is None, the default kernel (lustre_target) is used.
-        Kernels are stored under output/<target>/kernels/<kernel_name>/.
+        Kernels are stored under output/<target>/kernels/<name>-<version>/.
+        Accepts both short names (5.14-rhel9.7) and full names
+        (5.14-rhel9.7-5.14.0-611.13.1.el9_7_lustre).
         """
         return self.output_dir / "kernels" / self.resolve_kernel(kernel)
 
     def available_kernels(self) -> list[str]:
-        """Return a sorted list of kernel names that have been built."""
+        """Return a sorted list of built kernel directory names."""
         kernels_dir = self.output_dir / "kernels"
         if not kernels_dir.exists():
             return []
