@@ -170,6 +170,10 @@ def cmd_cluster(args: argparse.Namespace) -> None:
         "ssh": cmd_cluster_ssh,
         "exec": cmd_cluster_exec,
     }
+    if subcmd is None:
+        die(
+            "no cluster subcommand given (try: create, deploy, destroy, list, status, ssh, exec)"
+        )
     fn = dispatch.get(subcmd)
     if fn:
         fn(args)

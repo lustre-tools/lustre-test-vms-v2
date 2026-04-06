@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 
 from .models import (
     BRIDGE,
@@ -29,7 +29,7 @@ def run(
     return subprocess.run(cmd, **kwargs)
 
 
-def die(msg: str, code: int = EXIT_ERROR) -> None:
+def die(msg: str, code: int = EXIT_ERROR) -> NoReturn:
     print(f"error: {msg}", file=sys.stderr)
     sys.exit(code)
 
@@ -133,8 +133,20 @@ def kill_qemu(vm: VMInfo) -> None:
     if vm.pid > 0:
         try:
             os.kill(vm.pid, signal.SIGTERM)
-            time.sleep(0.2)
-            os.kill(vm.pid, signal.SIGKILL)
         except OSError:
             pass
+        else:
+            # Wait up to 5s for clean shutdown (qcow2 flush)
+            for _ in range(50):
+                try:
+                    os.kill(vm.pid, 0)
+                except OSError:
+                    break
+                time.sleep(0.1)
+            else:
+                # Still alive after 5s, force kill
+                try:
+                    os.kill(vm.pid, signal.SIGKILL)
+                except OSError:
+                    pass
     run(["ip", "link", "del", vm.tap], capture_output=True)

@@ -139,10 +139,11 @@ def cmd_create(args: argparse.Namespace) -> None:
     register_ssh_name(vm.name, vm.ip)
     deploy_ssh_key(vm.ip)
 
-    print(
-        f"name={vm.name} ip={vm.ip} pid={vm.pid} "
-        f"mdt_disks={vm.mdt_disks} ost_disks={vm.ost_disks}"
-    )
+    if not getattr(args, "_quiet", False):
+        print(
+            f"name={vm.name} ip={vm.ip} pid={vm.pid} "
+            f"mdt_disks={vm.mdt_disks} ost_disks={vm.ost_disks}"
+        )
 
 
 def cmd_start(args: argparse.Namespace) -> None:
@@ -262,6 +263,7 @@ def cmd_ensure(args: argparse.Namespace) -> None:
         kernel=getattr(args, "kernel", ""),
         mdt_disks=args.mdt_disks,
         ost_disks=args.ost_disks,
+        _quiet=True,
     )
     cmd_create(create_args)
     if args.json:

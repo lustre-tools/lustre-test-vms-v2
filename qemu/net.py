@@ -6,11 +6,28 @@ import hashlib
 import os
 import signal
 import subprocess
+import tempfile
 import time
 from pathlib import Path
 
 from .models import MARKER, SUBNET, VMInfo, VMNotFound
 from .process import die, run
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write content to path atomically via rename."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.chmod(tmp, path.stat().st_mode)
+        os.rename(tmp, str(path))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
 
 
 def ip_for_name(name: str) -> str:
@@ -123,7 +140,7 @@ def unregister_ssh_name(name: str) -> None:
     """Remove /etc/hosts and ~/.ssh/config entries for a VM."""
     marker = f"{MARKER}:{name}"
 
-    # /etc/hosts
+    # /etc/hosts (atomic write to avoid races with parallel destroys)
     hosts = Path("/etc/hosts")
     if hosts.exists():
         lines = [
@@ -131,7 +148,7 @@ def unregister_ssh_name(name: str) -> None:
             for line in hosts.read_text().splitlines()
             if marker not in line
         ]
-        hosts.write_text("\n".join(lines) + "\n")
+        _atomic_write(hosts, "\n".join(lines) + "\n")
         reload_dns()
 
     # ~/.ssh/config -- remove block
@@ -165,14 +182,20 @@ def deploy_ssh_key(ip: str) -> None:
         break
     if not pubkey:
         return
-    key_data = pubkey.read_text().strip()
-    run_ssh(
-        ip,
-        f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-        f"echo '{key_data}' >> ~/.ssh/authorized_keys && "
-        f"chmod 600 ~/.ssh/authorized_keys",
-        timeout=10,
-    )
+    key_data = pubkey.read_text().strip().replace("'", "'\\''")
+    try:
+        run_ssh(
+            ip,
+            f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+            f"echo '{key_data}' >> ~/.ssh/authorized_keys && "
+            f"chmod 600 ~/.ssh/authorized_keys",
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired:
+        print(
+            f"warning: SSH key deployment timed out for {ip}",
+            file=__import__("sys").stderr,
+        )
 
 
 def run_ssh(

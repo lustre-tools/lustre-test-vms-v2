@@ -29,7 +29,7 @@ from .commands import (
     cmd_stop,
     cmd_stop_all,
 )
-from .models import EXIT_NOT_FOUND, VMNotFound
+from .models import EXIT_NOT_FOUND, ClusterNotFound, VMNotFound
 from .process import die
 
 
@@ -360,5 +360,5 @@ def main() -> None:
             fn(args)
         else:
             parser.print_help()
-    except VMNotFound as e:
+    except (VMNotFound, ClusterNotFound) as e:
         die(str(e), EXIT_NOT_FOUND)

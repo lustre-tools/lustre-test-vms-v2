@@ -167,6 +167,12 @@ class VMNotFound(Exception):
         super().__init__(f"VM '{name}' not found")
 
 
+class ClusterNotFound(Exception):
+    def __init__(self, name: str) -> None:
+        self.name = name
+        super().__init__(f"cluster '{name}' not found")
+
+
 # ── Cluster data ─────────────────────────────────────────
 
 
@@ -219,9 +225,7 @@ class ClusterInfo:
     def load(name: str) -> ClusterInfo:
         path = SOCKETS / f"{name}.cluster"
         if not path.exists():
-            from .process import die
-
-            die(f"cluster '{name}' not found", EXIT_NOT_FOUND)
+            raise ClusterNotFound(name)
         data = json.loads(path.read_text())
         return ClusterInfo(name=data["name"], nodes=data["nodes"])
 
@@ -239,7 +243,6 @@ class ClusterInfo:
         from .process import die
 
         die("cluster has no MGS node")
-        raise AssertionError("unreachable")
 
     def mds_nodes(self) -> list[ClusterNode]:
         return [n for n in self.get_nodes() if n.is_mds]
