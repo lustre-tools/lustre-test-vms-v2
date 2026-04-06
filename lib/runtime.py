@@ -30,7 +30,7 @@ def _run_impl(full, timeout=None):
             text=True,
             timeout=timeout,
         )
-    except subprocess.TimeoutExpired as e:
+    except subprocess.TimeoutExpired:
         return {
             "ok": False,
             "output": f"Command timed out after {timeout}s",
@@ -52,12 +52,20 @@ def _run_impl(full, timeout=None):
 # VM management
 # ------------------------------------------------------------------
 
-def vm_create(name, target=None, vcpus=2, mem=4096,
-              mdt_disks=0, ost_disks=0):
+
+def vm_create(name, target=None, vcpus=2, mem=4096, mdt_disks=0, ost_disks=0):
     """Create a VM.  --target is accepted but currently ignored
     (vm.sh uses its own default kernel)."""
-    cmd = [VM_SH, "create", "--name", name,
-           "--vcpus", str(vcpus), "--mem", str(mem)]
+    cmd = [
+        VM_SH,
+        "create",
+        "--name",
+        name,
+        "--vcpus",
+        str(vcpus),
+        "--mem",
+        str(mem),
+    ]
     if mdt_disks:
         cmd += ["--mdt-disks", str(mdt_disks)]
     if ost_disks:
@@ -65,11 +73,9 @@ def vm_create(name, target=None, vcpus=2, mem=4096,
     return _run(cmd)
 
 
-def vm_ensure(name, target=None, vcpus=2, mem=4096,
-              mdt_disks=0, ost_disks=0):
+def vm_ensure(name, target=None, vcpus=2, mem=4096, mdt_disks=0, ost_disks=0):
     """Idempotent create-if-missing, start-if-stopped."""
-    cmd = [VM_SH, "ensure", name,
-           "--vcpus", str(vcpus), "--mem", str(mem)]
+    cmd = [VM_SH, "ensure", name, "--vcpus", str(vcpus), "--mem", str(mem)]
     if mdt_disks:
         cmd += ["--mdt-disks", str(mdt_disks)]
     if ost_disks:
@@ -133,8 +139,8 @@ def vm_dmesg(name, tail=100):
 # Deploy
 # ------------------------------------------------------------------
 
-def deploy(vm_name, build_path=".", mount=False,
-           kernel_modules=None):
+
+def deploy(vm_name, build_path=".", mount=False, kernel_modules=None):
     """Deploy Lustre to a VM.
 
     If kernel_modules is set (path to modules/ from kernel
@@ -166,44 +172,49 @@ def _deploy_kernel_modules(vm_name, lib_modules_path):
     <version>/ subdirectories.
     """
     # Rsync the modules tree into the VM
-    res = _run([VM_SH, "exec", "--timeout", "5",
-                vm_name, "mkdir -p /lib/modules"])
+    res = _run(
+        [VM_SH, "exec", "--timeout", "5", vm_name, "mkdir -p /lib/modules"]
+    )
     if not res["ok"]:
         return res
 
     # Use vm.sh cp-to for the module tree
     # First find the version directory
-    versions = [d for d in lib_modules_path.iterdir()
-                if d.is_dir()]
+    versions = [d for d in lib_modules_path.iterdir() if d.is_dir()]
     if not versions:
-        return {"ok": False,
-                "output": "No version dirs in "
-                          f"{lib_modules_path}",
-                "returncode": 1}
+        return {
+            "ok": False,
+            "output": f"No version dirs in {lib_modules_path}",
+            "returncode": 1,
+        }
 
     for ver_dir in versions:
         ver = ver_dir.name
         # Tar up the module directory and extract on VM
         # (more reliable than rsync for large trees)
-        res = _run_raw([
-            "bash", "-c",
-            f"sudo tar -C {lib_modules_path} -cf - {ver} "
-            f"| ssh root@$(sudo {VM_SH} exec --timeout 5 "
-            f"{vm_name} 'hostname -I' 2>/dev/null | "
-            f"tr -d '[:space:]') "
-            f"'tar -C /lib/modules -xf -'"
-        ], timeout=120)
+        res = _run_raw(
+            [
+                "bash",
+                "-c",
+                f"sudo tar -C {lib_modules_path} -cf - {ver} "
+                f"| ssh root@$(sudo {VM_SH} exec --timeout 5 "
+                f"{vm_name} 'hostname -I' 2>/dev/null | "
+                f"tr -d '[:space:]') "
+                f"'tar -C /lib/modules -xf -'",
+            ],
+            timeout=120,
+        )
         if not res["ok"]:
             return res
 
     # Run depmod for the VM's running kernel
-    return _run([VM_SH, "exec", "--timeout", "10",
-                 vm_name, "depmod -a"])
+    return _run([VM_SH, "exec", "--timeout", "10", vm_name, "depmod -a"])
 
 
 # ------------------------------------------------------------------
 # Cluster
 # ------------------------------------------------------------------
+
 
 def cluster_create(name, *node_specs):
     """node_specs: strings like 'mgs+mds:c1-srv:1'."""
@@ -217,8 +228,7 @@ def cluster_destroy(name):
 
 def cluster_deploy(name, build_path, mount=False):
     build_path = str(Path(build_path).resolve())
-    cmd = [VM_SH, "cluster", "deploy", name,
-           "--build", build_path]
+    cmd = [VM_SH, "cluster", "deploy", name, "--build", build_path]
     if mount:
         cmd.append("--mount")
     return _run(cmd, timeout=300)

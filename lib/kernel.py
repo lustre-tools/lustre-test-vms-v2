@@ -17,8 +17,9 @@ from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-ROCKY9_PKGS = ("https://dl.rockylinux.org/pub/rocky/9"
-               "/BaseOS/source/tree/Packages/k")
+ROCKY9_PKGS = (
+    "https://dl.rockylinux.org/pub/rocky/9/BaseOS/source/tree/Packages/k"
+)
 
 INNER_SCRIPT = Path(__file__).parent / "kernel-build-inner.sh"
 
@@ -27,17 +28,19 @@ INNER_SCRIPT = Path(__file__).parent / "kernel-build-inner.sh"
 # Lustre target file parsing
 # ------------------------------------------------------------------
 
+
 def parse_lustre_target(lustre_tree, lustre_target):
     """Parse a Lustre .target file for SRPM version info.
 
     Returns dict with keys: lnxmaj, lnxrel, srpm, series.
     """
-    target_file = (Path(lustre_tree) /
-                   "lustre/kernel_patches/targets" /
-                   f"{lustre_target}.target")
+    target_file = (
+        Path(lustre_tree)
+        / "lustre/kernel_patches/targets"
+        / f"{lustre_target}.target"
+    )
     if not target_file.exists():
-        raise FileNotFoundError(
-            f"Lustre target file not found: {target_file}")
+        raise FileNotFoundError(f"Lustre target file not found: {target_file}")
 
     text = target_file.read_text()
 
@@ -46,8 +49,7 @@ def parse_lustre_target(lustre_tree, lustre_target):
     series = _shell_var(text, "SERIES")
 
     if not lnxmaj or not lnxrel:
-        raise ValueError(
-            f"Cannot parse lnxmaj/lnxrel from {target_file}")
+        raise ValueError(f"Cannot parse lnxmaj/lnxrel from {target_file}")
 
     srpm = f"kernel-{lnxmaj}-{lnxrel}.src.rpm"
 
@@ -64,9 +66,7 @@ def _shell_var(text, name):
     # Match: VAR=value, VAR="value", or VAR='value'
     # Also handle shell expansions like ${lnxmaj}-${lnxrel}
     # by doing a second pass.
-    m = re.search(
-        rf'^{name}=["\']?([^"\'$\n]+)["\']?\s*$',
-        text, re.MULTILINE)
+    m = re.search(rf'^{name}=["\']?([^"\'$\n]+)["\']?\s*$', text, re.MULTILINE)
     if m:
         return m.group(1).strip()
     return None
@@ -75,6 +75,7 @@ def _shell_var(text, name):
 # ------------------------------------------------------------------
 # Lustre patch/config resolution
 # ------------------------------------------------------------------
+
 
 def resolve_lustre_files(lustre_tree, lustre_target, target_info):
     """Locate kernel config, series file, and patch files.
@@ -85,11 +86,12 @@ def resolve_lustre_files(lustre_tree, lustre_target, target_info):
     kp = lt / "lustre/kernel_patches"
 
     # Kernel config
-    config_glob = f"kernel-{target_info['lnxmaj']}-{lustre_target}-x86_64.config"
+    config_glob = (
+        f"kernel-{target_info['lnxmaj']}-{lustre_target}-x86_64.config"
+    )
     config_path = kp / "kernel_configs" / config_glob
     if not config_path.exists():
-        raise FileNotFoundError(
-            f"Kernel config not found: {config_path}")
+        raise FileNotFoundError(f"Kernel config not found: {config_path}")
 
     # Series file
     series_file = kp / "series" / target_info["series"]
@@ -101,8 +103,7 @@ def resolve_lustre_files(lustre_tree, lustre_target, target_info):
                 continue
             patch_path = kp / "patches" / line
             if not patch_path.exists():
-                raise FileNotFoundError(
-                    f"Patch not found: {patch_path}")
+                raise FileNotFoundError(f"Patch not found: {patch_path}")
             patches.append(patch_path)
 
     return {
@@ -115,6 +116,7 @@ def resolve_lustre_files(lustre_tree, lustre_target, target_info):
 # ------------------------------------------------------------------
 # SRPM download
 # ------------------------------------------------------------------
+
 
 def _find_srpm_url(srpm_name):
     """Find the download URL for a kernel SRPM."""
@@ -138,9 +140,8 @@ def download_srpm(srpm_name, cache_dir):
     log.info("Downloading SRPM: %s", url)
 
     subprocess.run(
-        ["curl", "-fSL", "--progress-bar",
-         "-o", str(cached), url],
-        check=True)
+        ["curl", "-fSL", "--progress-bar", "-o", str(cached), url], check=True
+    )
 
     return cached
 
@@ -149,21 +150,28 @@ def download_srpm(srpm_name, cache_dir):
 # Container build
 # ------------------------------------------------------------------
 
+
 def _ensure_container_image(target_config):
     """Build the container image if needed.
 
     Returns the image tag.
     """
     tag = f"ltvm-{target_config.name}-builder"
-    dockerfile = (target_config.target_dir /
-                  "container.Dockerfile")
+    dockerfile = target_config.target_dir / "container.Dockerfile"
 
     log.info("Building container image: %s", tag)
     subprocess.run(
-        ["podman", "build", "-t", tag,
-         "-f", str(dockerfile),
-         str(target_config.target_dir)],
-        check=True)
+        [
+            "podman",
+            "build",
+            "-t",
+            tag,
+            "-f",
+            str(dockerfile),
+            str(target_config.target_dir),
+        ],
+        check=True,
+    )
 
     return tag
 
@@ -171,6 +179,7 @@ def _ensure_container_image(target_config):
 # ------------------------------------------------------------------
 # Config fragment assembly
 # ------------------------------------------------------------------
+
 
 def _build_config_fragment(target_config):
     """Assemble the merged config fragment (common + target).
@@ -197,6 +206,7 @@ def _build_config_fragment(target_config):
 # Main build entry point
 # ------------------------------------------------------------------
 
+
 def build_kernel(target_config, lustre_tree, force=False):
     """Build a kernel for the given target.
 
@@ -213,26 +223,21 @@ def build_kernel(target_config, lustre_tree, force=False):
 
     # Staleness check
     if not force and not target_config.is_stale("kernel"):
-        log.info("Kernel is up to date (use force=True "
-                 "to rebuild)")
+        log.info("Kernel is up to date (use force=True to rebuild)")
         return kernel_status(target_config)
 
     # Parse Lustre target file
-    target_info = parse_lustre_target(
-        lustre_tree, lustre_target)
+    target_info = parse_lustre_target(lustre_tree, lustre_target)
     log.info("Kernel SRPM: %s", target_info["srpm"])
 
     # Resolve Lustre kernel config and patches
-    lustre_files = resolve_lustre_files(
-        lustre_tree, lustre_target, target_info)
+    lustre_files = resolve_lustre_files(lustre_tree, lustre_target, target_info)
     log.info("Kernel config: %s", lustre_files["config"])
-    log.info("Patches to apply: %d",
-             len(lustre_files["patches"]))
+    log.info("Patches to apply: %d", len(lustre_files["patches"]))
 
     # Download SRPM
     cache_dir = target_config.output_dir / "cache"
-    srpm_path = download_srpm(
-        target_info["srpm"], cache_dir)
+    srpm_path = download_srpm(target_info["srpm"], cache_dir)
 
     # Ensure container image
     image_tag = _ensure_container_image(target_config)
@@ -243,8 +248,7 @@ def build_kernel(target_config, lustre_tree, force=False):
     build_tree = kernel_out / "build-tree"
 
     # Prepare staging area with patches and config
-    with tempfile.TemporaryDirectory(
-            prefix="ltvm-kbuild-") as staging:
+    with tempfile.TemporaryDirectory(prefix="ltvm-kbuild-") as staging:
         staging = Path(staging)
 
         # Copy patches
@@ -256,50 +260,55 @@ def build_kernel(target_config, lustre_tree, force=False):
         # Write series file (just filenames)
         series_list = staging / "series"
         series_list.write_text(
-            "\n".join(p.name for p in
-                      lustre_files["patches"]) + "\n")
+            "\n".join(p.name for p in lustre_files["patches"]) + "\n"
+        )
 
         # Copy kernel config
-        shutil.copy2(lustre_files["config"],
-                     staging / "kernel.config")
+        shutil.copy2(lustre_files["config"], staging / "kernel.config")
 
         # Write config fragment
         frag = _build_config_fragment(target_config)
         (staging / "config.fragment").write_text(frag)
 
         # Copy inner build script
-        shutil.copy2(INNER_SCRIPT,
-                     staging / "kernel-build-inner.sh")
+        shutil.copy2(INNER_SCRIPT, staging / "kernel-build-inner.sh")
         os.chmod(staging / "kernel-build-inner.sh", 0o755)
 
         # Run build in container
         jobs = os.cpu_count() or 4
         container_cmd = [
-            "podman", "run", "--rm",
-            "-v", f"{srpm_path}:/input/kernel.src.rpm:ro,Z",
-            "-v", f"{staging}:/input/staging:ro,Z",
-            "-v", f"{kernel_out}:/output:Z",
-            "-v", "ltvm-ccache:/ccache:Z",
-            "-e", f"JOBS={jobs}",
-            "-e", f"LNXMAJ={target_info['lnxmaj']}",
-            "-e", f"LNXREL={target_info['lnxrel']}",
+            "podman",
+            "run",
+            "--rm",
+            "-v",
+            f"{srpm_path}:/input/kernel.src.rpm:ro,Z",
+            "-v",
+            f"{staging}:/input/staging:ro,Z",
+            "-v",
+            f"{kernel_out}:/output:Z",
+            "-v",
+            "ltvm-ccache:/ccache:Z",
+            "-e",
+            f"JOBS={jobs}",
+            "-e",
+            f"LNXMAJ={target_info['lnxmaj']}",
+            "-e",
+            f"LNXREL={target_info['lnxrel']}",
             image_tag,
-            "-c", "/input/staging/kernel-build-inner.sh",
+            "-c",
+            "/input/staging/kernel-build-inner.sh",
         ]
 
-        log.info("Starting kernel build in container "
-                 "(j%d)...", jobs)
+        log.info("Starting kernel build in container (j%d)...", jobs)
         subprocess.run(container_cmd, check=True)
 
     # Verify outputs
     vmlinux = kernel_out / "vmlinux"
     vmlinuz = kernel_out / "vmlinuz"
     if not vmlinux.exists():
-        raise RuntimeError(
-            "Build failed: vmlinux not found in output")
+        raise RuntimeError("Build failed: vmlinux not found in output")
     if not vmlinuz.exists():
-        raise RuntimeError(
-            "Build failed: vmlinuz not found in output")
+        raise RuntimeError("Build failed: vmlinuz not found in output")
 
     # Get kernel version from build tree
     krelease = "unknown"
@@ -335,13 +344,13 @@ def build_kernel(target_config, lustre_tree, force=False):
 # Status query
 # ------------------------------------------------------------------
 
+
 def kernel_status(target_config):
     """Return kernel build status for a target.
 
     Returns dict with version, build date, staleness, etc.
     """
-    meta_file = (target_config.kernel_output_dir() /
-                 "meta.json")
+    meta_file = target_config.kernel_output_dir() / "meta.json"
     if not meta_file.exists():
         return {
             "built": False,

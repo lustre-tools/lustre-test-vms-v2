@@ -15,12 +15,14 @@ from pathlib import Path
 # Ensure lib/ is importable
 sys.path.insert(0, str(Path(__file__).parent))
 
-from lib.config import TargetConfig, list_targets
-from lib.kernel import build_kernel, kernel_status
-from lib.image import build_image, image_status
-from lib.lustre import build_lustre, lustre_status
-from lib.validate import validate_target, print_results
 from lib import runtime
+from lib import setup as host_setup
+from lib.config import TargetConfig, list_targets
+from lib.image import build_image, image_status
+from lib.kernel import build_kernel, kernel_status
+from lib.lustre import build_lustre
+from lib.package import fetch_target, install_target, package_target
+from lib.validate import print_results, validate_target
 
 log = logging.getLogger("ltvm")
 
@@ -35,8 +37,9 @@ def _resolve_lustre_tree(arg_value):
         return None, f"Not a directory: {p}"
     kp = p / "lustre" / "kernel_patches"
     if not kp.is_dir():
-        return None, (f"{p} does not look like a Lustre tree "
-                       f"(no lustre/kernel_patches/)")
+        return None, (
+            f"{p} does not look like a Lustre tree (no lustre/kernel_patches/)"
+        )
     return p, None
 
 
@@ -49,6 +52,7 @@ EXIT_NOT_FOUND = 2
 # ------------------------------------------------------------------
 # Output helpers
 # ------------------------------------------------------------------
+
 
 def _output(data, use_json):
     """Print data as JSON or as a human-readable string."""
@@ -100,8 +104,11 @@ def _load_target(name, use_json):
         return TargetConfig(name), None
     except ValueError as e:
         targets = list_targets()
-        hint = (f"Available targets: {', '.join(targets)}"
-                if targets else "No targets configured")
+        hint = (
+            f"Available targets: {', '.join(targets)}"
+            if targets
+            else "No targets configured"
+        )
         code = _not_found(str(e), use_json, hint=hint)
         return None, code
 
@@ -110,10 +117,10 @@ def _load_target(name, use_json):
 # Container status helper
 # ------------------------------------------------------------------
 
+
 def _container_status(target_config):
     """Return status dict for the build container artifact."""
-    meta_file = (target_config.container_output_dir() /
-                 "meta.json")
+    meta_file = target_config.container_output_dir() / "meta.json"
     if not meta_file.exists():
         return {"built": False, "stale": True}
 
@@ -123,10 +130,11 @@ def _container_status(target_config):
 
 
 # ------------------------------------------------------------------
-# Subcommand: init
+# Subcommand: build-all
 # ------------------------------------------------------------------
 
-def cmd_init(args):
+
+def cmd_build_all(args):
     """Build container + kernel + image for a target.
 
     With --lustre-build, also builds the Lustre source tree
@@ -137,12 +145,14 @@ def cmd_init(args):
     if err is not None:
         return err
 
-    lustre_tree, err_msg = _resolve_lustre_tree(
-        args.lustre_tree)
+    lustre_tree, err_msg = _resolve_lustre_tree(args.lustre_tree)
     if err_msg:
-        return _error(err_msg, use_json,
-                       hint="Run from a Lustre tree, or pass "
-                            "--lustre-tree /path/to/lustre-release")
+        return _error(
+            err_msg,
+            use_json,
+            hint="Run from a Lustre tree, or pass "
+            "--lustre-tree /path/to/lustre-release",
+        )
 
     results = {}
 
@@ -176,18 +186,20 @@ def cmd_init(args):
     # 4. Lustre (optional -- only when --lustre-build is passed)
     if getattr(args, "lustre_build", False):
         if not use_json:
-            print(f"==> Building Lustre against "
-                  f"{args.target} kernel tree...")
+            print(f"==> Building Lustre against {args.target} kernel tree...")
         build_tree = tc.kernel_output_dir() / "build-tree"
         try:
+            container_tag = f"ltvm-build-{args.target}"
             lmeta = build_lustre(
-                lustre_tree, build_tree,
+                lustre_tree,
+                build_tree,
+                container_tag=container_tag,
                 enable_server=tc.server,
-                force=args.force)
+                force=args.force,
+            )
             results["lustre"] = lmeta
         except Exception as e:
-            return _error(
-                f"Lustre build failed: {e}", use_json)
+            return _error(f"Lustre build failed: {e}", use_json)
 
     _output(results, use_json)
     return EXIT_OK
@@ -197,22 +209,22 @@ def cmd_init(args):
 # Subcommand: build-container
 # ------------------------------------------------------------------
 
+
 def _do_build_container(target_config):
     """Run podman build for the build container and write meta."""
     tag = f"ltvm-build-{target_config.name}"
-    dockerfile = (target_config.target_dir /
-                  "container.Dockerfile")
+    dockerfile = target_config.target_dir / "container.Dockerfile"
     if not dockerfile.exists():
         raise FileNotFoundError(
-            f"No container.Dockerfile for target "
-            f"{target_config.name}")
+            f"No container.Dockerfile for target {target_config.name}"
+        )
 
     from lib.config import TARGETS_DIR
+
     subprocess.run(
-        ["podman", "build", "-t", tag,
-         "-f", str(dockerfile),
-         str(TARGETS_DIR)],
-        check=True)
+        ["podman", "build", "-t", tag, "-f", str(dockerfile), str(TARGETS_DIR)],
+        check=True,
+    )
 
     target_config.write_meta("container", image_tag=tag)
     return tag
@@ -241,25 +253,27 @@ def cmd_build_container(args):
 # Subcommand: build-kernel
 # ------------------------------------------------------------------
 
+
 def cmd_build_kernel(args):
     use_json = args.json
     tc, err = _load_target(args.target, use_json)
     if err is not None:
         return err
 
-    lustre_tree, err_msg = _resolve_lustre_tree(
-        args.lustre_tree)
+    lustre_tree, err_msg = _resolve_lustre_tree(args.lustre_tree)
     if err_msg:
-        return _error(err_msg, use_json,
-                       hint="Run from a Lustre tree, or pass "
-                            "--lustre-tree /path/to/lustre-release")
+        return _error(
+            err_msg,
+            use_json,
+            hint="Run from a Lustre tree, or pass "
+            "--lustre-tree /path/to/lustre-release",
+        )
 
     if not use_json:
         print(f"Building kernel for {args.target}...")
 
     try:
-        meta = build_kernel(
-            tc, lustre_tree, force=args.force)
+        meta = build_kernel(tc, lustre_tree, force=args.force)
     except Exception as e:
         return _error(f"Kernel build failed: {e}", use_json)
 
@@ -270,6 +284,7 @@ def cmd_build_kernel(args):
 # ------------------------------------------------------------------
 # Subcommand: build-image
 # ------------------------------------------------------------------
+
 
 def cmd_build_image(args):
     use_json = args.json
@@ -294,6 +309,7 @@ def cmd_build_image(args):
 # Subcommand: build-lustre
 # ------------------------------------------------------------------
 
+
 def cmd_build_lustre(args):
     use_json = args.json
     tc, err = _load_target(args.target, use_json)
@@ -301,18 +317,22 @@ def cmd_build_lustre(args):
         return err
 
     lustre_tree, err_msg = _resolve_lustre_tree(
-        getattr(args, "lustre_tree", None))
+        getattr(args, "lustre_tree", None)
+    )
     if err_msg:
-        return _error(err_msg, use_json,
-                      hint="Pass --lustre-tree or run from "
-                           "a Lustre source tree")
+        return _error(
+            err_msg,
+            use_json,
+            hint="Pass --lustre-tree or run from a Lustre source tree",
+        )
 
     build_tree = tc.kernel_output_dir() / "build-tree"
     if not build_tree.is_dir():
         return _error(
             f"Kernel build-tree not found: {build_tree}",
             use_json,
-            hint=f"Run: ltvm build-kernel {args.target}")
+            hint=f"Run: ltvm build-kernel {args.target}",
+        )
 
     # Server build follows target.conf unless overridden
     enable_server = tc.server
@@ -324,22 +344,27 @@ def cmd_build_lustre(args):
     extra = []
     if getattr(args, "configure", None):
         import shlex
+
         extra = shlex.split(args.configure)
 
     jobs = getattr(args, "jobs", None)
 
     if not use_json:
         srv = "server+client" if enable_server else "client-only"
-        print(f"Building Lustre ({srv}) against "
-              f"{args.target} kernel tree...")
+        print(f"Building Lustre ({srv}) against {args.target} kernel tree...")
+
+    container_tag = f"ltvm-build-{args.target}"
 
     try:
         meta = build_lustre(
-            lustre_tree, build_tree,
+            lustre_tree,
+            build_tree,
+            container_tag=container_tag,
             enable_server=enable_server,
             extra_configure=extra,
             jobs=jobs,
-            force=getattr(args, "force", False))
+            force=getattr(args, "force", False),
+        )
     except Exception as e:
         return _error(f"Lustre build failed: {e}", use_json)
 
@@ -348,8 +373,97 @@ def cmd_build_lustre(args):
 
 
 # ------------------------------------------------------------------
+# Subcommand: package
+# ------------------------------------------------------------------
+
+
+def cmd_package(args):
+    use_json = args.json
+    tc, err = _load_target(args.target, use_json)
+    if err is not None:
+        return err
+
+    if not use_json:
+        print(f"Packaging {args.target}...")
+
+    try:
+        tarball = package_target(
+            args.target, tc.output_dir, dest_dir=getattr(args, "output", None)
+        )
+    except Exception as e:
+        return _error(f"Package failed: {e}", use_json)
+
+    result = {"target": args.target, "tarball": str(tarball)}
+    _output(result, use_json)
+    return EXIT_OK
+
+
+# ------------------------------------------------------------------
+# Subcommand: fetch
+# ------------------------------------------------------------------
+
+
+def cmd_fetch(args):
+    use_json = args.json
+
+    if not args.url:
+        return _error(
+            "No URL specified",
+            use_json,
+            hint="ltvm fetch rocky9 --url <tarball-url>",
+        )
+
+    from lib.config import OUTPUT_DIR
+
+    if not use_json:
+        print(f"Fetching {args.target}...")
+
+    try:
+        target_dir = fetch_target(args.target, args.url, OUTPUT_DIR)
+    except Exception as e:
+        return _error(f"Fetch failed: {e}", use_json)
+
+    result = {"target": args.target, "path": str(target_dir)}
+    _output(result, use_json)
+    return EXIT_OK
+
+
+# ------------------------------------------------------------------
+# Subcommand: install
+# ------------------------------------------------------------------
+
+
+def cmd_install(args):
+    use_json = args.json
+    tc, err = _load_target(args.target, use_json)
+    if err is not None:
+        return err
+
+    if not tc.output_dir.is_dir():
+        return _error(
+            f"No artifacts for {args.target}",
+            use_json,
+            hint=f"Run 'ltvm fetch {args.target}' or "
+            f"'ltvm fetch {args.target}' or "
+            f"'ltvm build-all {args.target}' first",
+        )
+
+    if not use_json:
+        print(f"Installing {args.target} to system paths...")
+
+    try:
+        installed = install_target(args.target, tc.output_dir)
+    except Exception as e:
+        return _error(f"Install failed: {e}", use_json)
+
+    _output(installed, use_json)
+    return EXIT_OK
+
+
+# ------------------------------------------------------------------
 # Subcommand: shell
 # ------------------------------------------------------------------
+
 
 def cmd_shell(args):
     use_json = args.json
@@ -361,29 +475,39 @@ def cmd_shell(args):
     mount_path = Path(args.path).resolve()
 
     if not mount_path.is_dir():
-        return _error(
-            f"Mount path not found: {mount_path}",
-            use_json)
+        return _error(f"Mount path not found: {mount_path}", use_json)
 
     # Check container image exists
     result = subprocess.run(
-        ["podman", "image", "exists", tag],
-        capture_output=True)
+        ["podman", "image", "exists", tag], capture_output=True
+    )
     if result.returncode != 0:
         return _error(
             f"Container image {tag} not found",
             use_json,
-            hint=f"Run: ltvm build-container {args.target}")
+            hint=f"Run: ltvm build-container {args.target}",
+        )
 
     if not use_json:
-        print(f"Entering build container for {args.target} "
-              f"with {mount_path} mounted at /src...")
+        print(
+            f"Entering build container for {args.target} "
+            f"with {mount_path} mounted at /src..."
+        )
 
     rc = subprocess.run(
-        ["podman", "run", "--rm", "-it",
-         "-v", f"{mount_path}:/src:Z",
-         "-w", "/src",
-         tag, "bash"]).returncode
+        [
+            "podman",
+            "run",
+            "--rm",
+            "-it",
+            "-v",
+            f"{mount_path}:/src:Z",
+            "-w",
+            "/src",
+            tag,
+            "bash",
+        ]
+    ).returncode
 
     return rc
 
@@ -391,6 +515,7 @@ def cmd_shell(args):
 # ------------------------------------------------------------------
 # Subcommand: status
 # ------------------------------------------------------------------
+
 
 def cmd_status(args):
     use_json = args.json
@@ -419,8 +544,7 @@ def cmd_status(args):
         print(json.dumps(all_status, indent=2))
     else:
         # Table output
-        hdr = (f"{'Target':<12} {'Container':<14} "
-               f"{'Kernel':<26} {'Image':<14}")
+        hdr = f"{'Target':<12} {'Container':<14} {'Kernel':<26} {'Image':<14}"
         print(hdr)
         print("-" * len(hdr))
         for name, st in all_status.items():
@@ -445,6 +569,7 @@ def _artifact_label(status_dict):
 # ------------------------------------------------------------------
 # Subcommand: update
 # ------------------------------------------------------------------
+
 
 def cmd_update(args):
     use_json = args.json
@@ -473,8 +598,8 @@ def cmd_update(args):
                 updated.append("container")
             except Exception as e:
                 return _error(
-                    f"Container rebuild failed for {name}: {e}",
-                    use_json)
+                    f"Container rebuild failed for {name}: {e}", use_json
+                )
 
         if tc.is_stale("image"):
             if not use_json:
@@ -483,9 +608,7 @@ def cmd_update(args):
                 build_image(tc, force=True)
                 updated.append("image")
             except Exception as e:
-                return _error(
-                    f"Image rebuild failed for {name}: {e}",
-                    use_json)
+                return _error(f"Image rebuild failed for {name}: {e}", use_json)
 
         # Kernel requires --lustre-tree, skip if not stale
         if tc.is_stale("kernel"):
@@ -494,17 +617,19 @@ def cmd_update(args):
                     print(f"Rebuilding kernel for {name}...")
                 try:
                     build_kernel(
-                        tc, Path(args.lustre_tree).resolve(),
-                        force=True)
+                        tc, Path(args.lustre_tree).resolve(), force=True
+                    )
                     updated.append("kernel")
                 except Exception as e:
                     return _error(
-                        f"Kernel rebuild failed for {name}: {e}",
-                        use_json)
+                        f"Kernel rebuild failed for {name}: {e}", use_json
+                    )
             else:
                 if not use_json:
-                    print(f"Kernel for {name} is stale but "
-                          "--lustre-tree not provided, skipping")
+                    print(
+                        f"Kernel for {name} is stale but "
+                        "--lustre-tree not provided, skipping"
+                    )
 
         if not updated:
             results[name] = "up to date"
@@ -519,6 +644,7 @@ def cmd_update(args):
 # Runtime: VM management
 # ------------------------------------------------------------------
 
+
 def _runtime_result(res, use_json):
     """Print a runtime result dict and return the exit code."""
     if use_json:
@@ -527,8 +653,7 @@ def _runtime_result(res, use_json):
         if res["output"]:
             print(res["output"])
         if not res["ok"] and not res["output"]:
-            print("Command failed with no output",
-                  file=sys.stderr)
+            print("Command failed with no output", file=sys.stderr)
     return 0 if res["ok"] else res.get("returncode", EXIT_ERROR)
 
 
@@ -543,35 +668,29 @@ def cmd_vm(args):
 
     if action == "status":
         if not vm_args:
-            return _error("vm status requires a VM name",
-                          use_json)
-        res = runtime.vm_status(vm_args[0],
-                                json_output=use_json)
+            return _error("vm status requires a VM name", use_json)
+        res = runtime.vm_status(vm_args[0], json_output=use_json)
         return _runtime_result(res, use_json)
 
     if action in ("create", "ensure"):
         if not vm_args:
-            return _error(f"vm {action} requires a VM name",
-                          use_json)
+            return _error(f"vm {action} requires a VM name", use_json)
         name = vm_args[0]
         # Parse optional flags from vm_args[1:]
         kwargs = _parse_vm_kwargs(vm_args[1:])
-        fn = (runtime.vm_create if action == "create"
-              else runtime.vm_ensure)
+        fn = runtime.vm_create if action == "create" else runtime.vm_ensure
         res = fn(name, **kwargs)
         return _runtime_result(res, use_json)
 
     if action == "destroy":
         if not vm_args:
-            return _error("vm destroy requires a VM name",
-                          use_json)
+            return _error("vm destroy requires a VM name", use_json)
         res = runtime.vm_destroy(vm_args[0])
         return _runtime_result(res, use_json)
 
     if action in ("start", "stop", "restart"):
         if not vm_args:
-            return _error(f"vm {action} requires a VM name",
-                          use_json)
+            return _error(f"vm {action} requires a VM name", use_json)
         fn = getattr(runtime, f"vm_{action}")
         res = fn(vm_args[0])
         return _runtime_result(res, use_json)
@@ -610,24 +729,23 @@ def cmd_deploy(args):
     use_json = args.json
     build_path = Path(args.build).resolve()
     if not build_path.is_dir():
-        return _error(
-            f"Build path not found: {build_path}",
-            use_json)
+        return _error(f"Build path not found: {build_path}", use_json)
 
     # Auto-detect kernel modules from ltvm output
     kernel_modules = None
     target = getattr(args, "target", "rocky9")
-    mods_path = (Path(__file__).parent / "output" /
-                 target / "kernel" / "modules")
+    mods_path = Path(__file__).parent / "output" / target / "kernel" / "modules"
     if mods_path.is_dir():
         kernel_modules = str(mods_path)
         if not use_json:
-            print(f"  Deploying kernel modules from "
-                  f"{mods_path}")
+            print(f"  Deploying kernel modules from {mods_path}")
 
-    res = runtime.deploy(args.vm, str(build_path),
-                         mount=args.mount,
-                         kernel_modules=kernel_modules)
+    res = runtime.deploy(
+        args.vm,
+        str(build_path),
+        mount=args.mount,
+        kernel_modules=kernel_modules,
+    )
     return _runtime_result(res, use_json)
 
 
@@ -649,11 +767,10 @@ def cmd_cluster(args):
     if action == "create":
         if len(cargs) < 2:
             return _error(
-                "cluster create requires a name and "
-                "at least one node spec",
+                "cluster create requires a name and at least one node spec",
                 use_json,
-                hint="ltvm cluster create <name> "
-                     "<role:vm[:disks]> ...")
+                hint="ltvm cluster create <name> <role:vm[:disks]> ...",
+            )
         name = cargs[0]
         specs = cargs[1:]
         res = runtime.cluster_create(name, *specs)
@@ -661,17 +778,13 @@ def cmd_cluster(args):
 
     if action == "destroy":
         if not cargs:
-            return _error(
-                "cluster destroy requires a name",
-                use_json)
+            return _error("cluster destroy requires a name", use_json)
         res = runtime.cluster_destroy(cargs[0])
         return _runtime_result(res, use_json)
 
     if action == "deploy":
         if not cargs:
-            return _error(
-                "cluster deploy requires a name",
-                use_json)
+            return _error("cluster deploy requires a name", use_json)
         name = cargs[0]
         # Parse --build and --mount from remaining args
         build_path = "."
@@ -686,39 +799,35 @@ def cmd_cluster(args):
                 i += 1
             else:
                 i += 1
-        res = runtime.cluster_deploy(name, build_path,
-                                     mount=mount)
+        res = runtime.cluster_deploy(name, build_path, mount=mount)
         return _runtime_result(res, use_json)
 
     if action == "status":
         if not cargs:
-            return _error(
-                "cluster status requires a name",
-                use_json)
+            return _error("cluster status requires a name", use_json)
         res = runtime.cluster_status(cargs[0])
         return _runtime_result(res, use_json)
 
     if action == "exec":
         if len(cargs) < 3:
             return _error(
-                "cluster exec requires a name, role, "
-                "and command",
+                "cluster exec requires a name, role, and command",
                 use_json,
-                hint="ltvm cluster exec <name> <role> "
-                     "'<cmd>'")
+                hint="ltvm cluster exec <name> <role> '<cmd>'",
+            )
         name = cargs[0]
         role = cargs[1]
         cmd_str = " ".join(cargs[2:])
         res = runtime.cluster_exec(name, role, cmd_str)
         return _runtime_result(res, use_json)
 
-    return _error(f"Unknown cluster action: {action}",
-                  use_json)
+    return _error(f"Unknown cluster action: {action}", use_json)
 
 
 # ------------------------------------------------------------------
 # Subcommand: validate
 # ------------------------------------------------------------------
+
 
 def cmd_validate(args):
     """Run validation checks on a built target."""
@@ -729,15 +838,14 @@ def cmd_validate(args):
 
     lustre_tree = None
     if args.lustre_tree:
-        lustre_tree, err_msg = _resolve_lustre_tree(
-            args.lustre_tree)
+        lustre_tree, err_msg = _resolve_lustre_tree(args.lustre_tree)
         if err_msg:
             return _error(err_msg, use_json)
 
     try:
         summary = validate_target(
-            tc, lustre_tree=lustre_tree,
-            verbose=args.verbose)
+            tc, lustre_tree=lustre_tree, verbose=args.verbose
+        )
     except Exception as e:
         return _error(f"Validation failed: {e}", use_json)
 
@@ -750,193 +858,356 @@ def cmd_validate(args):
 
 
 # ------------------------------------------------------------------
+# Subcommand: setup
+# ------------------------------------------------------------------
+
+
+def cmd_setup(args):
+    """Run host setup (QEMU, network, scripts, SSH)."""
+    use_json = args.json
+
+    # Collect requested steps
+    explicit = []
+    if args.qemu:
+        explicit.append("qemu")
+    if args.network:
+        explicit.append("network")
+    if args.install:
+        explicit.append("install")
+    if args.ssh:
+        explicit.append("ssh")
+    steps = explicit or None  # None = all
+
+    if args.verify:
+        try:
+            results = host_setup.verify(subnet=args.subnet)
+        except Exception as e:
+            return _error(str(e), use_json)
+        if use_json:
+            print(json.dumps(results, indent=2))
+        else:
+            host_setup.print_verify(results)
+        return EXIT_OK if results["all_ok"] else EXIT_ERROR
+
+    try:
+        host_setup.run_setup(
+            steps=steps,
+            subnet=args.subnet,
+            force=getattr(args, "force", False),
+            json_output=use_json,
+        )
+    except RuntimeError as e:
+        return _error(str(e), use_json)
+    except Exception as e:
+        return _error(f"Setup failed: {e}", use_json)
+
+    return EXIT_OK
+
+
+# ------------------------------------------------------------------
 # Argument parsing
 # ------------------------------------------------------------------
+
 
 def build_parser():
     # Common flags accepted by all subcommands
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument(
-        "--json", action="store_true", default=False,
-        help="Machine-readable JSON output")
+        "--json",
+        action="store_true",
+        default=False,
+        help="Machine-readable JSON output",
+    )
     common.add_argument(
-        "-v", "--verbose", action="store_true",
-        help="Enable verbose logging")
+        "-v", "--verbose", action="store_true", help="Enable verbose logging"
+    )
 
     p = argparse.ArgumentParser(
         prog="ltvm",
         description="Lustre test VM infrastructure CLI",
-        parents=[common])
+        parents=[common],
+    )
 
     sub = p.add_subparsers(dest="command")
 
-    # -- init --
+    # -- setup --
     sp = sub.add_parser(
-        "init", parents=[common],
-        help="Build container + kernel + image for a target")
+        "setup",
+        parents=[common],
+        help="Set up host (QEMU, network, scripts, SSH)",
+    )
+    sp.add_argument(
+        "--qemu", action="store_true", help="Build and install QEMU only"
+    )
+    sp.add_argument(
+        "--network", action="store_true", help="Configure bridge + dnsmasq only"
+    )
+    sp.add_argument(
+        "--install",
+        action="store_true",
+        help="Install vm.sh + deploy-lustre.sh only",
+    )
+    sp.add_argument(
+        "--ssh", action="store_true", help="Configure host SSH only"
+    )
+    sp.add_argument(
+        "--verify",
+        action="store_true",
+        help="Check existing setup (no changes)",
+    )
+    sp.add_argument(
+        "--force",
+        action="store_true",
+        help="Force rebuild of installed components",
+    )
+    sp.add_argument(
+        "--subnet",
+        default="192.168.100",
+        help="Bridge subnet (default: 192.168.100)",
+    )
+    sp.set_defaults(func=cmd_setup)
+
+    # -- build-all --
+    sp = sub.add_parser(
+        "build-all",
+        parents=[common],
+        help="Build container + kernel + image from scratch",
+    )
     sp.add_argument("target")
     sp.add_argument(
-        "--lustre-tree",
-        help="Path to Lustre source tree (default: cwd)")
+        "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
+    )
     sp.add_argument(
-        "--lustre-build", action="store_true",
-        help="Also build Lustre against the target kernel "
-             "(full pipeline)")
+        "--lustre-build",
+        action="store_true",
+        help="Also build Lustre against the target kernel",
+    )
     sp.add_argument(
-        "--force", action="store_true",
-        help="Rebuild even if artifacts are current")
-    sp.set_defaults(func=cmd_init)
+        "--force",
+        action="store_true",
+        help="Rebuild even if artifacts are current",
+    )
+    sp.set_defaults(func=cmd_build_all)
 
     # -- build-container --
     sp = sub.add_parser(
-        "build-container", parents=[common],
-        help="Build the build container for a target")
+        "build-container",
+        parents=[common],
+        help="Build the build container for a target",
+    )
     sp.add_argument("target")
     sp.set_defaults(func=cmd_build_container)
 
     # -- build-kernel --
     sp = sub.add_parser(
-        "build-kernel", parents=[common],
-        help="Build the kernel for a target")
+        "build-kernel", parents=[common], help="Build the kernel for a target"
+    )
     sp.add_argument("target")
     sp.add_argument(
-        "--lustre-tree",
-        help="Path to Lustre source tree (default: cwd)")
+        "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
+    )
     sp.add_argument(
-        "--force", action="store_true",
-        help="Rebuild even if inputs unchanged")
+        "--force", action="store_true", help="Rebuild even if inputs unchanged"
+    )
     sp.set_defaults(func=cmd_build_kernel)
 
     # -- build-image --
     sp = sub.add_parser(
-        "build-image", parents=[common],
-        help="Build the VM base image for a target")
+        "build-image",
+        parents=[common],
+        help="Build the VM base image for a target",
+    )
     sp.add_argument("target")
     sp.add_argument(
-        "--force", action="store_true",
-        help="Rebuild even if inputs unchanged")
+        "--force", action="store_true", help="Rebuild even if inputs unchanged"
+    )
     sp.set_defaults(func=cmd_build_image)
 
     # -- build-lustre --
     sp = sub.add_parser(
-        "build-lustre", parents=[common],
-        help="Build a Lustre source tree against the "
-             "target kernel build-tree")
-    sp.add_argument("target", nargs="?", default="rocky9",
-                    help="Target (default: rocky9)")
+        "build-lustre",
+        parents=[common],
+        help="Build a Lustre source tree against the target kernel build-tree",
+    )
     sp.add_argument(
-        "--lustre-tree",
-        help="Path to Lustre source tree (default: cwd)")
+        "target", nargs="?", default="rocky9", help="Target (default: rocky9)"
+    )
     sp.add_argument(
-        "--enable-server", action="store_true", default=False,
-        help="Force --enable-server (default: per target.conf)")
+        "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
+    )
     sp.add_argument(
-        "--disable-server", action="store_true", default=False,
-        help="Force --disable-server")
+        "--enable-server",
+        action="store_true",
+        default=False,
+        help="Force --enable-server (default: per target.conf)",
+    )
     sp.add_argument(
-        "--configure",
-        help="Extra configure arguments (quoted string)")
+        "--disable-server",
+        action="store_true",
+        default=False,
+        help="Force --disable-server",
+    )
     sp.add_argument(
-        "--jobs", type=int, default=None,
-        help="Parallel jobs (default: nproc)")
+        "--configure", help="Extra configure arguments (quoted string)"
+    )
     sp.add_argument(
-        "--force", action="store_true",
-        help="Clean and reconfigure before building")
+        "--jobs", type=int, default=None, help="Parallel jobs (default: nproc)"
+    )
+    sp.add_argument(
+        "--force",
+        action="store_true",
+        help="Clean and reconfigure before building",
+    )
     sp.set_defaults(func=cmd_build_lustre)
+
+    # -- package --
+    sp = sub.add_parser(
+        "package",
+        parents=[common],
+        help="Create a distributable tarball of target "
+        "artifacts (kernel + image)",
+    )
+    sp.add_argument("target")
+    sp.add_argument(
+        "--output",
+        default=None,
+        help="Output directory for tarball (default: output/)",
+    )
+    sp.set_defaults(func=cmd_package)
+
+    # -- fetch --
+    sp = sub.add_parser(
+        "fetch",
+        parents=[common],
+        help="Download a pre-built target package (kernel + image)",
+    )
+    sp.add_argument("target")
+    sp.add_argument("--url", required=True, help="URL of the target tarball")
+    sp.set_defaults(func=cmd_fetch)
+
+    # -- install --
+    sp = sub.add_parser(
+        "install",
+        parents=[common],
+        help="Install kernel + image to system paths for vm.sh (requires sudo)",
+    )
+    sp.add_argument("target")
+    sp.set_defaults(func=cmd_install)
 
     # -- shell --
     sp = sub.add_parser(
-        "shell", parents=[common],
-        help="Enter build container with source mounted")
+        "shell",
+        parents=[common],
+        help="Enter build container with source mounted",
+    )
     sp.add_argument("target")
     sp.add_argument(
-        "path", nargs="?", default=".",
-        help="Path to mount in container (default: cwd)")
+        "path",
+        nargs="?",
+        default=".",
+        help="Path to mount in container (default: cwd)",
+    )
     sp.set_defaults(func=cmd_shell)
 
     # -- status --
     sp = sub.add_parser(
-        "status", parents=[common],
-        help="Show build status of all targets")
+        "status", parents=[common], help="Show build status of all targets"
+    )
     sp.set_defaults(func=cmd_status)
 
     # -- update --
     sp = sub.add_parser(
-        "update", parents=[common],
-        help="Rebuild stale artifacts for a target")
+        "update", parents=[common], help="Rebuild stale artifacts for a target"
+    )
     sp.add_argument(
-        "target", nargs="?", default=None,
-        help="Target to update (required unless --all)")
+        "target",
+        nargs="?",
+        default=None,
+        help="Target to update (required unless --all)",
+    )
+    sp.add_argument("--all", action="store_true", help="Update all targets")
     sp.add_argument(
-        "--all", action="store_true",
-        help="Update all targets")
-    sp.add_argument(
-        "--lustre-tree",
-        help="Lustre source tree (needed for kernel rebuilds)")
+        "--lustre-tree", help="Lustre source tree (needed for kernel rebuilds)"
+    )
     sp.set_defaults(func=cmd_update)
 
     # -- validate --
     sp = sub.add_parser(
-        "validate", parents=[common],
-        help="Validate a built target (boot, packages, "
-             "optional Lustre deploy)")
+        "validate",
+        parents=[common],
+        help="Validate a built target (boot, packages, optional Lustre deploy)",
+    )
     sp.add_argument("target")
     sp.add_argument(
         "--lustre-tree",
-        help="Path to Lustre build tree "
-             "(enables deploy+mount checks)")
+        help="Path to Lustre build tree (enables deploy+mount checks)",
+    )
     sp.set_defaults(func=cmd_validate)
 
     # -- vm --
     sp = sub.add_parser(
-        "vm", parents=[common],
-        help="VM management (create/ensure/destroy/...)")
+        "vm", parents=[common], help="VM management (create/ensure/destroy/...)"
+    )
     sp.add_argument(
         "action",
-        choices=["create", "ensure", "destroy",
-                 "start", "stop", "restart",
-                 "list", "status"],
-        help="VM action")
+        choices=[
+            "create",
+            "ensure",
+            "destroy",
+            "start",
+            "stop",
+            "restart",
+            "list",
+            "status",
+        ],
+        help="VM action",
+    )
     sp.add_argument("vm_args", nargs="*")
     sp.set_defaults(func=cmd_vm)
 
     # -- deploy --
     sp = sub.add_parser(
-        "deploy", parents=[common],
-        help="Deploy Lustre to a VM")
+        "deploy", parents=[common], help="Deploy Lustre to a VM"
+    )
     sp.add_argument("vm", help="VM name")
     sp.add_argument(
-        "--build", default=".",
-        help="Lustre build tree (default: cwd)")
+        "--build", default=".", help="Lustre build tree (default: cwd)"
+    )
     sp.add_argument(
-        "--mount", action="store_true",
-        help="Mount filesystem after deploy")
+        "--mount", action="store_true", help="Mount filesystem after deploy"
+    )
     sp.add_argument(
-        "--target", default="rocky9",
-        help="Target OS for kernel modules (default: rocky9)")
+        "--target",
+        default="rocky9",
+        help="Target OS for kernel modules (default: rocky9)",
+    )
     sp.set_defaults(func=cmd_deploy)
 
     # -- exec --
     sp = sub.add_parser(
-        "exec", parents=[common],
-        help="Execute a command in a VM")
+        "exec", parents=[common], help="Execute a command in a VM"
+    )
     sp.add_argument("vm", help="VM name")
     sp.add_argument(
-        "--timeout", type=int, default=120,
-        help="Command timeout in seconds (default: 120)")
-    sp.add_argument("cmd", nargs=argparse.REMAINDER,
-                    help="Command to run")
+        "--timeout",
+        type=int,
+        default=120,
+        help="Command timeout in seconds (default: 120)",
+    )
+    sp.add_argument("cmd", nargs=argparse.REMAINDER, help="Command to run")
     sp.set_defaults(func=cmd_exec)
 
     # -- cluster --
     sp = sub.add_parser(
-        "cluster", parents=[common],
-        help="Cluster management (create/destroy/...)")
+        "cluster",
+        parents=[common],
+        help="Cluster management (create/destroy/...)",
+    )
     sp.add_argument(
         "action",
-        choices=["create", "destroy", "deploy",
-                 "status", "exec"],
-        help="Cluster action")
+        choices=["create", "destroy", "deploy", "status", "exec"],
+        help="Cluster action",
+    )
     sp.add_argument("cluster_args", nargs="*")
     sp.set_defaults(func=cmd_cluster)
 
@@ -947,14 +1218,13 @@ def build_parser():
 # Main
 # ------------------------------------------------------------------
 
+
 def main():
     parser = build_parser()
     args = parser.parse_args()
 
     level = logging.DEBUG if args.verbose else logging.INFO
-    logging.basicConfig(
-        level=level,
-        format="%(name)s: %(message)s")
+    logging.basicConfig(level=level, format="%(name)s: %(message)s")
 
     if not args.command:
         parser.print_help()
@@ -966,7 +1236,8 @@ def main():
             return _error(
                 "update requires a target or --all",
                 args.json,
-                hint="ltvm update <target> or ltvm update --all")
+                hint="ltvm update <target> or ltvm update --all",
+            )
 
     return args.func(args)
 

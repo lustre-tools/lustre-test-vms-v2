@@ -19,8 +19,7 @@ class TargetConfig:
         self.output_dir = OUTPUT_DIR / name
 
         if not self.target_dir.exists():
-            raise ValueError(f"Unknown target: {name} "
-                             f"(no {self.target_dir})")
+            raise ValueError(f"Unknown target: {name} (no {self.target_dir})")
 
         self._target = configparser.ConfigParser()
         self._target.read(self.target_dir / "target.conf")
@@ -85,16 +84,13 @@ class TargetConfig:
             dockerfile = self.target_dir / "container.Dockerfile"
             if dockerfile.exists():
                 h.update(dockerfile.read_bytes())
-            h.update(
-                self._hash_package_lists("dev").encode())
+            h.update(self._hash_package_lists("dev").encode())
 
         elif artifact == "kernel":
             h.update(self.lustre_target.encode())
-            for k, v in sorted(
-                    self.kernel_config_overrides.items()):
+            for k, v in sorted(self.kernel_config_overrides.items()):
                 h.update(f"{k}={v}".encode())
-            common_frag = (TARGETS_DIR / "common" /
-                           "kernel-config.fragment")
+            common_frag = TARGETS_DIR / "common" / "kernel-config.fragment"
             if common_frag.exists():
                 h.update(common_frag.read_bytes())
 
@@ -102,25 +98,19 @@ class TargetConfig:
             dockerfile = self.target_dir / "image.Dockerfile"
             if dockerfile.exists():
                 h.update(dockerfile.read_bytes())
-            h.update(
-                self._hash_package_lists("base", "test",
-                                         "debug").encode())
+            h.update(self._hash_package_lists("base", "test", "debug").encode())
             if self.server:
-                h.update(
-                    self._hash_package_lists(
-                        "server").encode())
+                h.update(self._hash_package_lists("server").encode())
 
         return h.hexdigest()[:16]
 
     def is_stale(self, artifact):
         """Check if an artifact needs rebuilding."""
-        meta_file = (self.output_dir / artifact /
-                     "meta.json")
+        meta_file = self.output_dir / artifact / "meta.json"
         if not meta_file.exists():
             return True
         meta = json.loads(meta_file.read_text())
-        return (meta.get("input_hash") !=
-                self.input_hash(artifact))
+        return meta.get("input_hash") != self.input_hash(artifact)
 
     def write_meta(self, artifact, **extra):
         """Write build metadata after successful build."""
@@ -131,14 +121,12 @@ class TargetConfig:
             "input_hash": self.input_hash(artifact),
             **extra,
         }
-        (out_dir / "meta.json").write_text(
-            json.dumps(meta, indent=2) + "\n")
+        (out_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
 
     def _hash_package_lists(self, *roles):
         parts = []
         for role in roles:
-            common = (TARGETS_DIR / "common" /
-                      f"packages-{role}.txt")
+            common = TARGETS_DIR / "common" / f"packages-{role}.txt"
             if common.exists():
                 parts.append(common.read_text())
             per_os = self.target_dir / f"packages-{role}.txt"

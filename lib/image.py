@@ -13,7 +13,6 @@ import subprocess
 import tempfile
 import time
 from datetime import datetime, timezone
-from pathlib import Path
 
 from .config import TARGETS_DIR
 
@@ -27,7 +26,8 @@ def _run(cmd, **kwargs):
     """Run a command, logging it and raising on failure."""
     log.info("Running: %s", " ".join(str(c) for c in cmd))
     return subprocess.run(
-        cmd, check=True,
+        cmd,
+        check=True,
         capture_output=kwargs.pop("capture_output", True),
         text=kwargs.pop("text", True),
         **kwargs,
@@ -36,14 +36,11 @@ def _run(cmd, **kwargs):
 
 def _check_mke2fs():
     """Verify mke2fs supports -d (populate from directory)."""
-    result = subprocess.run(
-        ["mke2fs", "-V"],
-        capture_output=True, text=True)
+    result = subprocess.run(["mke2fs", "-V"], capture_output=True, text=True)
     # -d support was added in e2fsprogs 1.43 (2016)
     version_str = result.stderr + result.stdout
     if "mke2fs" not in version_str:
-        raise RuntimeError(
-            "mke2fs not found; install e2fsprogs")
+        raise RuntimeError("mke2fs not found; install e2fsprogs")
 
 
 def _container_image_tag(target_config):
@@ -65,9 +62,10 @@ def build_image(target_config, force=False):
     _check_mke2fs()
 
     if not force and not target_config.is_stale("image"):
-        log.info("Image for %s is up to date, skipping "
-                 "(use force=True to rebuild)",
-                 target_config.name)
+        log.info(
+            "Image for %s is up to date, skipping (use force=True to rebuild)",
+            target_config.name,
+        )
         return target_config.image_output_dir() / "base.ext4"
 
     out_dir = target_config.image_output_dir()
@@ -75,22 +73,20 @@ def build_image(target_config, force=False):
     image_path = out_dir / "base.ext4"
 
     tag = _container_image_tag(target_config)
-    dockerfile = (target_config.target_dir /
-                  "image.Dockerfile")
+    dockerfile = target_config.target_dir / "image.Dockerfile"
     if not dockerfile.exists():
         raise FileNotFoundError(
-            f"No image.Dockerfile for target "
-            f"{target_config.name}")
+            f"No image.Dockerfile for target {target_config.name}"
+        )
 
     t0 = time.monotonic()
 
     # ── Step 1: Build container image ──
     log.info("Building container image %s ...", tag)
-    _run(["podman", "build",
-          "-t", tag,
-          "-f", str(dockerfile),
-          str(TARGETS_DIR)],
-         capture_output=False)
+    _run(
+        ["podman", "build", "-t", tag, "-f", str(dockerfile), str(TARGETS_DIR)],
+        capture_output=False,
+    )
 
     # ── Step 2: Export to ext4 ──
     log.info("Exporting container to ext4 ...")
@@ -110,8 +106,7 @@ def build_image(target_config, force=False):
         packages=pkg_manifest,
     )
 
-    log.info("Image built: %s (%.0f MiB, %.0fs)",
-             image_path, size_mb, elapsed)
+    log.info("Image built: %s (%.0f MiB, %.0fs)", image_path, size_mb, elapsed)
     return image_path
 
 
@@ -135,36 +130,40 @@ def _export_to_ext4(container_tag, image_path):
         result = _run(["podman", "create", container_tag])
         container_id = result.stdout.strip()
 
-        log.info("Extracting container %s and building "
-                 "ext4 under fakeroot ...",
-                 container_id[:12])
+        log.info(
+            "Extracting container %s and building ext4 under fakeroot ...",
+            container_id[:12],
+        )
 
         # Create ext4 image file path
-        tmpfile = tempfile.mktemp(
-            suffix=".ext4", prefix="ltvm-image-")
+        tmpfile = tempfile.mktemp(suffix=".ext4", prefix="ltvm-image-")
 
         # Use fakeroot to preserve root ownership.
         # Without it, extracted files would be owned by
         # our uid, and mke2fs -d bakes that into the ext4.
         # podman runs OUTSIDE fakeroot (it checks real uid),
         # tar + mke2fs run INSIDE fakeroot.
-        _run([
-            "bash", "-c",
-            f"podman export {container_id} "
-            f"| fakeroot bash -c '"
-            f"tar -C {tmpdir} -xf - --exclude=dev/* "
-            f"&& mkdir -p {tmpdir}/dev/pts {tmpdir}/dev/shm "
-            f"{tmpdir}/dev/mqueue "
-            f"&& find {tmpdir} ! -readable -exec "
-            f"chmod u+r {{}} + 2>/dev/null; "
-            f"mke2fs -t ext4 -d {tmpdir} -b 4096 "
-            f"-L rootfs {tmpfile} {_IMAGE_SIZE_MB}M'"
-        ], capture_output=False)
+        _run(
+            [
+                "bash",
+                "-c",
+                f"podman export {container_id} "
+                f"| fakeroot bash -c '"
+                f"tar -C {tmpdir} -xf - --exclude=dev/* "
+                f"&& mkdir -p {tmpdir}/dev/pts {tmpdir}/dev/shm "
+                f"{tmpdir}/dev/mqueue "
+                f"&& find {tmpdir} ! -readable -exec "
+                f"chmod u+r {{}} + 2>/dev/null; "
+                f"mke2fs -t ext4 -d {tmpdir} -b 4096 "
+                f"-L rootfs {tmpfile} {_IMAGE_SIZE_MB}M'",
+            ],
+            capture_output=False,
+        )
 
         # Remove the podman container
         subprocess.run(
-            ["podman", "rm", "-f", container_id],
-            capture_output=True)
+            ["podman", "rm", "-f", container_id], capture_output=True
+        )
         container_id = None
 
         # Shrink to minimum size
@@ -181,8 +180,8 @@ def _export_to_ext4(container_tag, image_path):
     finally:
         if container_id:
             subprocess.run(
-                ["podman", "rm", "-f", container_id],
-                capture_output=True)
+                ["podman", "rm", "-f", container_id], capture_output=True
+            )
         if tmpdir and os.path.exists(tmpdir):
             shutil.rmtree(tmpdir, ignore_errors=True)
         if tmpfile and os.path.exists(tmpfile):
@@ -192,11 +191,18 @@ def _export_to_ext4(container_tag, image_path):
 def _get_package_manifest(container_tag):
     """Get installed RPM list from the container image."""
     try:
-        result = _run([
-            "podman", "run", "--rm", container_tag,
-            "rpm", "-qa", "--queryformat",
-            "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\\n",
-        ])
+        result = _run(
+            [
+                "podman",
+                "run",
+                "--rm",
+                container_tag,
+                "rpm",
+                "-qa",
+                "--queryformat",
+                "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\\n",
+            ]
+        )
         packages = sorted(result.stdout.strip().splitlines())
         return packages
     except subprocess.CalledProcessError:

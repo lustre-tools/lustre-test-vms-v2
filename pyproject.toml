@@ -1,0 +1,29 @@
+[project]
+name = "lustre-test-vms"
+version = "0.1.0"
+description = "Lustre test VM infrastructure"
+requires-python = ">=3.9"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15",
+]
+
+[tool.ruff]
+# ltvm and qemu/vm.sh are Python despite lacking .py extension
+extend-include = ["ltvm", "qemu/vm.sh"]
+exclude = ["output/"]
+# Format targets 80; lint allows up to 100
+line-length = 80
+
+[tool.ruff.lint]
+select = [
+    "F",     # pyflakes
+    "E",     # pycodestyle errors
+    "W",     # pycodestyle warnings
+    "I",     # isort
+    "UP",    # pyupgrade
+]
+pycodestyle.max-line-length = 100
+
+[tool.ruff.format]

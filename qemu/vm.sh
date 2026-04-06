@@ -15,9 +15,8 @@ import signal
 import subprocess
 import sys
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 # ── constants ────────────────────────────────────────────
 
@@ -43,6 +42,7 @@ EXIT_UNREACHABLE = 4
 
 # ── VM data ──────────────────────────────────────────────
 
+
 @dataclass
 class VMInfo:
     name: str
@@ -54,7 +54,7 @@ class VMInfo:
     mem: int = 2048
     mdt_disks: int = 0
     ost_disks: int = 0
-    image: str = ""   # base image path; empty = default (rocky9)
+    image: str = ""  # base image path; empty = default (rocky9)
     kernel: str = ""  # kernel path; empty = default (vmlinux)
 
     @property
@@ -95,8 +95,7 @@ class VMInfo:
         self.pid = pid
         if self.info_path.exists():
             text = self.info_path.read_text()
-            text = re.sub(r"^PID=.*$", f"PID={pid}", text,
-                          flags=re.MULTILINE)
+            text = re.sub(r"^PID=.*$", f"PID={pid}", text, flags=re.MULTILINE)
             self.info_path.write_text(text)
 
     @staticmethod
@@ -139,6 +138,7 @@ class VMNotFound(Exception):
 
 # ── helpers ──────────────────────────────────────────────
 
+
 def ip_for_name(name: str) -> str:
     h = hashlib.md5(name.encode()).hexdigest()[:4]
     octet = (int(h, 16) % 244) + 10
@@ -174,16 +174,27 @@ def run(cmd, **kwargs):
     return subprocess.run(cmd, **kwargs)
 
 
-def run_ssh(ip: str, command: str, timeout: int = 120) -> subprocess.CompletedProcess:
+def run_ssh(
+    ip: str, command: str, timeout: int = 120
+) -> subprocess.CompletedProcess:
     """Run a command on a VM via SSH with timeout."""
     ssh_cmd = [
-        "sshpass", "-p", "initial0", "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "ConnectTimeout=5",
-        "-o", "ServerAliveInterval=1",
-        "-o", "ServerAliveCountMax=2",
-        "-o", "LogLevel=ERROR",
+        "sshpass",
+        "-p",
+        "initial0",
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "ConnectTimeout=5",
+        "-o",
+        "ServerAliveInterval=1",
+        "-o",
+        "ServerAliveCountMax=2",
+        "-o",
+        "LogLevel=ERROR",
         f"root@{ip}",
         command,
     ]
@@ -230,6 +241,7 @@ def die(msg: str, code: int = EXIT_ERROR):
 
 # ── SSH name / key management ────────────────────────────
 
+
 def _real_user_ssh_dir() -> tuple:
     real_user = os.environ.get("SUDO_USER", "root")
     if real_user == "root":
@@ -274,6 +286,7 @@ def register_ssh_name(name: str, ip: str):
             f.write(block)
         ssh_cfg.chmod(0o600)
         import pwd
+
         try:
             pw = pwd.getpwnam(real_user)
             os.chown(ssh_cfg, pw.pw_uid, pw.pw_gid)
@@ -288,8 +301,11 @@ def unregister_ssh_name(name: str):
     # /etc/hosts
     hosts = Path("/etc/hosts")
     if hosts.exists():
-        lines = [l for l in hosts.read_text().splitlines()
-                 if marker not in l]
+        lines = [
+            line
+            for line in hosts.read_text().splitlines()
+            if marker not in line
+        ]
         hosts.write_text("\n".join(lines) + "\n")
         reload_dns()
 
@@ -326,11 +342,13 @@ def deploy_ssh_key(ip: str):
     if not pubkey:
         return
     key_data = pubkey.read_text().strip()
-    run_ssh(ip,
-            f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
-            f"echo '{key_data}' >> ~/.ssh/authorized_keys && "
-            f"chmod 600 ~/.ssh/authorized_keys",
-            timeout=10)
+    run_ssh(
+        ip,
+        f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
+        f"echo '{key_data}' >> ~/.ssh/authorized_keys && "
+        f"chmod 600 ~/.ssh/authorized_keys",
+        timeout=10,
+    )
 
 
 def wait_for_ssh(ip: str, max_wait: int = 30) -> bool:
@@ -349,6 +367,7 @@ def wait_for_ssh(ip: str, max_wait: int = 30) -> bool:
 
 # ── QEMU launch / kill ───────────────────────────────────
 
+
 def launch_qemu(vm: VMInfo):
     """Launch QEMU for an existing VM. Recreates TAP device."""
     if is_running(vm):
@@ -366,8 +385,7 @@ def launch_qemu(vm: VMInfo):
 
     # Recreate TAP
     run(["ip", "link", "del", vm.tap], capture_output=True)
-    run(["ip", "tuntap", "add", "dev", vm.tap, "mode", "tap"],
-        check=True)
+    run(["ip", "tuntap", "add", "dev", vm.tap, "mode", "tap"], check=True)
     run(["ip", "link", "set", vm.tap, "master", BRIDGE], check=True)
     run(["ip", "link", "set", vm.tap, "up"], check=True)
 
@@ -375,26 +393,38 @@ def launch_qemu(vm: VMInfo):
 
     qemu_args = [
         QEMU,
-        "-name", vm.name,
-        "-machine", "microvm,accel=kvm,pit=off,pic=off,rtc=on",
-        "-cpu", "host",
-        "-smp", str(vm.vcpus),
-        "-m", str(vm.mem),
-        "-kernel", str(kernel),
-        "-append", boot_args,
+        "-name",
+        vm.name,
+        "-machine",
+        "microvm,accel=kvm,pit=off,pic=off,rtc=on",
+        "-cpu",
+        "host",
+        "-smp",
+        str(vm.vcpus),
+        "-m",
+        str(vm.mem),
+        "-kernel",
+        str(kernel),
+        "-append",
+        boot_args,
         "-nodefaults",
         "-no-user-config",
         "-nographic",
-        "-serial", "chardev:serial0",
-        "-chardev", f"file,id=serial0,path={vm.log_path}",
-        "-device", "virtio-blk-device,drive=rootfs",
-        "-drive", f"id=rootfs,file={vm.overlay_path},"
-                  f"format=qcow2,if=none",
-        "-netdev", f"tap,id=net0,ifname={vm.tap},"
-                   f"script=no,downscript=no",
-        "-device", f"virtio-net-device,netdev=net0,mac={vm.mac}",
+        "-serial",
+        "chardev:serial0",
+        "-chardev",
+        f"file,id=serial0,path={vm.log_path}",
+        "-device",
+        "virtio-blk-device,drive=rootfs",
+        "-drive",
+        f"id=rootfs,file={vm.overlay_path},format=qcow2,if=none",
+        "-netdev",
+        f"tap,id=net0,ifname={vm.tap},script=no,downscript=no",
+        "-device",
+        f"virtio-net-device,netdev=net0,mac={vm.mac}",
         "-daemonize",
-        "-pidfile", str(vm.pid_path),
+        "-pidfile",
+        str(vm.pid_path),
     ]
 
     total_disks = vm.mdt_disks + vm.ost_disks
@@ -403,8 +433,10 @@ def launch_qemu(vm: VMInfo):
         if not disk.exists():
             die(f"disk{n} missing for '{vm.name}'")
         qemu_args += [
-            "-device", f"virtio-blk-device,drive=disk{n}",
-            "-drive", f"id=disk{n},file={disk},format=raw,if=none",
+            "-device",
+            f"virtio-blk-device,drive=disk{n}",
+            "-drive",
+            f"id=disk{n},file={disk},format=raw,if=none",
         ]
 
     with open(vm.log_path, "a") as log:
@@ -430,6 +462,7 @@ def kill_qemu(vm: VMInfo):
 
 # ── commands: lifecycle ──────────────────────────────────
 
+
 def cmd_create(args):
     name = args.name
     if not name:
@@ -448,25 +481,43 @@ def cmd_create(args):
     kernel = getattr(args, "kernel", "") or ""
 
     vm = VMInfo(
-        name=name, ip=ip, tap=tap, mac=mac,
-        vcpus=args.vcpus, mem=args.mem,
-        mdt_disks=args.mdt_disks, ost_disks=args.ost_disks,
+        name=name,
+        ip=ip,
+        tap=tap,
+        mac=mac,
+        vcpus=args.vcpus,
+        mem=args.mem,
+        mdt_disks=args.mdt_disks,
+        ost_disks=args.ost_disks,
         image=image if image != str(BASE_IMAGE) else "",
         kernel=kernel,
     )
 
     # Create overlay
     rootfs = image
-    run(["qemu-img", "create", "-f", "qcow2",
-         "-b", rootfs, "-F", "raw",
-         str(vm.overlay_path)],
-        capture_output=True, check=True)
+    run(
+        [
+            "qemu-img",
+            "create",
+            "-f",
+            "qcow2",
+            "-b",
+            rootfs,
+            "-F",
+            "raw",
+            str(vm.overlay_path),
+        ],
+        capture_output=True,
+        check=True,
+    )
 
     # Create backing disks
     total = vm.mdt_disks + vm.ost_disks
     for n in range(1, total + 1):
-        run(["truncate", "-s", str(DISK_SIZE_BYTES),
-             str(vm.disk_path(n))], check=True)
+        run(
+            ["truncate", "-s", str(DISK_SIZE_BYTES), str(vm.disk_path(n))],
+            check=True,
+        )
 
     vm.save()
     launch_qemu(vm)
@@ -474,8 +525,10 @@ def cmd_create(args):
     register_ssh_name(vm.name, vm.ip)
     deploy_ssh_key(vm.ip)
 
-    print(f"name={vm.name} ip={vm.ip} pid={vm.pid} "
-          f"mdt_disks={vm.mdt_disks} ost_disks={vm.ost_disks}")
+    print(
+        f"name={vm.name} ip={vm.ip} pid={vm.pid} "
+        f"mdt_disks={vm.mdt_disks} ost_disks={vm.ost_disks}"
+    )
 
 
 def cmd_start(args):
@@ -555,8 +608,15 @@ def cmd_ensure(args):
         vm = VMInfo.load(name)
         if is_running(vm):
             if args.json:
-                print(json.dumps({"action": "none", "name": name,
-                                  "status": "already running"}))
+                print(
+                    json.dumps(
+                        {
+                            "action": "none",
+                            "name": name,
+                            "status": "already running",
+                        }
+                    )
+                )
             else:
                 print(f"{name}: already running")
             return
@@ -564,8 +624,11 @@ def cmd_ensure(args):
         wait_for_ssh(vm.ip, 30)
         register_ssh_name(vm.name, vm.ip)
         if args.json:
-            print(json.dumps({"action": "started", "name": name,
-                              "status": "running"}))
+            print(
+                json.dumps(
+                    {"action": "started", "name": name, "status": "running"}
+                )
+            )
         else:
             print(f"{name}: started")
         return
@@ -573,19 +636,25 @@ def cmd_ensure(args):
     # Doesn't exist — create it
     # Build a fake args namespace for cmd_create
     create_args = argparse.Namespace(
-        name=name, vcpus=args.vcpus, mem=args.mem,
-        ip=None, rootfs=None,
+        name=name,
+        vcpus=args.vcpus,
+        mem=args.mem,
+        ip=None,
+        rootfs=None,
         image=getattr(args, "image", ""),
         kernel=getattr(args, "kernel", ""),
-        mdt_disks=args.mdt_disks, ost_disks=args.ost_disks,
+        mdt_disks=args.mdt_disks,
+        ost_disks=args.ost_disks,
     )
     cmd_create(create_args)
     if args.json:
-        print(json.dumps({"action": "created", "name": name,
-                          "status": "running"}))
+        print(
+            json.dumps({"action": "created", "name": name, "status": "running"})
+        )
 
 
 # ── commands: execution ──────────────────────────────────
+
 
 def cmd_exec(args):
     name = args.name
@@ -593,16 +662,30 @@ def cmd_exec(args):
         vm = VMInfo.load(name)
     except VMNotFound:
         if args.json:
-            print(json.dumps({"ok": False, "exit_code": EXIT_NOT_FOUND,
-                              "error": "VM not found"}))
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "exit_code": EXIT_NOT_FOUND,
+                        "error": "VM not found",
+                    }
+                )
+            )
         else:
             print(f"error: VM '{name}' not found", file=sys.stderr)
         sys.exit(EXIT_NOT_FOUND)
 
     if not is_running(vm):
         if args.json:
-            print(json.dumps({"ok": False, "exit_code": EXIT_UNREACHABLE,
-                              "error": "VM not running"}))
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "exit_code": EXIT_UNREACHABLE,
+                        "error": "VM not running",
+                    }
+                )
+            )
         else:
             print(f"error: VM '{name}' not running", file=sys.stderr)
         sys.exit(EXIT_UNREACHABLE)
@@ -610,8 +693,15 @@ def cmd_exec(args):
     command = " ".join(args.command)
     if not command:
         if args.json:
-            print(json.dumps({"ok": False, "exit_code": EXIT_ERROR,
-                              "error": "no command given"}))
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "exit_code": EXIT_ERROR,
+                        "error": "no command given",
+                    }
+                )
+            )
         else:
             print("error: no command given", file=sys.stderr)
         sys.exit(EXIT_ERROR)
@@ -620,11 +710,17 @@ def cmd_exec(args):
         r = run_ssh(vm.ip, command, timeout=args.timeout)
     except subprocess.TimeoutExpired:
         if args.json:
-            print(json.dumps({"ok": False, "exit_code": EXIT_TIMEOUT,
-                              "error": f"timeout after {args.timeout}s"}))
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "exit_code": EXIT_TIMEOUT,
+                        "error": f"timeout after {args.timeout}s",
+                    }
+                )
+            )
         else:
-            print(f"error: timeout after {args.timeout}s",
-                  file=sys.stderr)
+            print(f"error: timeout after {args.timeout}s", file=sys.stderr)
         sys.exit(EXIT_TIMEOUT)
 
     output = r.stdout or ""
@@ -634,8 +730,16 @@ def cmd_exec(args):
     # ssh returns 255 on connection failure
     if r.returncode == 255:
         if args.json:
-            print(json.dumps({"ok": False, "exit_code": EXIT_UNREACHABLE,
-                              "error": "unreachable", "output": output}))
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "exit_code": EXIT_UNREACHABLE,
+                        "error": "unreachable",
+                        "output": output,
+                    }
+                )
+            )
         else:
             print("error: unreachable", file=sys.stderr)
             if output:
@@ -643,11 +747,15 @@ def cmd_exec(args):
         sys.exit(EXIT_UNREACHABLE)
 
     if args.json:
-        print(json.dumps({
-            "ok": r.returncode == 0,
-            "exit_code": r.returncode,
-            "output": output,
-        }))
+        print(
+            json.dumps(
+                {
+                    "ok": r.returncode == 0,
+                    "exit_code": r.returncode,
+                    "output": output,
+                }
+            )
+        )
     else:
         if output:
             print(output, end="")
@@ -659,9 +767,14 @@ def cmd_ssh(args):
     vm = VMInfo.load(name)
     cmd = args.command
     ssh_args = [
-        "sshpass", "-p", "initial0", "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "LogLevel=ERROR",
+        "sshpass",
+        "-p",
+        "initial0",
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "LogLevel=ERROR",
         f"root@{vm.ip}",
     ] + cmd
     os.execvp("sshpass", ssh_args)
@@ -669,29 +782,52 @@ def cmd_ssh(args):
 
 def cmd_cp_to(args):
     vm = VMInfo.load(args.name)
-    r = run([
-        "sshpass", "-p", "initial0", "scp",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        "-r", args.src, f"root@{vm.ip}:{args.dest}",
-    ], capture_output=False)
+    r = run(
+        [
+            "sshpass",
+            "-p",
+            "initial0",
+            "scp",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-r",
+            args.src,
+            f"root@{vm.ip}:{args.dest}",
+        ],
+        capture_output=False,
+    )
     sys.exit(r.returncode)
 
 
 def cmd_cp_from(args):
     vm = VMInfo.load(args.name)
-    r = run([
-        "sshpass", "-p", "initial0", "scp",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        "-r", f"root@{vm.ip}:{args.src}", args.dest,
-    ], capture_output=False)
+    r = run(
+        [
+            "sshpass",
+            "-p",
+            "initial0",
+            "scp",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            "-r",
+            f"root@{vm.ip}:{args.src}",
+            args.dest,
+        ],
+        capture_output=False,
+    )
     sys.exit(r.returncode)
 
 
 # ── commands: info + observability ───────────────────────
+
 
 def cmd_list(args):
     total_vcpus = 0
@@ -716,9 +852,14 @@ def cmd_list(args):
             disk_mb = f"{vm.overlay_path.stat().st_size // 1048576}M"
 
         entry = {
-            "name": vm.name, "ip": vm.ip, "status": status,
-            "pid": vm.pid, "vcpus": vm.vcpus, "mem": vm.mem,
-            "mdt_disks": vm.mdt_disks, "ost_disks": vm.ost_disks,
+            "name": vm.name,
+            "ip": vm.ip,
+            "status": status,
+            "pid": vm.pid,
+            "vcpus": vm.vcpus,
+            "mem": vm.mem,
+            "mdt_disks": vm.mdt_disks,
+            "ost_disks": vm.ost_disks,
             "disk": disk_mb,
         }
         entries.append(entry)
@@ -733,17 +874,21 @@ def cmd_list(args):
             host_mem_mb = 0
 
     if args.json:
-        print(json.dumps({
-            "vms": entries,
-            "totals": {
-                "running": running_count,
-                "stopped": stopped_count,
-                "vcpus_used": total_vcpus,
-                "vcpus_available": host_cpus,
-                "mem_used_mb": total_mem,
-                "mem_available_mb": host_mem_mb,
-            },
-        }))
+        print(
+            json.dumps(
+                {
+                    "vms": entries,
+                    "totals": {
+                        "running": running_count,
+                        "stopped": stopped_count,
+                        "vcpus_used": total_vcpus,
+                        "vcpus_available": host_cpus,
+                        "mem_used_mb": total_mem,
+                        "mem_available_mb": host_mem_mb,
+                    },
+                }
+            )
+        )
     else:
         if not entries:
             print("(no VMs)")
@@ -752,13 +897,17 @@ def cmd_list(args):
             disks = ""
             if e["mdt_disks"] + e["ost_disks"] > 0:
                 disks = f" mdt={e['mdt_disks']} ost={e['ost_disks']}"
-            print(f"{e['name']:<20} {e['ip']:<18} {e['status']:<8} "
-                  f"pid={e['pid']:<8} vcpus={e['vcpus']} "
-                  f"mem={e['mem']:<6} disk={e['disk']:<8}{disks}")
+            print(
+                f"{e['name']:<20} {e['ip']:<18} {e['status']:<8} "
+                f"pid={e['pid']:<8} vcpus={e['vcpus']} "
+                f"mem={e['mem']:<6} disk={e['disk']:<8}{disks}"
+            )
         print("---")
-        print(f"{running_count} running, {stopped_count} stopped | "
-              f"vcpus: {total_vcpus}/{host_cpus} | "
-              f"mem: {total_mem}M/{host_mem_mb}M")
+        print(
+            f"{running_count} running, {stopped_count} stopped | "
+            f"vcpus: {total_vcpus}/{host_cpus} | "
+            f"mem: {total_mem}M/{host_mem_mb}M"
+        )
 
 
 def cmd_status(args):
@@ -778,32 +927,36 @@ def cmd_status(args):
     mount_status = "not mounted"
     if ssh_status == "ok":
         try:
-            r = run_ssh(vm.ip,
-                        "lsmod 2>/dev/null | grep -c lustre",
-                        timeout=5)
+            r = run_ssh(vm.ip, "lsmod 2>/dev/null | grep -c lustre", timeout=5)
             if r.returncode == 0 and r.stdout.strip() not in ("", "0"):
                 lustre_status = "loaded"
         except subprocess.TimeoutExpired:
             pass
         try:
-            r = run_ssh(vm.ip,
-                        "mount 2>/dev/null | grep -c lustre",
-                        timeout=5)
+            r = run_ssh(vm.ip, "mount 2>/dev/null | grep -c lustre", timeout=5)
             if r.returncode == 0 and r.stdout.strip() not in ("", "0"):
                 mount_status = "mounted"
         except subprocess.TimeoutExpired:
             pass
 
     if args.json:
-        print(json.dumps({
-            "name": vm.name, "ip": vm.ip,
-            "qemu": qemu_status, "pid": vm.pid,
-            "ssh": ssh_status, "lustre": lustre_status,
-            "mount": mount_status,
-            "vcpus": vm.vcpus, "mem": vm.mem,
-            "mdt_disks": vm.mdt_disks,
-            "ost_disks": vm.ost_disks,
-        }))
+        print(
+            json.dumps(
+                {
+                    "name": vm.name,
+                    "ip": vm.ip,
+                    "qemu": qemu_status,
+                    "pid": vm.pid,
+                    "ssh": ssh_status,
+                    "lustre": lustre_status,
+                    "mount": mount_status,
+                    "vcpus": vm.vcpus,
+                    "mem": vm.mem,
+                    "mdt_disks": vm.mdt_disks,
+                    "ost_disks": vm.ost_disks,
+                }
+            )
+        )
     else:
         print(f"{'name:':<12} {vm.name}")
         print(f"{'ip:':<12} {vm.ip}")
@@ -811,8 +964,10 @@ def cmd_status(args):
         print(f"{'ssh:':<12} {ssh_status}")
         print(f"{'lustre:':<12} {lustre_status}")
         print(f"{'mount:':<12} {mount_status}")
-        print(f"{'resources:':<12} vcpus={vm.vcpus} mem={vm.mem} "
-              f"mdt={vm.mdt_disks} ost={vm.ost_disks}")
+        print(
+            f"{'resources:':<12} vcpus={vm.vcpus} mem={vm.mem} "
+            f"mdt={vm.mdt_disks} ost={vm.ost_disks}"
+        )
 
 
 def cmd_log(args):
@@ -820,7 +975,7 @@ def cmd_log(args):
     if not vm.log_path.exists():
         die(f"no log for VM '{args.name}'")
     lines = vm.log_path.read_text().splitlines()
-    for line in lines[-args.lines:]:
+    for line in lines[-args.lines :]:
         print(line)
 
 
@@ -844,18 +999,20 @@ def cmd_lustre_log(args):
     if not is_running(vm):
         die(f"VM '{args.name}' not running", EXIT_UNREACHABLE)
     try:
-        r = run_ssh(vm.ip,
-                    'lctl dk 2>/dev/null || echo "lctl not available"',
-                    timeout=10)
+        r = run_ssh(
+            vm.ip,
+            'lctl dk 2>/dev/null || echo "lctl not available"',
+            timeout=10,
+        )
         if r.stdout:
             print(r.stdout, end="")
         sys.exit(r.returncode)
     except subprocess.TimeoutExpired:
-        die(f"timeout reading lustre log from '{args.name}'",
-            EXIT_TIMEOUT)
+        die(f"timeout reading lustre log from '{args.name}'", EXIT_TIMEOUT)
 
 
 # ── commands: crash-collect ──────────────────────────────
+
 
 def cmd_crash_collect(args):
     """Collect vmcore from a crashed VM and run lustre triage.
@@ -872,19 +1029,15 @@ def cmd_crash_collect(args):
 
     if args.trigger:
         if not is_running(vm):
-            die(f"VM '{args.name}' not running, "
-                "can't trigger crash")
+            die(f"VM '{args.name}' not running, can't trigger crash")
         print(f"triggering crash on {args.name}...")
         try:
-            run_ssh(vm.ip,
-                    "echo c > /proc/sysrq-trigger",
-                    timeout=5)
+            run_ssh(vm.ip, "echo c > /proc/sysrq-trigger", timeout=5)
         except subprocess.TimeoutExpired:
             pass  # expected -- VM crashes, SSH dies
 
         # Wait for VM to reboot via kdump
-        print("waiting for kdump + reboot...",
-              end="", flush=True)
+        print("waiting for kdump + reboot...", end="", flush=True)
         time.sleep(5)
         for i in range(args.wait):
             try:
@@ -897,8 +1050,10 @@ def cmd_crash_collect(args):
             print(".", end="", flush=True)
             time.sleep(1)
         else:
-            die(f"\nVM '{args.name}' did not come back "
-                f"after {args.wait + 5}s", EXIT_TIMEOUT)
+            die(
+                f"\nVM '{args.name}' did not come back after {args.wait + 5}s",
+                EXIT_TIMEOUT,
+            )
 
     # VM should be up -- find the latest vmcore
     if not is_running(vm):
@@ -906,9 +1061,8 @@ def cmd_crash_collect(args):
 
     print("finding vmcore...")
     r = run_ssh(
-        vm.ip,
-        "ls -td /var/crash/*/vmcore 2>/dev/null | head -1",
-        timeout=10)
+        vm.ip, "ls -td /var/crash/*/vmcore 2>/dev/null | head -1", timeout=10
+    )
     vmcore_path = r.stdout.strip()
     if not vmcore_path:
         die("no vmcore found in /var/crash/")
@@ -923,14 +1077,24 @@ def cmd_crash_collect(args):
     local_vmcore = local_dir / "vmcore"
 
     print(f"copying vmcore to {local_vmcore}...")
-    r = run([
-        "sshpass", "-p", "initial0", "scp",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
-        f"root@{vm.ip}:{vmcore_path}",
-        str(local_vmcore),
-    ], capture_output=False, timeout=300)
+    r = run(
+        [
+            "sshpass",
+            "-p",
+            "initial0",
+            "scp",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
+            f"root@{vm.ip}:{vmcore_path}",
+            str(local_vmcore),
+        ],
+        capture_output=False,
+        timeout=300,
+    )
     if r.returncode != 0:
         die("failed to copy vmcore")
 
@@ -942,31 +1106,38 @@ def cmd_crash_collect(args):
         print("running lustre triage...")
         triage_script = Path(
             "/home/admin/llm_code_and_review_tools/"
-            "lustre-drgn-tools/lustre_triage.py")
+            "lustre-drgn-tools/lustre_triage.py"
+        )
         if not triage_script.exists():
-            print(f"triage script not found: "
-                  f"{triage_script}")
+            print(f"triage script not found: {triage_script}")
             print(f"vmcore dir: {local_dir}")
             return
         triage_cmd = [
-            "python3", str(triage_script),
-            "--vmcore", str(local_vmcore),
-            "--vmlinux", vmlinux,
-            "--mod-dir", args.mod_dir,
+            "python3",
+            str(triage_script),
+            "--vmcore",
+            str(local_vmcore),
+            "--vmlinux",
+            vmlinux,
+            "--mod-dir",
+            args.mod_dir,
             "--pretty",
         ]
         run(triage_cmd, capture_output=False, timeout=120)
         print(f"\nvmcore dir: {local_dir}")
     else:
         print(f"vmcore dir: {local_dir}")
-        print(f"run triage:")
-        print(f"  crash-tool recipes lustre "
-              f"--vmcore {local_vmcore} "
-              f"--vmlinux {KERNEL} "
-              f"--mod-dir <build-tree>")
+        print("run triage:")
+        print(
+            f"  crash-tool recipes lustre "
+            f"--vmcore {local_vmcore} "
+            f"--vmlinux {KERNEL} "
+            f"--mod-dir <build-tree>"
+        )
 
 
 # ── commands: snapshots ──────────────────────────────────
+
 
 def cmd_snapshot(args):
     vm = VMInfo.load(args.name)
@@ -977,8 +1148,7 @@ def cmd_snapshot(args):
         print(f"stopping {vm.name} for snapshot...")
         kill_qemu(vm)
 
-    r = run(["qemu-img", "snapshot", "-c", tag,
-             str(vm.overlay_path)])
+    r = run(["qemu-img", "snapshot", "-c", tag, str(vm.overlay_path)])
     if r.returncode != 0:
         die(f"snapshot failed: {r.stderr}")
 
@@ -998,22 +1168,24 @@ def cmd_restore(args):
     if not args.tag:
         # List snapshots
         print(f"snapshots for {vm.name}:")
-        r = run(["qemu-img", "snapshot", "-l", "-U",
-                 str(vm.overlay_path)], capture_output=False)
+        r = run(
+            ["qemu-img", "snapshot", "-l", "-U", str(vm.overlay_path)],
+            capture_output=False,
+        )
         return
 
     if is_running(vm):
         print(f"stopping {vm.name} before restore...")
         kill_qemu(vm)
 
-    r = run(["qemu-img", "snapshot", "-a", args.tag,
-             str(vm.overlay_path)])
+    r = run(["qemu-img", "snapshot", "-a", args.tag, str(vm.overlay_path)])
     if r.returncode != 0:
         die(f"restore failed: {r.stderr}")
     print(f"restored {vm.name} to '{args.tag}'")
 
 
 # ── commands: doctor ─────────────────────────────────────
+
 
 def cmd_doctor(args):
     issues = 0
@@ -1052,8 +1224,11 @@ def cmd_doctor(args):
                     print(f"stale hosts entry: {hname}")
                     issues += 1
                     if args.fix:
-                        lines = [l for l in hosts.read_text().splitlines()
-                                 if f"{MARKER}:{hname}" not in l]
+                        lines = [
+                            line
+                            for line in hosts.read_text().splitlines()
+                            if f"{MARKER}:{hname}" not in line
+                        ]
                         hosts.write_text("\n".join(lines) + "\n")
                         reload_dns()
                         print("  fixed: removed from /etc/hosts")
@@ -1216,15 +1391,15 @@ def parse_node_spec(spec: str) -> ClusterNode:
         ost_disks = max(disk_count, 1)
 
     return ClusterNode(
-        name=name, roles=roles,
-        mdt_disks=mdt_disks, ost_disks=ost_disks,
+        name=name,
+        roles=roles,
+        mdt_disks=mdt_disks,
+        ost_disks=ost_disks,
     )
 
 
-def generate_local_sh(cluster: ClusterInfo,
-                      build_path: str = "") -> str:
+def generate_local_sh(cluster: ClusterInfo, build_path: str = "") -> str:
     """Generate cfg/local.sh content for a multi-node cluster."""
-    nodes = cluster.get_nodes()
     mgs = cluster.mgs_node()
     mds_list = cluster.mds_nodes()
     oss_list = cluster.oss_nodes()
@@ -1235,11 +1410,11 @@ def generate_local_sh(cluster: ClusterInfo,
 
     lines = [
         f"# Cluster: {cluster.name}",
-        f"# Generated by vm.py cluster deploy",
-        f"",
-        f"FSNAME=lustre",
-        f"NETTYPE=tcp",
-        f"",
+        "# Generated by vm.py cluster deploy",
+        "",
+        "FSNAME=lustre",
+        "NETTYPE=tcp",
+        "",
     ]
 
     # Paths -- build tree rsynced to same location on all nodes
@@ -1258,7 +1433,7 @@ def generate_local_sh(cluster: ClusterInfo,
     combined = mgs.is_mds
     if not combined:
         # Standalone MGS: /dev/vdb
-        lines.append(f"MGSDEV=/dev/vdb")
+        lines.append("MGSDEV=/dev/vdb")
     lines.append("")
 
     # MDS nodes
@@ -1280,11 +1455,10 @@ def generate_local_sh(cluster: ClusterInfo,
                 disk_offset = 2
 
             for d in range(mds_node.mdt_disks):
-                letter = chr(ord('a') + disk_offset + d)
+                letter = chr(ord("a") + disk_offset + d)
                 lines.append(f"MDSDEV{mdt_idx}=/dev/vd{letter}")
                 if len(mds_list) > 1:
-                    lines.append(
-                        f"mds{mdt_idx}_HOST={mds_node.name}")
+                    lines.append(f"mds{mdt_idx}_HOST={mds_node.name}")
                 mdt_idx += 1
         lines.append("")
 
@@ -1307,11 +1481,10 @@ def generate_local_sh(cluster: ClusterInfo,
                     disk_offset += 1
 
             for d in range(oss_node.ost_disks):
-                letter = chr(ord('a') + disk_offset + d)
+                letter = chr(ord("a") + disk_offset + d)
                 lines.append(f"OSTDEV{ost_idx}=/dev/vd{letter}")
                 if len(oss_list) > 1:
-                    lines.append(
-                        f"ost{ost_idx}_HOST={oss_node.name}")
+                    lines.append(f"ost{ost_idx}_HOST={oss_node.name}")
                 ost_idx += 1
         lines.append("")
 
@@ -1334,7 +1507,7 @@ def generate_local_sh(cluster: ClusterInfo,
     # Remote execution
     lines.append('PDSH="pdsh -S -Rssh -w"')
     lines.append("LOAD_MODULES_REMOTE=true")
-    lines.append(f"MOUNT=/mnt/lustre")
+    lines.append("MOUNT=/mnt/lustre")
     lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -1392,8 +1565,7 @@ def cmd_cluster_create(args):
         # Standalone MGS gets 1 disk
         mgs_disk = 1 if (node.is_mgs and not node.is_mds) else 0
 
-        print(f"--- Creating {node.name} "
-              f"({'+'.join(node.roles)})...")
+        print(f"--- Creating {node.name} ({'+'.join(node.roles)})...")
 
         create_args = argparse.Namespace(
             name=node.name,
@@ -1413,22 +1585,26 @@ def cmd_cluster_create(args):
     # Save cluster metadata
     cluster = ClusterInfo(
         name=cluster_name,
-        nodes=[{
-            "name": n.name,
-            "roles": n.roles,
-            "mdt_disks": n.mdt_disks,
-            "ost_disks": n.ost_disks,
-            "ip": n.ip,
-        } for n in node_specs],
+        nodes=[
+            {
+                "name": n.name,
+                "roles": n.roles,
+                "mdt_disks": n.mdt_disks,
+                "ost_disks": n.ost_disks,
+                "ip": n.ip,
+            }
+            for n in node_specs
+        ],
     )
     cluster.save()
 
     print(f"\n=== Cluster '{cluster_name}' created ===")
     for n in node_specs:
-        print(f"  {n.name:<20} {n.ip:<18} "
-              f"{'+'.join(n.roles)}")
-    print(f"\nNext: vm.sh cluster deploy {cluster_name} "
-          f"--build /path/to/lustre-release [--mount]")
+        print(f"  {n.name:<20} {n.ip:<18} {'+'.join(n.roles)}")
+    print(
+        f"\nNext: vm.sh cluster deploy {cluster_name} "
+        f"--build /path/to/lustre-release [--mount]"
+    )
 
 
 def cmd_cluster_deploy(args):
@@ -1443,9 +1619,12 @@ def cmd_cluster_deploy(args):
     print(f"    Build: {build}")
 
     ssh_opts = [
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "UserKnownHostsFile=/dev/null",
-        "-o", "LogLevel=ERROR",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
     ]
 
     # Rsync the full build tree to the same path on each VM.
@@ -1453,140 +1632,193 @@ def cmd_cluster_deploy(args):
     for node in nodes:
         vm = VMInfo.load(node.name)
         ip = vm.ip
-        print(f"\n--- Deploying to {node.name} "
-              f"({'+'.join(node.roles)})...")
+        print(f"\n--- Deploying to {node.name} ({'+'.join(node.roles)})...")
 
         # Ensure parent dir exists on remote
         parent = str(Path(build).parent)
-        run(["sshpass", "-p", "initial0", "ssh"] + ssh_opts +
-            [f"root@{ip}", f"mkdir -p {parent}"],
-            capture_output=True, timeout=10)
+        run(
+            ["sshpass", "-p", "initial0", "ssh"]
+            + ssh_opts
+            + [f"root@{ip}", f"mkdir -p {parent}"],
+            capture_output=True,
+            timeout=10,
+        )
 
         # Rsync the build tree
         print(f"  rsync {build} -> {node.name}:{build}")
-        r = run([
-            "sshpass", "-p", "initial0",
-            "rsync", "-a", "--delete",
-            "-e", "ssh " + " ".join(ssh_opts),
-            "--exclude=.git",
-            "--exclude=*.o",
-            "--exclude=*.cmd",
-            "--exclude=*.mod",
-            f"{build}/",
-            f"root@{ip}:{build}/",
-        ], capture_output=False, timeout=300)
+        r = run(
+            [
+                "sshpass",
+                "-p",
+                "initial0",
+                "rsync",
+                "-a",
+                "--delete",
+                "-e",
+                "ssh " + " ".join(ssh_opts),
+                "--exclude=.git",
+                "--exclude=*.o",
+                "--exclude=*.cmd",
+                "--exclude=*.mod",
+                f"{build}/",
+                f"root@{ip}:{build}/",
+            ],
+            capture_output=False,
+            timeout=300,
+        )
         if r.returncode != 0:
             die(f"rsync failed for {node.name}")
 
         # Find and install kernel modules + depmod
-        kver_r = run(["sshpass", "-p", "initial0", "ssh"] +
-                     ssh_opts + [f"root@{ip}", "uname -r"],
-                     capture_output=True, timeout=10)
+        kver_r = run(
+            ["sshpass", "-p", "initial0", "ssh"]
+            + ssh_opts
+            + [f"root@{ip}", "uname -r"],
+            capture_output=True,
+            timeout=10,
+        )
         kver = kver_r.stdout.strip()
 
-        run(["sshpass", "-p", "initial0", "ssh"] + ssh_opts +
-            [f"root@{ip}",
-             f"mkdir -p /lib/modules/{kver}/extra/lustre && "
-             f"find {build} -name '*.ko' "
-             f"-not -path '*/kconftest*' "
-             f"-exec cp {{}} /lib/modules/{kver}/extra/lustre/ \\; && "
-             f"depmod -a {kver}"],
-            capture_output=True, timeout=30)
+        run(
+            ["sshpass", "-p", "initial0", "ssh"]
+            + ssh_opts
+            + [
+                f"root@{ip}",
+                f"mkdir -p /lib/modules/{kver}/extra/lustre && "
+                f"find {build} -name '*.ko' "
+                f"-not -path '*/kconftest*' "
+                f"-exec cp {{}} /lib/modules/{kver}/extra/lustre/ \\; && "
+                f"depmod -a {kver}",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
 
         # Install shared libraries + ldconfig
-        run(["sshpass", "-p", "initial0", "ssh"] + ssh_opts +
-            [f"root@{ip}",
-             f"cp -f {build}/lustre/utils/.libs/liblustreapi.so* "
-             f"/usr/lib64/ 2>/dev/null; "
-             f"cp -f {build}/lnet/utils/lnetconfig/.libs/"
-             f"liblnetconfig.so* /usr/lib64/ 2>/dev/null; "
-             f"ldconfig"],
-            capture_output=True, timeout=10)
+        run(
+            ["sshpass", "-p", "initial0", "ssh"]
+            + ssh_opts
+            + [
+                f"root@{ip}",
+                f"cp -f {build}/lustre/utils/.libs/liblustreapi.so* "
+                f"/usr/lib64/ 2>/dev/null; "
+                f"cp -f {build}/lnet/utils/lnetconfig/.libs/"
+                f"liblnetconfig.so* /usr/lib64/ 2>/dev/null; "
+                f"ldconfig",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
 
         # Install key binaries to /usr/sbin so they're in PATH
-        run(["sshpass", "-p", "initial0", "ssh"] + ssh_opts +
-            [f"root@{ip}",
-             f"for b in lctl mkfs.lustre mount.lustre "
-             f"tunefs.lustre lnetctl; do "
-             f"src={build}/lustre/utils/.libs/$b; "
-             f"[ -f $src ] && cp -f $src /usr/sbin/; done; "
-             f"src={build}/lnet/utils/.libs/lnetctl; "
-             f"[ -f $src ] && cp -f $src /usr/sbin/; "
-             f"for b in lfs lustre_rmmod; do "
-             f"src={build}/lustre/utils/.libs/$b; "
-             f"[ -f $src ] && cp -f $src /usr/bin/; done; "
-             f"src={build}/lustre/utils/lustre_rmmod; "
-             f"[ -f $src ] && cp -f $src /usr/sbin/; "
-             f"cp -f {build}/lustre/utils/.libs/mount_osd_*.so "
-             f"/usr/lib64/ 2>/dev/null; true"],
-            capture_output=True, timeout=10)
+        run(
+            ["sshpass", "-p", "initial0", "ssh"]
+            + ssh_opts
+            + [
+                f"root@{ip}",
+                f"for b in lctl mkfs.lustre mount.lustre "
+                f"tunefs.lustre lnetctl; do "
+                f"src={build}/lustre/utils/.libs/$b; "
+                f"[ -f $src ] && cp -f $src /usr/sbin/; done; "
+                f"src={build}/lnet/utils/.libs/lnetctl; "
+                f"[ -f $src ] && cp -f $src /usr/sbin/; "
+                f"for b in lfs lustre_rmmod; do "
+                f"src={build}/lustre/utils/.libs/$b; "
+                f"[ -f $src ] && cp -f $src /usr/bin/; done; "
+                f"src={build}/lustre/utils/lustre_rmmod; "
+                f"[ -f $src ] && cp -f $src /usr/sbin/; "
+                f"cp -f {build}/lustre/utils/.libs/mount_osd_*.so "
+                f"/usr/lib64/ 2>/dev/null; true",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
 
         # Replace libtool wrapper scripts with real binaries
         # so the test framework doesn't trigger relinks
-        run(["sshpass", "-p", "initial0", "ssh"] + ssh_opts +
-            [f"root@{ip}",
-             f"for d in {build}/lustre/utils {build}/lnet/utils "
-             f"{build}/lnet/utils/lnetconfig; do "
-             f"[ -d $d/.libs ] || continue; "
-             f"for f in $d/.libs/*; do "
-             f"[ -f $f ] && [ ! -h $f ] && "
-             f"b=$(basename $f) && "
-             f"[ -f $d/$b ] && head -1 $d/$b 2>/dev/null | "
-             f"grep -q libtool && "
-             f"cp -f $f $d/$b; "
-             f"done; done; true"],
-            capture_output=True, timeout=30)
+        run(
+            ["sshpass", "-p", "initial0", "ssh"]
+            + ssh_opts
+            + [
+                f"root@{ip}",
+                f"for d in {build}/lustre/utils {build}/lnet/utils "
+                f"{build}/lnet/utils/lnetconfig; do "
+                f"[ -d $d/.libs ] || continue; "
+                f"for f in $d/.libs/*; do "
+                f"[ -f $f ] && [ ! -h $f ] && "
+                f"b=$(basename $f) && "
+                f"[ -f $d/$b ] && head -1 $d/$b 2>/dev/null | "
+                f"grep -q libtool && "
+                f"cp -f $f $d/$b; "
+                f"done; done; true",
+            ],
+            capture_output=True,
+            timeout=30,
+        )
 
         # Remove ptlrpc_gss.ko -- if the build includes it but
         # the kernel lacks crypto support, insmod fails fatally.
         # Without the .ko, load_module falls through to modprobe
         # which handles the failure gracefully.
-        run(["sshpass", "-p", "initial0", "ssh"] + ssh_opts +
-            [f"root@{ip}",
-             f"rm -f {build}/lustre/ptlrpc/gss/ptlrpc_gss.ko"],
-            capture_output=True, timeout=10)
+        run(
+            ["sshpass", "-p", "initial0", "ssh"]
+            + ssh_opts
+            + [f"root@{ip}", f"rm -f {build}/lustre/ptlrpc/gss/ptlrpc_gss.ko"],
+            capture_output=True,
+            timeout=10,
+        )
 
         print(f"  {node.name}: deployed")
 
     # Generate and push local.sh to all nodes
     local_sh = generate_local_sh(cluster, build_path=build)
-    print(f"\n--- Distributing cluster config (local.sh)...")
+    print("\n--- Distributing cluster config (local.sh)...")
 
     cfg_path = f"{build}/lustre/tests/cfg/local.sh"
     for node in nodes:
         vm = VMInfo.load(node.name)
-        run(["sshpass", "-p", "initial0", "ssh"] + ssh_opts +
-            [f"root@{vm.ip}",
-             f"cat > {cfg_path} << 'LOCALEOF'\n"
-             f"{local_sh}"
-             f"LOCALEOF"],
-            capture_output=True, timeout=10)
+        run(
+            ["sshpass", "-p", "initial0", "ssh"]
+            + ssh_opts
+            + [
+                f"root@{vm.ip}",
+                f"cat > {cfg_path} << 'LOCALEOF'\n{local_sh}LOCALEOF",
+            ],
+            capture_output=True,
+            timeout=10,
+        )
         print(f"  {node.name}: local.sh deployed")
 
-    print(f"\n--- Cluster config (local.sh):")
+    print("\n--- Cluster config (local.sh):")
     print(local_sh)
 
     # Optionally mount
     if args.mount:
-        print(f"=== Mounting Lustre filesystem ===")
+        print("=== Mounting Lustre filesystem ===")
         # Run llmount.sh from the MGS/MDS node
         mgs = cluster.mgs_node()
         mgs_vm = VMInfo.load(mgs.name)
 
-        mount_cmd = (
-            f"cd {build}/lustre/tests && "
-            f"bash llmount.sh"
-        )
+        mount_cmd = f"cd {build}/lustre/tests && bash llmount.sh"
         if args.server_only:
             mount_cmd += " --server-only"
 
         print(f"Running llmount.sh from {mgs.name}...")
-        r = run([
-            "sshpass", "-p", "initial0", "ssh",
-        ] + ssh_opts + [
-            f"root@{mgs_vm.ip}",
-            mount_cmd,
-        ], capture_output=False, timeout=300)
+        r = run(
+            [
+                "sshpass",
+                "-p",
+                "initial0",
+                "ssh",
+            ]
+            + ssh_opts
+            + [
+                f"root@{mgs_vm.ip}",
+                mount_cmd,
+            ],
+            capture_output=False,
+            timeout=300,
+        )
         if r.returncode != 0:
             die("llmount.sh failed")
         print("=== Lustre mounted ===")
@@ -1608,8 +1840,7 @@ def cmd_cluster_destroy(args):
 
         # Clean up VM files
         overlay = OVERLAYS / f"{node.name}.qcow2"
-        for f in [overlay] + list(OVERLAYS.glob(
-                f"{node.name}-disk*.img")):
+        for f in [overlay] + list(OVERLAYS.glob(f"{node.name}-disk*.img")):
             f.unlink(missing_ok=True)
         for ext in ("sock", "pid", "info", "log"):
             (SOCKETS / f"{node.name}.{ext}").unlink(missing_ok=True)
@@ -1631,8 +1862,7 @@ def cmd_cluster_list(args):
         node_summary = []
         for n in nodes:
             roles = "+".join(n.roles)
-            running = "up" if is_running(VMInfo.load(n.name)) \
-                else "down"
+            running = "up" if is_running(VMInfo.load(n.name)) else "down"
             node_summary.append(f"{n.name}({roles},{running})")
         print(f"{cname}: {' '.join(node_summary)}")
 
@@ -1662,8 +1892,7 @@ def cmd_cluster_status(args):
         if node.is_mgs and not node.is_mds:
             disks += " mgs=1"
 
-        print(f"  {node.name:<20} {node.ip:<18} {status:<8} "
-              f"{roles:<12}{disks}")
+        print(f"  {node.name:<20} {node.ip:<18} {status:<8} {roles:<12}{disks}")
 
 
 def cmd_cluster_ssh(args):
@@ -1678,14 +1907,18 @@ def cmd_cluster_ssh(args):
             found = n
             break
     if not found:
-        die(f"no node matching '{target}' in cluster "
-            f"'{args.name}'")
+        die(f"no node matching '{target}' in cluster '{args.name}'")
 
     vm = VMInfo.load(found.name)
     ssh_args = [
-        "sshpass", "-p", "initial0", "ssh",
-        "-o", "StrictHostKeyChecking=no",
-        "-o", "LogLevel=ERROR",
+        "sshpass",
+        "-p",
+        "initial0",
+        "ssh",
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "LogLevel=ERROR",
         f"root@{vm.ip}",
     ] + args.command
     os.execvp("sshpass", ssh_args)
@@ -1702,8 +1935,7 @@ def cmd_cluster_exec(args):
             found = n
             break
     if not found:
-        die(f"no node matching '{target}' in cluster "
-            f"'{args.name}'")
+        die(f"no node matching '{target}' in cluster '{args.name}'")
 
     command = " ".join(args.command)
     vm = VMInfo.load(found.name)
@@ -1717,6 +1949,7 @@ def cmd_cluster_exec(args):
 
 
 # ── CLI ──────────────────────────────────────────────────
+
 
 def build_parser():
     p = argparse.ArgumentParser(
@@ -1733,25 +1966,32 @@ def build_parser():
     c.add_argument("--mem", type=int, default=2048)
     c.add_argument("--ip", default="")
     c.add_argument("--rootfs", default="")
-    c.add_argument("--image", default="",
-                   help="Base image path (default: rocky9-base.ext4)")
-    c.add_argument("--kernel", default="",
-                   help="Kernel path (default: vmlinux)")
+    c.add_argument(
+        "--image",
+        default="",
+        help="Base image path (default: rocky9-base.ext4)",
+    )
+    c.add_argument(
+        "--kernel", default="", help="Kernel path (default: vmlinux)"
+    )
     c.add_argument("--mdt-disks", type=int, default=0)
     c.add_argument("--ost-disks", type=int, default=0)
 
     # ensure
-    c = sub.add_parser("ensure",
-                       help="Idempotent: create/start as needed")
+    c = sub.add_parser("ensure", help="Idempotent: create/start as needed")
     c.add_argument("name")
     c.add_argument("--vcpus", type=int, default=2)
     c.add_argument("--mem", type=int, default=2048)
     c.add_argument("--mdt-disks", type=int, default=0)
     c.add_argument("--ost-disks", type=int, default=0)
-    c.add_argument("--image", default="",
-                   help="Base image path (default: rocky9-base.ext4)")
-    c.add_argument("--kernel", default="",
-                   help="Kernel path (default: vmlinux)")
+    c.add_argument(
+        "--image",
+        default="",
+        help="Base image path (default: rocky9-base.ext4)",
+    )
+    c.add_argument(
+        "--kernel", default="", help="Kernel path (default: vmlinux)"
+    )
     c.add_argument("--json", action="store_true")
 
     # start
@@ -1778,8 +2018,7 @@ def build_parser():
     sub.add_parser("rm", help=argparse.SUPPRESS)  # alias
 
     # exec
-    c = sub.add_parser("exec",
-                       help="Run command with timeout + exit codes")
+    c = sub.add_parser("exec", help="Run command with timeout + exit codes")
     c.add_argument("--timeout", type=int, default=120)
     c.add_argument("--json", action="store_true")
     c.add_argument("name")
@@ -1836,23 +2075,28 @@ def build_parser():
     sub.add_parser("snap", help=argparse.SUPPRESS)  # alias
 
     # restore
-    c = sub.add_parser("restore",
-                       help="Restore snapshot (no tag = list)")
+    c = sub.add_parser("restore", help="Restore snapshot (no tag = list)")
     c.add_argument("name")
     c.add_argument("tag", nargs="?", default="")
 
     # crash-collect
-    c = sub.add_parser("crash-collect",
-                       help="Collect vmcore + run triage")
+    c = sub.add_parser("crash-collect", help="Collect vmcore + run triage")
     c.add_argument("name")
-    c.add_argument("--trigger", action="store_true",
-                   help="Crash the VM first via sysrq-trigger")
-    c.add_argument("--mod-dir",
-                   help="Lustre build tree for triage symbols")
-    c.add_argument("--outdir", default="/tmp",
-                   help="Output directory (default: /tmp)")
-    c.add_argument("--wait", type=int, default=60,
-                   help="Seconds to wait for reboot (default: 60)")
+    c.add_argument(
+        "--trigger",
+        action="store_true",
+        help="Crash the VM first via sysrq-trigger",
+    )
+    c.add_argument("--mod-dir", help="Lustre build tree for triage symbols")
+    c.add_argument(
+        "--outdir", default="/tmp", help="Output directory (default: /tmp)"
+    )
+    c.add_argument(
+        "--wait",
+        type=int,
+        default=60,
+        help="Seconds to wait for reboot (default: 60)",
+    )
 
     # doctor
     c = sub.add_parser("doctor", help="Find/fix stale state")
@@ -1864,20 +2108,29 @@ def build_parser():
 
     cc = csub.add_parser("create", help="Create a cluster")
     cc.add_argument("name", help="Cluster name")
-    cc.add_argument("nodes", nargs="+", metavar="SPEC",
-                    help="Node specs: roles:vmname[:disks] "
-                         "(roles: mgs,mds,oss,client joined with +)")
+    cc.add_argument(
+        "nodes",
+        nargs="+",
+        metavar="SPEC",
+        help="Node specs: roles:vmname[:disks] "
+        "(roles: mgs,mds,oss,client joined with +)",
+    )
     cc.add_argument("--vcpus", type=int, default=2)
     cc.add_argument("--mem", type=int, default=4096)
 
     cc = csub.add_parser("deploy", help="Deploy Lustre to cluster")
     cc.add_argument("name", help="Cluster name")
-    cc.add_argument("--build", required=True,
-                    help="Path to built lustre-release tree")
-    cc.add_argument("--mount", action="store_true",
-                    help="Run llmount.sh after deploy")
-    cc.add_argument("--server-only", action="store_true",
-                    help="With --mount, skip client mount")
+    cc.add_argument(
+        "--build", required=True, help="Path to built lustre-release tree"
+    )
+    cc.add_argument(
+        "--mount", action="store_true", help="Run llmount.sh after deploy"
+    )
+    cc.add_argument(
+        "--server-only",
+        action="store_true",
+        help="With --mount, skip client mount",
+    )
 
     cc = csub.add_parser("destroy", help="Destroy cluster and VMs")
     cc.add_argument("name", help="Cluster name")
