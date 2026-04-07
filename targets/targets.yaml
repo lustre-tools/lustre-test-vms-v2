@@ -59,12 +59,12 @@ targets:
     os_name: rocky
     os_version: "10.1"
     container_image: quay.io/rockylinux/rockylinux:10.1
+    server: false    # Lustre master ldiskfs not yet ported to 6.12 VFS changes
     status: working
-    srpm_url: "https://dl.rockylinux.org/vault/rocky/10.0/BaseOS/source/tree/Packages/k"
+    srpm_url: "https://dl.rockylinux.org/pub/rocky/10/BaseOS/source/tree/Packages/k"
     kernels:
-      default: 6.12-rhel10.0
+      default: 6.12-rhel10.1
       available:
-        - 6.12-rhel10.0
         - 6.12-rhel10.1
       config:
         CONFIG_XEN_PVH: "y"
