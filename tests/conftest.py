@@ -70,8 +70,16 @@ def tmp_targets(tmp_path: Path) -> Path:
 
     rocky9 = tmp_path / "targets" / "rocky9"
     rocky9.mkdir(parents=True)
-    (rocky9 / "container.Dockerfile").write_text("FROM rockylinux:9.7\n")
-    (rocky9 / "image.Dockerfile").write_text("FROM rockylinux:9.7\n")
+
+    # Use the real Dockerfiles as the reference for add-target tests.
+    # Fall back to stubs if the real files aren't present (e.g. CI).
+    _real_targets = Path(__file__).parent.parent / "targets"
+    for df in ("container.Dockerfile", "image.Dockerfile"):
+        real = _real_targets / "rocky9" / df
+        if real.exists():
+            (rocky9 / df).write_text(real.read_text())
+        else:
+            (rocky9 / df).write_text("FROM rockylinux:9.7\n# stub\n")
 
     _write_targets_yaml(tmp_path / "targets")
 

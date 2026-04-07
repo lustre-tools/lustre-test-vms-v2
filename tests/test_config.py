@@ -630,3 +630,54 @@ class TestAddTarget:
             (tmp_targets / "targets" / "targets.yaml").read_text()
         )
         assert "os_family" not in data["targets"]["alma9"]
+
+    def test_image_dockerfile_references_common_scripts(
+        self, tmp_targets: Path
+    ) -> None:
+        """Generated image Dockerfiles should COPY and RUN common scripts."""
+        import lib.config as cfg
+
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+        ):
+            add_target("alma9", "almalinux:9.4")
+
+        image_df = tmp_targets / "targets" / "alma9" / "image.Dockerfile"
+        content = image_df.read_text()
+        for script in [
+            "setup-ssh.sh",
+            "setup-serial.sh",
+            "setup-network.sh",
+            "setup-kdump.sh",
+            "build-e2fsprogs.sh",
+        ]:
+            assert script in content, f"{script} missing from image.Dockerfile"
+
+    def test_container_dockerfile_references_e2fsprogs_script(
+        self, tmp_targets: Path
+    ) -> None:
+        """Generated container Dockerfiles should use the common e2fsprogs script."""
+        import lib.config as cfg
+
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+        ):
+            add_target("alma9", "almalinux:9.4")
+
+        container_df = (
+            tmp_targets / "targets" / "alma9" / "container.Dockerfile"
+        )
+        content = container_df.read_text()
+        assert "build-e2fsprogs.sh" in content
