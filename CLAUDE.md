@@ -305,6 +305,46 @@ When reviewing or auditing this codebase, watch for:
   (qemu/). Code in lib/ must not assume root. Code
   in qemu/ runs as root via sudo. Don't mix these.
 
+## Rebuilding Pre-built QEMU Binaries
+
+Rocky Linux ships QEMU without microvm support, so we publish
+pre-built binaries to GitHub. `ltvm setup` downloads these
+automatically. To rebuild:
+
+```bash
+# Build in each target's container
+for target in rocky9 rocky10; do
+    suffix="el${target#rocky}"
+    mkdir -p /tmp/qemu-out
+    podman run --rm -v /tmp/qemu-out:/output:Z ltvm-build-${target} -c '
+        dnf -y install glib2-devel pixman-devel flex bison ninja-build \
+            python3-pip xz pkg-config
+        pip3 install tomli
+        curl -fsSL https://download.qemu.org/qemu-9.2.2.tar.xz | tar xJ -C /tmp
+        cd /tmp/qemu-9.2.2
+        ./configure --target-list=x86_64-softmmu --disable-docs --disable-user \
+            --disable-gtk --disable-sdl --disable-vnc --disable-spice \
+            --disable-opengl --disable-xen --disable-curl --disable-rbd \
+            --disable-libssh --disable-capstone --disable-dbus-display \
+            --prefix=/opt/qemu
+        make -j$(nproc)
+        cp build/qemu-system-x86_64 build/qemu-img /output/
+    '
+    cd /tmp && tar cf - -C qemu-out qemu-system-x86_64 qemu-img \
+        | zstd -9 > "qemu-9.2.2-${suffix}.tar.zst"
+    rm -rf /tmp/qemu-out/*
+done
+
+# Publish (updates existing release)
+gh release upload qemu-9.2.2 /tmp/qemu-9.2.2-el9.tar.zst --clobber
+gh release upload qemu-9.2.2 /tmp/qemu-9.2.2-el10.tar.zst --clobber
+```
+
+Notes:
+- Rocky 8 needs `dnf install python38` (system python is too old)
+- Ubuntu uses the system QEMU package (has microvm)
+- Bump `QEMU_VERSION` in `lib/setup.py` when updating
+
 ## Issue Tracking
 
 This project uses `bd` (beads) for task tracking.

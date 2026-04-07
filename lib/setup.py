@@ -221,6 +221,74 @@ def _install_qemu_path_profile() -> None:
     )
 
 
+# GitHub release tag and asset names for pre-built QEMU binaries
+_QEMU_RELEASE_TAG = f"qemu-{QEMU_VERSION}"
+_QEMU_GITHUB_REPO = "lustre-tools/lustre-test-vms-v2"
+
+
+def _fetch_prebuilt_qemu(host: HostInfo) -> bool:
+    """Try to download pre-built QEMU binaries from GitHub.
+
+    Returns True if installed successfully, False if not available.
+    """
+    # Determine which binary to fetch based on host OS
+    osr = Path("/etc/os-release")
+    os_id = "unknown"
+    os_ver = "0"
+    if osr.exists():
+        for line in osr.read_text().splitlines():
+            if line.startswith("ID="):
+                os_id = line.split("=", 1)[1].strip('"').strip("'")
+            elif line.startswith("VERSION_ID="):
+                os_ver = line.split("=", 1)[1].strip('"').strip("'")
+
+    if os_id in ("rocky", "rhel", "centos", "almalinux"):
+        major = os_ver.split(".")[0]
+        asset = f"qemu-{QEMU_VERSION}-el{major}.tar.zst"
+    else:
+        # No pre-built binary for this OS
+        return False
+
+    url = (
+        f"https://github.com/{_QEMU_GITHUB_REPO}/releases/download/"
+        f"{_QEMU_RELEASE_TAG}/{asset}"
+    )
+
+    log.info("Downloading pre-built QEMU %s for EL%s...", QEMU_VERSION, major)
+    tmpdir = Path(tempfile.mkdtemp(prefix="qemu-fetch."))
+    try:
+        r = _run(
+            ["curl", "-fsSL", url, "-o", str(tmpdir / asset)],
+            check=False, quiet=True,
+        )
+        if r.returncode != 0:
+            log.info("Pre-built QEMU not available for this platform")
+            return False
+
+        _run(["tar", "xf", str(tmpdir / asset), "-C", str(tmpdir)], check=True)
+
+        QEMU_PREFIX.mkdir(parents=True, exist_ok=True)
+        (QEMU_PREFIX / "bin").mkdir(exist_ok=True)
+        for binary in ("qemu-system-x86_64", "qemu-img"):
+            src = tmpdir / binary
+            if src.exists():
+                dst = QEMU_PREFIX / "bin" / binary
+                shutil.copy2(str(src), str(dst))
+                dst.chmod(0o755)
+
+        # Verify microvm support
+        qemu = QEMU_PREFIX / "bin" / "qemu-system-x86_64"
+        r = _run_quiet([str(qemu), "-machine", "help"], check=False)
+        if "microvm" not in r.stdout:
+            log.warning("Pre-built QEMU lacks microvm -- will build from source")
+            return False
+
+        log.info("Installed pre-built QEMU %s to %s", QEMU_VERSION, QEMU_PREFIX)
+        return True
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
 def _system_qemu_has_microvm() -> str | None:
     """Check if the system-packaged QEMU has microvm support.
 
@@ -278,11 +346,16 @@ def install_qemu(host: HostInfo, force: bool = False) -> None:
         _install_qemu_path_profile()
         return
 
-    # Step 4: build from source -- installs to QEMU_PREFIX (/opt/qemu),
+    # Step 4: try pre-built QEMU binary from GitHub
+    if _fetch_prebuilt_qemu(host):
+        _install_qemu_path_profile()
+        return
+
+    # Step 5: build from source -- installs to QEMU_PREFIX (/opt/qemu),
     # does not replace the system QEMU.
     log.info(
-        "System QEMU lacks microvm support. Building QEMU %s from "
-        "source into %s (will not replace system QEMU).",
+        "System QEMU lacks microvm support and no pre-built binary "
+        "available. Building QEMU %s from source into %s.",
         QEMU_VERSION, QEMU_PREFIX,
     )
 
