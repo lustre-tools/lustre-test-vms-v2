@@ -104,6 +104,8 @@ def launch_qemu(vm: VMInfo) -> None:
         "-daemonize",
         "-pidfile",
         str(vm.pid_path),
+        "-qmp",
+        f"unix:{vm.socket_path},server,nowait",
     ]
 
     total_disks = vm.mdt_disks + vm.ost_disks

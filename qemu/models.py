@@ -72,6 +72,10 @@ class VMInfo:
         return SOCKETS / f"{self.name}.log"
 
     @property
+    def socket_path(self) -> Path:
+        return SOCKETS / f"{self.name}.qmp"
+
+    @property
     def overlay_path(self) -> Path:
         return OVERLAYS / f"{self.name}.qcow2"
 

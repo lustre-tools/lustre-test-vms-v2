@@ -239,7 +239,30 @@ def _deploy_kernel_modules(vm_name: str, lib_modules_path: Path) -> RunResult:
             return res
 
     # Run depmod for the VM's running kernel
-    return _run([VM_SH, "exec", "--timeout", "10", vm_name, "depmod -a"])
+    res = _run([VM_SH, "exec", "--timeout", "10", vm_name, "depmod -a"])
+    if not res["ok"]:
+        return res
+
+    # Install vmlinuz for kdump.
+    # lib_modules_path = .../modules/lib/modules  ->  vmlinuz is at .../vmlinuz
+    kernel_dir = lib_modules_path.parent.parent.parent
+    vmlinuz = kernel_dir / "vmlinuz"
+    if vmlinuz.exists():
+        kver = versions[0].name
+        _run(
+            [
+                VM_SH, "cp-to", vm_name,
+                str(vmlinuz), f"/boot/vmlinuz-{kver}",
+            ],
+            timeout=30,
+        )
+        _run(
+            [VM_SH, "exec", "--timeout", "15", vm_name,
+             f"kdumpctl rebuild 2>/dev/null; systemctl restart kdump 2>/dev/null"],
+            timeout=20,
+        )
+
+    return res
 
 
 # ------------------------------------------------------------------
