@@ -33,27 +33,9 @@ RUN dnf -y install \
 
 # Whamcloud-patched e2fsprogs (required for server builds).
 # ldiskfs/mkfs.lustre needs ext2fs >= 1.47.3-wc2.
-# Auto-discovers the latest v*-wc* release tag and builds
-# from source so the container always has a released version.
-RUN E2FS_REPO=https://review.whamcloud.com/tools/e2fsprogs \
-    && TAG=$(git ls-remote --tags "$E2FS_REPO" 'refs/tags/v*wc*' \
-        | grep -v '\^{}' \
-        | awk '{print $2}' \
-        | sed 's|refs/tags/||' \
-        | sort -V \
-        | tail -1) \
-    && echo "e2fsprogs: using tag $TAG" \
-    && git clone --depth 1 --branch "$TAG" \
-        "$E2FS_REPO" /tmp/e2fsprogs \
-    && cd /tmp/e2fsprogs \
-    && ./configure --prefix=/usr --with-root-prefix="" \
-        --enable-elf-shlibs --disable-uuidd \
-    && make -j$(nproc) \
-    && make install \
-    && make install-libs \
-    && ldconfig \
-    && echo "e2fsprogs: $(pkg-config --modversion ext2fs)" \
-    && cd / && rm -rf /tmp/e2fsprogs
+# Auto-discovers the latest v*-wc* release tag.
+COPY common/build-e2fsprogs.sh /tmp/build-e2fsprogs.sh
+RUN bash /tmp/build-e2fsprogs.sh && rm /tmp/build-e2fsprogs.sh
 
 # ccache for faster rebuilds
 RUN dnf -y install ccache \

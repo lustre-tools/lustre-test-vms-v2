@@ -102,6 +102,12 @@ class TargetConfig:
         return str(v) if v is not None else None
 
     @property
+    def kernel_deb_source(self) -> str | None:
+        """Deb package name for kernel source, or None if not applicable."""
+        v = self._data.get("kernel_deb_source")
+        return str(v) if v is not None else None
+
+    @property
     def root_password(self) -> str:
         """Root password for VM SSH access."""
         return str(self._data.get("root_password", "initial0"))
@@ -494,6 +500,10 @@ RUN dnf -y install \\
         libselinux-devel zlib-devel \\
     && dnf clean all
 
+# Whamcloud-patched e2fsprogs
+COPY common/build-e2fsprogs.sh /tmp/build-e2fsprogs.sh
+RUN bash /tmp/build-e2fsprogs.sh && rm /tmp/build-e2fsprogs.sh
+
 WORKDIR /build
 ENTRYPOINT ["/bin/bash"]
 """)
@@ -541,9 +551,24 @@ RUN apt-get update \\
         | xargs apt-get install -y \\
     && rm -rf /var/lib/apt/lists/*
 
-# TODO: Add SSH setup, serial console, networking, kdump
-# See an existing rhel target's image.Dockerfile for reference.
+COPY common/build-e2fsprogs.sh /tmp/build-e2fsprogs.sh
+COPY common/build-tools.sh     /tmp/build-tools.sh
+COPY common/setup-ssh.sh       /tmp/setup-ssh.sh
+COPY common/setup-serial.sh    /tmp/setup-serial.sh
+COPY common/rc.local           /etc/rc.d/rc.local
+COPY common/setup-network.sh   /tmp/setup-network.sh
+COPY common/setup-kdump.sh     /tmp/setup-kdump.sh
+COPY common/setup-services.sh  /tmp/setup-services.sh
 
+RUN bash /tmp/build-tools.sh
+RUN bash /tmp/build-e2fsprogs.sh v1.47.3-wc2
+RUN bash /tmp/setup-ssh.sh
+RUN bash /tmp/setup-serial.sh
+RUN bash /tmp/setup-network.sh
+RUN bash /tmp/setup-kdump.sh
+RUN bash /tmp/setup-services.sh
+
+RUN rm -rf /var/lib/apt/lists/* /tmp/*
 ENTRYPOINT ["/bin/bash"]
 """)
     else:
@@ -562,9 +587,24 @@ RUN cat /tmp/packages-base.txt /tmp/packages-os.txt \\
     | xargs dnf -y --allowerasing install \\
     && dnf clean all
 
-# TODO: Add SSH setup, serial console, networking, kdump
-# See an existing rhel target's image.Dockerfile for reference.
+COPY common/build-e2fsprogs.sh /tmp/build-e2fsprogs.sh
+COPY common/build-tools.sh     /tmp/build-tools.sh
+COPY common/setup-ssh.sh       /tmp/setup-ssh.sh
+COPY common/setup-serial.sh    /tmp/setup-serial.sh
+COPY common/rc.local           /etc/rc.d/rc.local
+COPY common/setup-network.sh   /tmp/setup-network.sh
+COPY common/setup-kdump.sh     /tmp/setup-kdump.sh
+COPY common/setup-services.sh  /tmp/setup-services.sh
 
+RUN bash /tmp/build-tools.sh
+RUN bash /tmp/build-e2fsprogs.sh v1.47.3-wc2
+RUN bash /tmp/setup-ssh.sh
+RUN bash /tmp/setup-serial.sh
+RUN bash /tmp/setup-network.sh
+RUN bash /tmp/setup-kdump.sh
+RUN bash /tmp/setup-services.sh
+
+RUN dnf clean all && rm -rf /var/cache/dnf /tmp/*
 ENTRYPOINT ["/bin/bash"]
 """)
 

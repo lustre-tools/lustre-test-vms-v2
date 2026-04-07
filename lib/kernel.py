@@ -24,6 +24,7 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 INNER_SCRIPT = Path(__file__).parent / "kernel-build-inner.sh"
+INNER_SCRIPT_DEB = Path(__file__).parent / "kernel-build-inner-deb.sh"
 
 
 # ------------------------------------------------------------------
@@ -94,7 +95,7 @@ def _shell_var(text: str, name: str) -> str | None:
 
 
 class LustreFiles(TypedDict):
-    config: Path
+    config: Path | None
     series_file: Path
     patches: list[Path]
 
@@ -115,9 +116,9 @@ def resolve_lustre_files(
     config_glob = (
         f"kernel-{target_info['lnxmaj']}-{lustre_target}-x86_64.config"
     )
-    config_path = kp / "kernel_configs" / config_glob
-    if not config_path.exists():
-        raise FileNotFoundError(f"Kernel config not found: {config_path}")
+    _config = kp / "kernel_configs" / config_glob
+    # No Lustre-provided config -- will extract from SRPM at build time
+    config_path: Path | None = _config if _config.exists() else None
 
     # Series file
     series_file = kp / "series" / target_info["series"]
@@ -235,20 +236,157 @@ def _build_config_fragment(target_config: TargetConfig) -> str:
 
 def build_kernel(
     target_config: TargetConfig,
-    lustre_tree: str | Path,
+    lustre_tree: str | Path | None,
     force: bool = False,
     kernel: str | None = None,
 ) -> dict[str, object]:
     """Build a kernel for the given target.
 
+    Dispatches to the deb-based build path for debian-family targets
+    (kernel_deb_source set), or the SRPM-based path for RHEL-family.
+
     Args:
         target_config: TargetConfig instance
-        lustre_tree: Path to a Lustre source tree
+        lustre_tree: Path to a Lustre source tree (not needed for deb targets)
         force: Build even if inputs haven't changed
         kernel: Lustre target name to build (defaults to target_config.lustre_target)
 
     Returns:
         dict with build metadata
+    """
+    if target_config.kernel_deb_source:
+        return _build_kernel_deb(target_config, force=force, kernel=kernel)
+
+    if lustre_tree is None:
+        raise ValueError("lustre_tree is required for SRPM-based kernel builds")
+
+    return _build_kernel_srpm(
+        target_config, lustre_tree, force=force, kernel=kernel
+    )
+
+
+def _build_kernel_deb(
+    target_config: TargetConfig,
+    force: bool = False,
+    kernel: str | None = None,
+) -> dict[str, object]:
+    """Build a kernel from a deb linux-source package.
+
+    The build container already has the kernel source installed via apt.
+    We extract it, apply the microvm config fragment, and build.
+    No Lustre kernel patches or .target file needed -- this is for
+    client-only targets where we build against the stock distro kernel.
+    """
+    lustre_target = kernel or target_config.lustre_target
+    deb_source = target_config.kernel_deb_source
+    assert deb_source is not None
+
+    # Staleness check
+    if not force and not target_config.is_stale("kernel", kernel=lustre_target):
+        log.info("Kernel is up to date (use force=True to rebuild)")
+        return kernel_status(target_config, kernel=kernel)
+
+    # For deb targets, output dir is just the target name (no SRPM version)
+    full_name = lustre_target
+    log.info("Kernel output directory: kernels/%s", full_name)
+
+    # Ensure container image
+    image_tag = _ensure_container_image(target_config)
+
+    # Prepare output directory
+    kernel_out = target_config.output_dir / "kernels" / full_name
+    kernel_out.mkdir(parents=True, exist_ok=True)
+    build_tree = kernel_out / "build-tree"
+
+    # Prepare staging area with config fragment (no patches/SRPM)
+    with tempfile.TemporaryDirectory(prefix="ltvm-kbuild-") as staging_str:
+        staging = Path(staging_str)
+
+        # Empty patches dir and series (no patches for stock kernel)
+        (staging / "patches").mkdir()
+        (staging / "series").write_text("")
+
+        # Write config fragment
+        frag = _build_config_fragment(target_config)
+        (staging / "config.fragment").write_text(frag)
+
+        # Copy inner build script
+        shutil.copy2(INNER_SCRIPT_DEB, staging / "kernel-build-inner-deb.sh")
+        os.chmod(staging / "kernel-build-inner-deb.sh", 0o755)
+
+        # Run build in container
+        jobs = os.cpu_count() or 4
+        container_cmd = [
+            "podman",
+            "run",
+            "--rm",
+            "-v",
+            f"{staging}:/input/staging:ro,Z",
+            "-v",
+            f"{kernel_out}:/output:Z",
+            "-v",
+            f"ltvm-ccache-{target_config.name}:/ccache:Z",
+            "-e",
+            f"JOBS={jobs}",
+            "-e",
+            f"KERNEL_DEB_SOURCE={deb_source}",
+            image_tag,
+            "-c",
+            "/input/staging/kernel-build-inner-deb.sh",
+        ]
+
+        log.info(
+            "Starting deb kernel build in container (j%d, %s)...",
+            jobs,
+            deb_source,
+        )
+        subprocess.run(container_cmd, check=True)
+
+    # Verify outputs
+    vmlinux = kernel_out / "vmlinux"
+    vmlinuz = kernel_out / "vmlinuz"
+    if not vmlinux.exists():
+        raise RuntimeError("Build failed: vmlinux not found in output")
+    if not vmlinuz.exists():
+        raise RuntimeError("Build failed: vmlinuz not found in output")
+
+    # Get kernel version from build tree
+    krelease = "unknown"
+    kr_file = build_tree / "include/config/kernel.release"
+    if kr_file.exists():
+        krelease = kr_file.read_text().strip()
+
+    vmlinux_size = vmlinux.stat().st_size
+    vmlinuz_size = vmlinuz.stat().st_size
+    log.info("vmlinux: %.1f MB", vmlinux_size / 1e6)
+    log.info("vmlinuz: %.1f MB", vmlinuz_size / 1e6)
+    log.info("Kernel version: %s", krelease)
+
+    # Write metadata
+    meta: dict[str, object] = {
+        "kernel_version": krelease,
+        "deb_source": deb_source,
+        "lustre_target": lustre_target,
+        "patches_applied": 0,
+        "vmlinux_bytes": vmlinux_size,
+        "vmlinuz_bytes": vmlinuz_size,
+        "built_at": datetime.now(timezone.utc).isoformat(),
+    }
+    target_config.write_meta("kernel", kernel=full_name, **meta)
+
+    log.info("Kernel build complete")
+    return meta
+
+
+def _build_kernel_srpm(
+    target_config: TargetConfig,
+    lustre_tree: str | Path,
+    force: bool = False,
+    kernel: str | None = None,
+) -> dict[str, object]:
+    """Build a kernel from a distro SRPM with Lustre patches.
+
+    This is the original RHEL/SLES build path.
     """
     lustre_tree = Path(lustre_tree)
     lustre_target = kernel or target_config.lustre_target
@@ -265,10 +403,12 @@ def build_kernel(
     # Resolve Lustre kernel config and patches
     lustre_files = resolve_lustre_files(lustre_tree, lustre_target, target_info)
     lustre_config = lustre_files["config"]
-    assert isinstance(lustre_config, Path)
     lustre_patches = lustre_files["patches"]
     assert isinstance(lustre_patches, list)
-    log.info("Kernel config: %s", lustre_config)
+    if lustre_config is not None:
+        log.info("Kernel config: %s", lustre_config)
+    else:
+        log.info("No Lustre kernel config -- will extract from SRPM")
     log.info("Patches to apply: %d", len(lustre_patches))
 
     # Compute the full output directory name: <lustre_target>-<lnxmaj>-<lnxrel>
@@ -317,8 +457,11 @@ def build_kernel(
         series_list = staging / "series"
         series_list.write_text("\n".join(p.name for p in lustre_patches) + "\n")
 
-        # Copy kernel config
-        shutil.copy2(lustre_config, staging / "kernel.config")
+        # Copy kernel config (empty sentinel if extracting from SRPM)
+        if lustre_config is not None:
+            shutil.copy2(lustre_config, staging / "kernel.config")
+        else:
+            (staging / "kernel.config").write_text("")
 
         # Write config fragment
         frag = _build_config_fragment(target_config)
@@ -341,7 +484,7 @@ def build_kernel(
             "-v",
             f"{kernel_out}:/output:Z",
             "-v",
-            "ltvm-ccache:/ccache:Z",
+            f"ltvm-ccache-{target_config.name}:/ccache:Z",
             "-e",
             f"JOBS={jobs}",
             "-e",
@@ -377,7 +520,7 @@ def build_kernel(
     log.info("Kernel version: %s", krelease)
 
     # Write metadata
-    meta = {
+    meta: dict[str, object] = {
         "kernel_version": krelease,
         "srpm": target_info["srpm"],
         "lnxmaj": target_info["lnxmaj"],

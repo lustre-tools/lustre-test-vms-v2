@@ -111,14 +111,16 @@ class TestResolveLustreFiles:
             assert p.exists()
             assert p.suffix == ".patch"
 
-    def test_missing_config(self, lustre_tree: Path) -> None:
+    def test_missing_config_returns_none(self, lustre_tree: Path) -> None:
+        # No Lustre-provided config for this target -- config is None
+        # so the build path can extract it from the SRPM instead.
         target_info = {
             "lnxmaj": "6.0.0",
             "lnxrel": "1.el9",
             "series": "fake.series",
         }
-        with pytest.raises(FileNotFoundError, match="config not found"):
-            resolve_lustre_files(lustre_tree, "fake-target", target_info)
+        files = resolve_lustre_files(lustre_tree, "fake-target", target_info)
+        assert files["config"] is None
 
     def test_missing_patch(self, lustre_tree: Path) -> None:
         """Series references a patch that doesn't exist."""
