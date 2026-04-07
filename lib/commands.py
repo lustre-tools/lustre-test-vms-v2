@@ -517,6 +517,19 @@ def cmd_package(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------
 
 
+def _gh_api(endpoint: str) -> dict:
+    """Call GitHub API and return parsed JSON."""
+    api = f"https://api.github.com/repos/{GITHUB_REPO}/{endpoint}"
+    r = subprocess.run(
+        ["curl", "-fsSL", api], capture_output=True, text=True,
+    )
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"GitHub API failed (rc={r.returncode}): {api}\n  {r.stderr.strip()}"
+        )
+    return json.loads(r.stdout)
+
+
 def _find_release_url(
     target: str,
     kernel: str | None = None,
@@ -524,35 +537,39 @@ def _find_release_url(
 ) -> str:
     """Query GitHub releases for a matching tarball URL.
 
-    Searches release assets for files matching the target
-    name (and optionally kernel name).  Returns the download
-    URL for the first match.
+    When release=="latest", searches all releases for one whose
+    tag starts with the target name.  Returns the download URL.
     """
-    if release == "latest":
-        api = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
-    else:
-        api = (
-            f"https://api.github.com/repos/{GITHUB_REPO}"
-            f"/releases/tags/{release}"
-        )
+    if release != "latest":
+        # Exact tag specified
+        data = _gh_api(f"releases/tags/{release}")
+        return _match_asset(data, target, kernel)
 
-    r = subprocess.run(
-        ["curl", "-fsSL", api],
-        capture_output=True,
-        text=True,
+    # Search all releases for one matching this target
+    releases = _gh_api("releases")
+    if not isinstance(releases, list):
+        releases = [releases]
+
+    for rel in releases:
+        tag = rel.get("tag_name", "")
+        if tag.startswith(target):
+            if kernel and kernel not in tag:
+                continue
+            try:
+                return _match_asset(rel, target, kernel)
+            except RuntimeError:
+                continue
+
+    raise RuntimeError(
+        f"No release found for target '{target}'\n"
+        f"  Available: {', '.join(r.get('tag_name', '?') for r in releases)}"
     )
-    if r.returncode != 0:
-        raise RuntimeError(
-            f"GitHub API request failed (rc={r.returncode})"
-            f"\n  URL: {api}"
-            f"\n  {r.stderr.strip()}"
-        )
 
-    data = json.loads(r.stdout)
+
+def _match_asset(data: dict, target: str, kernel: str | None) -> str:
+    """Find a tarball asset in a release data dict."""
     assets = data.get("assets", [])
-    tag = data.get("tag_name", release)
-
-    # Filter assets matching target (and kernel if given)
+    tag = data.get("tag_name", "?")
     for asset in assets:
         name = asset.get("name", "")
         if not name.startswith(target):
@@ -562,16 +579,10 @@ def _find_release_url(
         if name.endswith((".tar.zst", ".tar.gz")):
             return str(asset["browser_download_url"])
 
-    # No match found -- list what's available
-    avail = [
-        a["name"] for a in assets if a["name"].endswith((".tar.zst", ".tar.gz"))
-    ]
-    avail_str = "\n  ".join(avail) if avail else "(none)"
-    kernel_hint = f" --kernel {kernel}" if kernel else ""
+    avail = [a["name"] for a in assets if a["name"].endswith((".tar.zst", ".tar.gz"))]
     raise RuntimeError(
-        f"No asset matching target={target}"
-        f"{kernel_hint} in release {tag}\n"
-        f"  Available assets:\n  {avail_str}"
+        f"No asset matching target={target} in release {tag}\n"
+        f"  Available: {', '.join(avail) or '(none)'}"
     )
 
 
