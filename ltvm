@@ -263,21 +263,17 @@ def build_parser() -> argparse.ArgumentParser:
     # -- fetch --
     sp = sub.add_parser(
         "fetch",
-        parents=[common, kernel_arg],
-        help="Download a pre-built target package "
-        "(default: latest GitHub release)",
+        parents=[common],
+        help="Download pre-built target artifacts from GitHub",
     )
-    sp.add_argument("target")
-    sp.add_argument(
-        "--url",
-        default=None,
-        help="Direct URL (skip GitHub release lookup)",
-    )
-    sp.add_argument(
-        "--release",
-        default="latest",
-        help="GitHub release tag (default: latest)",
-    )
+    sp.add_argument("target", nargs="?", default=None,
+                    help="Target name (e.g. rocky9)")
+    sp.add_argument("filter", nargs="?", default=None,
+                    help="Optional filter (e.g. '5.14', '611')")
+    sp.add_argument("--list", action="store_true",
+                    help="List available releases")
+    sp.add_argument("--url", default=None,
+                    help="Direct URL (skip GitHub lookup)")
     sp.set_defaults(func=cmd_fetch)
 
     # -- publish --

@@ -532,94 +532,106 @@ def _gh_api(endpoint: str) -> dict:
 
 def _find_release_url(
     target: str,
-    kernel: str | None = None,
-    release: str = "latest",
+    filter_str: str | None = None,
 ) -> str:
-    """Query GitHub releases for a matching tarball URL.
+    """Find a tarball download URL from GitHub releases.
 
-    When release=="latest", searches all releases for one whose
-    tag starts with the target name.  Returns the download URL.
+    Searches all releases for one whose tag starts with the target
+    name and optionally contains filter_str.  Returns the first
+    matching asset's download URL.
     """
-    if release != "latest":
-        # Exact tag specified
-        data = _gh_api(f"releases/tags/{release}")
-        return _match_asset(data, target, kernel)
-
-    # Search all releases for one matching this target
     releases = _gh_api("releases")
     if not isinstance(releases, list):
         releases = [releases]
 
     for rel in releases:
         tag = rel.get("tag_name", "")
-        if tag.startswith(target):
-            if kernel and kernel not in tag:
-                continue
-            try:
-                return _match_asset(rel, target, kernel)
-            except RuntimeError:
-                continue
+        if not tag.startswith(target):
+            continue
+        if filter_str and filter_str not in tag:
+            continue
+        for asset in rel.get("assets", []):
+            name = asset.get("name", "")
+            if name.endswith((".tar.zst", ".tar.gz")):
+                return str(asset["browser_download_url"])
 
+    avail = [r.get("tag_name", "?") for r in releases]
+    hint = f" matching '{filter_str}'" if filter_str else ""
     raise RuntimeError(
-        f"No release found for target '{target}'\n"
-        f"  Available: {', '.join(r.get('tag_name', '?') for r in releases)}"
+        f"No release found for '{target}'{hint}\n"
+        f"  Available releases: {', '.join(avail)}\n"
+        f"  Try: ltvm fetch --list"
     )
 
 
-def _match_asset(data: dict, target: str, kernel: str | None) -> str:
-    """Find a tarball asset in a release data dict."""
-    assets = data.get("assets", [])
-    tag = data.get("tag_name", "?")
-    for asset in assets:
-        name = asset.get("name", "")
-        if not name.startswith(target):
+def _list_releases(target: str | None = None) -> list[dict]:
+    """List available releases, optionally filtered by target prefix."""
+    releases = _gh_api("releases")
+    if not isinstance(releases, list):
+        releases = [releases]
+    result = []
+    for rel in releases:
+        tag = rel.get("tag_name", "")
+        if target and not tag.startswith(target):
             continue
-        if kernel and kernel not in name:
-            continue
-        if name.endswith((".tar.zst", ".tar.gz")):
-            return str(asset["browser_download_url"])
-
-    avail = [a["name"] for a in assets if a["name"].endswith((".tar.zst", ".tar.gz"))]
-    raise RuntimeError(
-        f"No asset matching target={target} in release {tag}\n"
-        f"  Available: {', '.join(avail) or '(none)'}"
-    )
+        assets = [a["name"] for a in rel.get("assets", [])
+                  if a["name"].endswith((".tar.zst", ".tar.gz"))]
+        size_mb = sum(a.get("size", 0) for a in rel.get("assets", [])) / (1024 * 1024)
+        result.append({
+            "tag": tag,
+            "date": rel.get("published_at", "")[:10],
+            "assets": assets,
+            "size_mb": round(size_mb),
+        })
+    return result
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
     use_json = args.json
     url = getattr(args, "url", None)
-    kernel = getattr(args, "kernel", None)
-    release = getattr(args, "release", "latest")
+    target = getattr(args, "target", None)
+    filt = getattr(args, "filter", None)
+
+    # --list: show available releases
+    if getattr(args, "list", False):
+        try:
+            releases = _list_releases(target)
+        except RuntimeError as e:
+            return _error(str(e), use_json)
+        if use_json:
+            _output(releases, use_json)
+        else:
+            if not releases:
+                print("  (no releases found)")
+            for r in releases:
+                print(f"  {r['tag']:<60s}  {r['size_mb']:>5d} MB  {r['date']}")
+        return EXIT_OK
+
+    if not target:
+        return _error("target required (e.g. ltvm fetch rocky9)", use_json)
 
     from lib.config import OUTPUT_DIR
 
     # Resolve URL: explicit --url, or GitHub release lookup
     if not url:
         if not use_json:
-            print(
-                f"Looking up {args.target} from GitHub release ({release})..."
-            )
+            print(f"Looking up {target} from GitHub releases...")
         try:
-            url = _find_release_url(
-                args.target,
-                kernel=kernel,
-                release=release,
-            )
+            url = _find_release_url(target, filter_str=filt)
         except RuntimeError as e:
             return _error(str(e), use_json)
         if not use_json:
             print(f"  Found: {url}")
 
     if not use_json:
-        print(f"Fetching {args.target}...")
+        print(f"Fetching {target}...")
 
     try:
-        target_dir = fetch_target(args.target, url, OUTPUT_DIR)
+        target_dir = fetch_target(target, url, OUTPUT_DIR)
     except Exception as e:
         return _error(f"Fetch failed: {e}", use_json)
 
-    result = {"target": args.target, "path": str(target_dir)}
+    result = {"target": target, "path": str(target_dir)}
     _output(result, use_json)
     return EXIT_OK
 
