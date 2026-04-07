@@ -43,8 +43,8 @@ targets:
 
   rocky8:
     os_name: rocky
-    os_version: "8.10"
-    container_image: rockylinux:8.10
+    os_version: "8.9"
+    container_image: rockylinux:8.9
     status: working
     srpm_url: "https://dl.rockylinux.org/pub/rocky/8/BaseOS/source/tree/Packages/k"
     kernels:

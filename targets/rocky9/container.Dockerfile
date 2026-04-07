@@ -1,4 +1,5 @@
-FROM rockylinux:9
+ARG BASE_IMAGE=rockylinux:9
+FROM ${BASE_IMAGE}
 
 # Rocky 9 build container for kernel and Lustre builds.
 # GCC 11 matches the EL9 5.14.0 kernel build environment.

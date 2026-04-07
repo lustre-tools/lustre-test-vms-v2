@@ -1,4 +1,5 @@
-FROM rockylinux:9
+ARG BASE_IMAGE=rockylinux:9
+FROM ${BASE_IMAGE}
 
 # Rocky 9 VM base image.
 # Built via podman, exported to raw ext4 for QEMU microvm use.

@@ -1,4 +1,5 @@
-FROM rockylinux:8.10
+ARG BASE_IMAGE=rockylinux:8.9
+FROM ${BASE_IMAGE}
 
 # Rocky 8 build container for kernel and Lustre builds.
 # GCC 8 matches the EL8 4.18.0 kernel build environment.

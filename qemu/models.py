@@ -52,26 +52,33 @@ def resolve_os_artifacts(os_name: str) -> tuple[Path, Path]:
         except Exception:
             pass
 
-    if kernel_suffix:
-        exact = KERNELS / f"vmlinux-{os_name}-{kernel_suffix}"
-        if exact.exists():
-            kern = exact
+    # Prefer vmlinuz (compressed bzImage) — works with all kernel
+    # versions via standard x86 boot protocol.  vmlinux (ELF) only
+    # works if the kernel was built with CONFIG_PVH=y (5.x+).
+    for prefix in ("vmlinuz", "vmlinux"):
+        if kernel_suffix:
+            exact = KERNELS / f"{prefix}-{os_name}-{kernel_suffix}"
+            if exact.exists():
+                kern = exact
+                break
 
-    # Fallback: look for any vmlinux-<os>-* if exact match not found
+        # Fallback: look for any <prefix>-<os>-*
+        if kern == KERNEL:
+            candidates = list(KERNELS.glob(f"{prefix}-{os_name}-*"))
+            if len(candidates) == 1:
+                kern = candidates[0]
+                break
+            elif len(candidates) > 1:
+                raise FileNotFoundError(
+                    f"Multiple kernels installed for '{os_name}', specify --kernel:\n"
+                    + "\n".join(f"  {c}" for c in candidates)
+                )
+
     if kern == KERNEL:
-        candidates = list(KERNELS.glob(f"vmlinux-{os_name}-*"))
-        if len(candidates) == 1:
-            kern = candidates[0]
-        elif len(candidates) > 1:
-            raise FileNotFoundError(
-                f"Multiple kernels installed for '{os_name}', specify --kernel:\n"
-                + "\n".join(f"  {c}" for c in candidates)
-            )
-        else:
-            raise FileNotFoundError(
-                f"No kernel installed for '{os_name}'\n"
-                f"Run: ltvm build-kernel {os_name} && sudo ltvm install {os_name}"
-            )
+        raise FileNotFoundError(
+            f"No kernel installed for '{os_name}'\n"
+            f"Run: ltvm build-kernel {os_name} && sudo ltvm install {os_name}"
+        )
 
     return img, kern
 OVERLAYS = VM_DIR / "overlays"

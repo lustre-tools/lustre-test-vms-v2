@@ -1,4 +1,5 @@
-FROM ubuntu:24.04
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
 
 # Ubuntu 24.04 build container for kernel and Lustre client builds.
 # GCC 13 is the default on Noble Numbat.

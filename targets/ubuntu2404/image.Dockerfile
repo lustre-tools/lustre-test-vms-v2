@@ -1,4 +1,5 @@
-FROM ubuntu:24.04
+ARG BASE_IMAGE=ubuntu:24.04
+FROM ${BASE_IMAGE}
 
 # Ubuntu 24.04 VM base image.
 # Built via podman, exported to raw ext4 for QEMU microvm use.

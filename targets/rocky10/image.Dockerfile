@@ -1,4 +1,5 @@
-FROM quay.io/rockylinux/rockylinux:10.1
+ARG BASE_IMAGE=quay.io/rockylinux/rockylinux:10.1
+FROM ${BASE_IMAGE}
 
 # Rocky 10 VM base image.
 # Built via podman, exported to raw ext4 for QEMU microvm use.

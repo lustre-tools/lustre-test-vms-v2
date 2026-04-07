@@ -193,18 +193,18 @@ def _ensure_container_image(target_config: TargetConfig) -> str:
     log.info("Building container image: %s", tag)
     # Build context must be targets/ (parent of target_dir) so that
     # COPY common/... directives in the Dockerfile resolve correctly.
-    subprocess.run(
-        [
-            "podman",
-            "build",
-            "-t",
-            tag,
-            "-f",
-            str(dockerfile),
-            str(TARGETS_DIR),
-        ],
-        check=True,
-    )
+    cmd = [
+        "podman",
+        "build",
+        "-t",
+        tag,
+        "--build-arg",
+        f"BASE_IMAGE={target_config.container_image}",
+        "-f",
+        str(dockerfile),
+        str(TARGETS_DIR),
+    ]
+    subprocess.run(cmd, check=True)
 
     return tag
 

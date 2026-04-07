@@ -95,8 +95,15 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
 
     # ── Step 1: Build container image ──
     log.info("Building container image %s ...", tag)
+    log.info("Running: podman build -t %s -f %s %s", tag, dockerfile, TARGETS_DIR)
     _run(
-        ["podman", "build", "-t", tag, "-f", str(dockerfile), str(TARGETS_DIR)],
+        [
+            "podman", "build",
+            "--build-arg", f"BASE_IMAGE={target_config.container_image}",
+            "-t", tag,
+            "-f", str(dockerfile),
+            str(TARGETS_DIR),
+        ],
         capture_output=False,
     )
 

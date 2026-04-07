@@ -1,4 +1,5 @@
-FROM quay.io/rockylinux/rockylinux:10.1
+ARG BASE_IMAGE=quay.io/rockylinux/rockylinux:10.1
+FROM ${BASE_IMAGE}
 
 # Rocky 10 build container for kernel and Lustre builds.
 # GCC 14 matches the EL10 6.12.0 kernel build environment.
