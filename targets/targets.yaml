@@ -59,7 +59,7 @@ targets:
     os_name: rocky
     os_version: "10.1"
     container_image: quay.io/rockylinux/rockylinux:10.1
-    server: false    # Lustre ldiskfs.m4 lacks RHEL_RELEASE_NO 101 case; uses 6.12-ml.series instead of 6.12-rhel10.0.series
+    server: false    # Two blockers: (1) 10.0 SRPM 55.43.1 not published by Rocky yet, (2) ldiskfs.m4 lacks RHEL_RELEASE_NO 101 for 10.1
     default_mem: 4096  # 6.12 kernel + EL10 services need more RAM
     status: working
     srpm_url: "https://dl.rockylinux.org/pub/rocky/10/BaseOS/source/tree/Packages/k"
