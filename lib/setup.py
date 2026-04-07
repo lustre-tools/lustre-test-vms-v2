@@ -168,27 +168,73 @@ def check_prerequisites(host: HostInfo) -> None:
         )
 
 
+def _detect_platform_hint() -> str:
+    """Return a short hint about how to enable KVM on this platform."""
+    if is_wsl2():
+        return (
+            "WSL2 detected. From elevated PowerShell on the Windows host:\n"
+            "  Set-VMProcessor -VMName WSL "
+            "-ExposeVirtualizationExtensions $true\n"
+            "  wsl --shutdown"
+        )
+    # Check if we're inside a VM
+    product = Path("/sys/class/dmi/id/product_name")
+    if product.exists():
+        name = product.read_text().strip().lower()
+        if "virtualbox" in name:
+            return "VirtualBox detected. Enable nested VT-x in VM settings."
+        if "vmware" in name:
+            return (
+                "VMware detected. Enable 'Virtualize Intel VT-x' "
+                "in VM processor settings."
+            )
+        if "kvm" in name or "qemu" in name:
+            return (
+                "KVM/QEMU guest detected. Ensure the host has:\n"
+                "  options kvm_intel nested=1  (or kvm_amd)\n"
+                "  <cpu mode='host-passthrough'/> in the VM XML"
+            )
+    hypervisor = Path("/sys/hypervisor/type")
+    if hypervisor.exists():
+        hv = hypervisor.read_text().strip()
+        if hv == "xen":
+            return "Xen detected. Use HVM mode with nested virt."
+    # Azure/Hyper-V
+    vendor = Path("/sys/class/dmi/id/sys_vendor")
+    if vendor.exists() and "microsoft" in vendor.read_text().lower():
+        return (
+            "Hyper-V detected. From elevated PowerShell on the host:\n"
+            "  Set-VMProcessor -VMName <name> "
+            "-ExposeVirtualizationExtensions $true"
+        )
+    # Check for Apple Virtualization Framework / Parallels
+    if vendor.exists():
+        v = vendor.read_text().lower()
+        if "apple" in v:
+            return (
+                "Apple Virtualization Framework detected. Ensure "
+                "'Use Apple Virtualization' is enabled in UTM/Parallels."
+            )
+        if "parallels" in v:
+            return "Parallels detected. Enable nested virt in VM config."
+    return "Check BIOS for VT-x/AMD-V, or enable nested virt if this is a VM."
+
+
 def check_kvm(require: bool = True) -> bool:
     """Check for /dev/kvm.  Returns True if present."""
     if Path("/dev/kvm").exists():
         return True
-    if is_wsl2():
-        msg = (
-            "/dev/kvm not found -- KVM is required.\n"
-            "On WSL2, enable nested virtualisation:\n"
-            "  1. From an elevated PowerShell on the Windows host:\n"
-            "       Get-VM  # find your WSL VM name\n"
-            "       Set-VMProcessor -VMName <name>"
-            " -ExposeVirtualizationExtensions $true\n"
-            "  2. wsl --shutdown && restart WSL2\n"
-            "  3. Verify inside WSL2: ls /dev/kvm"
-        )
-    else:
-        msg = (
-            "/dev/kvm not found -- VMs require KVM.  "
-            "Check CPU virtualization support and "
-            "nested virt if this is a VM."
-        )
+
+    hint = _detect_platform_hint()
+    doc_path = REPO_ROOT / "docs" / "NESTED_VIRTUALIZATION.md"
+    msg = (
+        "/dev/kvm not found -- KVM is required for ltvm VMs.\n"
+        "\n"
+        f"  {hint}\n"
+        "\n"
+        f"  Full guide: {doc_path}\n"
+        "  (or see docs/NESTED_VIRTUALIZATION.md in the repo)"
+    )
     if require:
         raise RuntimeError(msg)
     log.warning(msg)
