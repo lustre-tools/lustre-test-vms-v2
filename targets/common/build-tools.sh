@@ -34,5 +34,7 @@ for f in flamegraph.pl stackcollapse-perf.pl stackcollapse.pl difffolded.pl; do
 done
 
 # drgn (Python crash analysis)
-pip3 install drgn
+# --break-system-packages needed on Ubuntu 24.04+ (PEP 668)
+pip3 install --break-system-packages drgn 2>/dev/null \
+    || pip3 install drgn
 rm -rf /root/.cache/pip

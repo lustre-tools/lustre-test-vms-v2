@@ -7,12 +7,24 @@
 # - Creates a shared ed25519 key so VMs can SSH to each other without prompts
 set -euo pipefail
 
-# Enable sshd
-systemctl enable sshd
+# Enable sshd (service name differs: sshd on RHEL, ssh on Debian)
+if systemctl list-unit-files sshd.service &>/dev/null; then
+	systemctl enable sshd
+else
+	systemctl enable ssh
+fi
 
 # Allow root login with empty password
-echo "PermitRootLogin yes"      >> /etc/ssh/sshd_config
-echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config
+# Use sshd_config.d if available (Ubuntu 24.04+), else append to main config
+if [[ -d /etc/ssh/sshd_config.d ]]; then
+	cat > /etc/ssh/sshd_config.d/99-ltvm.conf <<'SSHEOF'
+PermitRootLogin yes
+PermitEmptyPasswords yes
+SSHEOF
+else
+	echo "PermitRootLogin yes"      >> /etc/ssh/sshd_config
+	echo "PermitEmptyPasswords yes" >> /etc/ssh/sshd_config
+fi
 
 # Clear root password
 passwd -d root
