@@ -244,7 +244,7 @@ def _build_in_container(
         "-v",
         f"{build_tree}:/kernel:ro",
         "-v",
-        "ltvm-ccache:/ccache",
+        f"ltvm-ccache-{container_tag.removeprefix('ltvm-build-')}:/ccache",
         container_tag,
         "-c",
         script,

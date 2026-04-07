@@ -332,15 +332,18 @@ def cmd_build_kernel(args: argparse.Namespace) -> int:
         return err
     assert tc is not None
 
-    lustre_tree, err_msg = _resolve_lustre_tree(args.lustre_tree)
-    if err_msg:
-        return _error(
-            err_msg,
-            use_json,
-            hint="Run from a Lustre tree, or pass "
-            "--lustre-tree /path/to/lustre-release",
-        )
-    assert lustre_tree is not None
+    # Deb-based targets don't need a Lustre tree for kernel builds
+    lustre_tree = None
+    if not tc.kernel_deb_source:
+        lustre_tree, err_msg = _resolve_lustre_tree(args.lustre_tree)
+        if err_msg:
+            return _error(
+                err_msg,
+                use_json,
+                hint="Run from a Lustre tree, or pass "
+                "--lustre-tree /path/to/lustre-release",
+            )
+        assert lustre_tree is not None
 
     kernel = getattr(args, "kernel", None)
 

@@ -104,7 +104,7 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
 
     # ── Step 3: Collect metadata ──
     size_mb = image_path.stat().st_size / (1024 * 1024)
-    pkg_manifest = _get_package_manifest(tag)
+    pkg_manifest = _get_package_manifest(tag, target_config.os_family)
 
     target_config.write_meta(
         "image",
@@ -203,21 +203,37 @@ def _export_to_ext4(container_tag: str, image_path: Path) -> Path:
             os.unlink(tmpfile)
 
 
-def _get_package_manifest(container_tag: str) -> list[str]:
-    """Get installed RPM list from the container image."""
+def _get_package_manifest(
+    container_tag: str, os_family: str = "rhel"
+) -> list[str]:
+    """Get installed package list from the container image."""
     try:
-        result = _run(
-            [
-                "podman",
-                "run",
-                "--rm",
-                container_tag,
-                "rpm",
-                "-qa",
-                "--queryformat",
-                "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\\n",
-            ]
-        )
+        if os_family == "debian":
+            result = _run(
+                [
+                    "podman",
+                    "run",
+                    "--rm",
+                    container_tag,
+                    "dpkg-query",
+                    "-W",
+                    "-f",
+                    "${Package} ${Version} ${Architecture}\n",
+                ]
+            )
+        else:
+            result = _run(
+                [
+                    "podman",
+                    "run",
+                    "--rm",
+                    container_tag,
+                    "rpm",
+                    "-qa",
+                    "--queryformat",
+                    "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\\n",
+                ]
+            )
         packages = sorted(result.stdout.strip().splitlines())
         return packages
     except subprocess.CalledProcessError:
