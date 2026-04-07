@@ -994,7 +994,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         except Exception:
             pass
         if not target:
-            target = "rocky9"
+            return _error(
+                f"Cannot detect target OS for VM '{args.vm}'. "
+                f"Pass --target explicitly.",
+                use_json,
+            )
 
     # Resolve kernel name for path lookups
     try:
