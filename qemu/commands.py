@@ -28,6 +28,7 @@ from .models import (
     SSH_TIMEOUT,
     VMInfo,
     VMNotFound,
+    resolve_os_artifacts,
 )
 from .net import (
     _real_user_ssh_dir,
@@ -83,8 +84,10 @@ def cmd_create(args: argparse.Namespace) -> None:
     tap = tap_for_name(name)
     mac = mac_for_name(name)
 
-    image = getattr(args, "image", "") or args.rootfs or str(BASE_IMAGE)
-    kernel = getattr(args, "kernel", "") or ""
+    os_target = getattr(args, "os", "") or "rocky9"
+    os_img, os_kern = resolve_os_artifacts(os_target)
+    image = getattr(args, "image", "") or args.rootfs or str(os_img)
+    kernel = getattr(args, "kernel", "") or str(os_kern)
 
     base_name = Path(image).name if image else "rocky9-base.ext4"
     os_id = (

@@ -58,6 +58,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="",
         help="Kernel path (default: vmlinux)",
     )
+    c.add_argument(
+        "--os",
+        default="",
+        help="Target OS (e.g. rocky9, ubuntu2404). Sets image + kernel automatically.",
+    )
     c.add_argument("--mdt-disks", type=int, default=0)
     c.add_argument("--ost-disks", type=int, default=0)
 
@@ -80,6 +85,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--kernel",
         default="",
         help="Kernel path (default: vmlinux)",
+    )
+    c.add_argument(
+        "--os",
+        default="",
+        help="Target OS (e.g. rocky9, ubuntu2404). Sets image + kernel automatically.",
     )
     c.add_argument("--json", action="store_true")
 

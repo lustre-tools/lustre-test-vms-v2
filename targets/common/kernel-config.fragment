@@ -1,7 +1,8 @@
 # Kernel config fragment applied to ALL targets
 # These are microvm-specific requirements
 
-# QEMU microvm direct kernel boot
+# QEMU microvm direct kernel boot (PVH ELF note in vmlinux)
+CONFIG_PVH=y
 CONFIG_XEN_PVH=y
 
 # kdump support

@@ -16,6 +16,55 @@ QEMU_IMG = str(QEMU_PREFIX / "bin" / "qemu-img")
 DISK_SIZE_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB
 BASE_IMAGE = Path("/opt/qemu-vms/images/rocky9-ltvm.ext4")
 KERNEL = VM_DIR / "kernel" / "vmlinux"
+IMAGES = VM_DIR / "images"
+KERNELS = VM_DIR / "kernel"
+
+# ltvm repo root — vm.py is installed to /opt/qemu-vms/qemu/models.py,
+# and the repo may also be at the symlink source of /usr/local/bin/ltvm.
+_LTVM_ROOT = Path(__file__).resolve().parent.parent
+TARGETS_YAML = _LTVM_ROOT / "targets" / "targets.yaml"
+
+
+def resolve_os_artifacts(os_name: str) -> tuple[Path, Path]:
+    """Return (image, kernel) paths for a target OS name.
+
+    Reads targets.yaml (from the repo or installed copy) for the
+    default kernel name, then resolves installed paths. Falls back
+    to globbing if targets.yaml isn't available.
+    """
+    # Image: <os>-ltvm.ext4
+    img = IMAGES / f"{os_name}-ltvm.ext4"
+    if not img.exists():
+        img = BASE_IMAGE
+
+    # Kernel: try targets.yaml first, then glob
+    kern = KERNEL
+    kernel_suffix = ""
+    if TARGETS_YAML.exists():
+        try:
+            import yaml
+            with open(TARGETS_YAML) as f:
+                cfg = yaml.safe_load(f)
+            kernel_suffix = cfg.get("targets", {}).get(os_name, {}).get("kernels", {}).get("default", "")
+        except Exception:
+            pass
+
+    if kernel_suffix:
+        exact = KERNELS / f"vmlinux-{os_name}-{kernel_suffix}"
+        if exact.exists():
+            kern = exact
+
+    # Fallback: newest vmlinux-<os>-* if exact match not found
+    if kern == KERNEL:
+        candidates = sorted(
+            KERNELS.glob(f"vmlinux-{os_name}-*"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        if candidates:
+            kern = candidates[0]
+
+    return img, kern
 OVERLAYS = VM_DIR / "overlays"
 SOCKETS = VM_DIR / "sockets"
 BRIDGE = "fcbr0"

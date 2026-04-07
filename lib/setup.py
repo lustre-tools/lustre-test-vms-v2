@@ -411,6 +411,13 @@ def install_scripts(host: HostInfo) -> None:
             ignore=shutil.ignore_patterns("host-config"),
         )
 
+    # targets.yaml -- needed by vm.py for --os resolution
+    targets_yaml = REPO_ROOT / "targets" / "targets.yaml"
+    if targets_yaml.exists():
+        targets_dst = VM_DIR / "targets"
+        targets_dst.mkdir(exist_ok=True)
+        shutil.copy2(str(targets_yaml), str(targets_dst / "targets.yaml"))
+
     # dk-filter
     dk = QEMU_DIR / "dk-filter"
     if dk.exists():
