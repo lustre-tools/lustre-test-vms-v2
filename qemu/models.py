@@ -35,7 +35,10 @@ def resolve_os_artifacts(os_name: str) -> tuple[Path, Path]:
     # Image: <os>-ltvm.ext4
     img = IMAGES / f"{os_name}-ltvm.ext4"
     if not img.exists():
-        img = BASE_IMAGE
+        raise FileNotFoundError(
+            f"No image installed for '{os_name}': {img}\n"
+            f"Run: ltvm build-image {os_name} && sudo ltvm install {os_name}"
+        )
 
     # Kernel: try targets.yaml first, then glob
     kern = KERNEL
@@ -54,15 +57,21 @@ def resolve_os_artifacts(os_name: str) -> tuple[Path, Path]:
         if exact.exists():
             kern = exact
 
-    # Fallback: newest vmlinux-<os>-* if exact match not found
+    # Fallback: look for any vmlinux-<os>-* if exact match not found
     if kern == KERNEL:
-        candidates = sorted(
-            KERNELS.glob(f"vmlinux-{os_name}-*"),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        )
-        if candidates:
+        candidates = list(KERNELS.glob(f"vmlinux-{os_name}-*"))
+        if len(candidates) == 1:
             kern = candidates[0]
+        elif len(candidates) > 1:
+            raise FileNotFoundError(
+                f"Multiple kernels installed for '{os_name}', specify --kernel:\n"
+                + "\n".join(f"  {c}" for c in candidates)
+            )
+        else:
+            raise FileNotFoundError(
+                f"No kernel installed for '{os_name}'\n"
+                f"Run: ltvm build-kernel {os_name} && sudo ltvm install {os_name}"
+            )
 
     return img, kern
 OVERLAYS = VM_DIR / "overlays"

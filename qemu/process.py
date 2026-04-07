@@ -14,7 +14,6 @@ from .models import (
     BRIDGE,
     EXIT_ERROR,
     GATEWAY,
-    KERNEL,
     QEMU,
     VMInfo,
 )
@@ -69,7 +68,9 @@ def launch_qemu(vm: VMInfo) -> None:
     run(["ip", "link", "set", vm.tap, "master", BRIDGE], check=True)
     run(["ip", "link", "set", vm.tap, "up"], check=True)
 
-    kernel = Path(vm.kernel) if vm.kernel else KERNEL
+    if not vm.kernel:
+        die(f"VM '{vm.name}' has no kernel path set — recreate with --os")
+    kernel = Path(vm.kernel)
 
     qemu_args = [
         QEMU,

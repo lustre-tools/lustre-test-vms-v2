@@ -86,7 +86,8 @@ $SSHPASS ssh $SSH_OPTS -o ConnectTimeout=2 ${REMOTE} true 2>/dev/null || {
 # Ensure rsync is available on the VM
 $SSHPASS ssh $SSH_OPTS ${REMOTE} "which rsync" &>/dev/null || {
     echo "--- Installing rsync on VM..."
-    VM_OS_ID=$($SSHPASS ssh $SSH_OPTS ${REMOTE} '. /etc/os-release; echo $ID' 2>/dev/null || echo "rocky")
+    VM_OS_ID=$($SSHPASS ssh $SSH_OPTS ${REMOTE} '. /etc/os-release; echo $ID')
+    [[ -z "${VM_OS_ID}" ]] && { echo "ERROR: could not detect VM OS"; exit 1; }
     if [[ "${VM_OS_ID}" == "ubuntu" ]]; then
         $SSHPASS ssh $SSH_OPTS ${REMOTE} "apt-get install -y rsync" 2>&1 | tail -1
     else
@@ -116,10 +117,10 @@ fi
 MODDIR="/lib/modules/${KVER}/extra/lustre"
 
 # Detect VM OS -- use ID field (rocky vs ubuntu) and VERSION_ID
-VM_OS_ID=$($SSHPASS ssh $SSH_OPTS ${REMOTE} \
-	'. /etc/os-release; echo $ID' 2>/dev/null || echo "rocky")
-VM_OS_VER=$($SSHPASS ssh $SSH_OPTS ${REMOTE} \
-	'. /etc/os-release; echo ${VERSION_ID%%.*}' 2>/dev/null || echo "9")
+VM_OS_ID=$($SSHPASS ssh $SSH_OPTS ${REMOTE} '. /etc/os-release; echo $ID')
+[[ -z "${VM_OS_ID}" ]] && { echo "ERROR: could not detect VM OS"; exit 1; }
+VM_OS_VER=$($SSHPASS ssh $SSH_OPTS ${REMOTE} '. /etc/os-release; echo ${VERSION_ID%%.*}')
+[[ -z "${VM_OS_VER}" ]] && VM_OS_VER="unknown"
 
 # Set TESTDIR based on OS (Ubuntu uses /usr/lib, Rocky uses /usr/lib64)
 if [[ "${VM_OS_ID}" == "ubuntu" ]]; then

@@ -13,7 +13,6 @@ from pathlib import Path
 from typing import Any
 
 from .models import (
-    BASE_IMAGE,
     DISK_SIZE_BYTES,
     EXIT_ERROR,
     EXIT_NOT_FOUND,
@@ -107,7 +106,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         mem=args.mem,
         mdt_disks=args.mdt_disks,
         ost_disks=args.ost_disks,
-        image=image if image != str(BASE_IMAGE) else "",
+        image=image,
         kernel=kernel,
         created=int(time.time()),
         base_image=base_name,
