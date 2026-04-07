@@ -45,12 +45,26 @@ targets:
     os_name: rocky
     os_version: "8.10"
     container_image: rockylinux:8.10
-    status: planned
+    status: working
     srpm_url: "https://dl.rockylinux.org/pub/rocky/8/BaseOS/source/tree/Packages/k"
     kernels:
       default: 4.18-rhel8.10
       available:
         - 4.18-rhel8.10
+      config:
+        CONFIG_XEN_PVH: "y"
+
+  rocky10:
+    os_name: rocky
+    os_version: "10.1"
+    container_image: quay.io/rockylinux/rockylinux:10.1
+    status: working
+    srpm_url: "https://dl.rockylinux.org/pub/rocky/10/BaseOS/source/tree/Packages/k"
+    kernels:
+      default: 6.12-rhel10.1
+      available:
+        - 6.12-rhel10.1
+        - 6.12-rhel10.0
       config:
         CONFIG_XEN_PVH: "y"
 
@@ -60,10 +74,11 @@ targets:
     os_family: debian
     container_image: ubuntu:24.04
     server: false
-    status: planned
+    status: experimental
+    kernel_deb_source: linux-source-6.8.0
     kernels:
-      default: 5.15-ubuntu24
+      default: 6.8-ubuntu2404
       available:
-        - 5.15-ubuntu24
+        - 6.8-ubuntu2404
       config:
         CONFIG_XEN_PVH: "y"

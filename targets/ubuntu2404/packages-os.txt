@@ -1,0 +1,7 @@
+# packages-os.txt -- Ubuntu 24.04 specific packages
+
+# Ubuntu base
+ubuntu-minimal
+
+# Extra repos / tools
+software-properties-common
