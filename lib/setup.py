@@ -616,13 +616,14 @@ def setup_network(host: HostInfo, subnet: str = DEFAULT_SUBNET) -> None:
 
 
 def install_scripts(host: HostInfo) -> None:
-    """Install vm.py, deploy-lustre.sh, dk-filter, and qemu package."""
-    log.info("Installing vm.py and deploy-lustre.sh")
+    """Install deploy-lustre.sh, dk-filter, and VM dirs."""
+    log.info("Installing scripts and VM directories")
 
     for d in ("overlays", "sockets", "kernel", "images"):
         (VM_DIR / d).mkdir(parents=True, exist_ok=True)
 
-    for script in ("vm.py", "deploy-lustre.sh"):
+    # deploy-lustre.sh (standalone shell helper, still used)
+    for script in ("deploy-lustre.sh",):
         src = QEMU_DIR / script
         if not src.exists():
             log.warning("%s not found at %s, skipping", script, src)
@@ -633,24 +634,6 @@ def install_scripts(host: HostInfo) -> None:
         link = Path("/usr/local/bin") / script
         link.unlink(missing_ok=True)
         link.symlink_to(dst)
-
-    # vm.py imports from qemu/ package -- install it alongside
-    qemu_pkg_dst = VM_DIR / "qemu"
-    if QEMU_DIR.is_dir():
-        if qemu_pkg_dst.exists():
-            shutil.rmtree(str(qemu_pkg_dst))
-        shutil.copytree(
-            str(QEMU_DIR),
-            str(qemu_pkg_dst),
-            ignore=shutil.ignore_patterns("host-config"),
-        )
-
-    # targets.yaml -- needed by vm.py for --os resolution
-    targets_yaml = REPO_ROOT / "targets" / "targets.yaml"
-    if targets_yaml.exists():
-        targets_dst = VM_DIR / "targets"
-        targets_dst.mkdir(exist_ok=True)
-        shutil.copy2(str(targets_yaml), str(targets_dst / "targets.yaml"))
 
     # dk-filter
     dk = QEMU_DIR / "dk-filter"
@@ -770,7 +753,7 @@ def verify(subnet: str = DEFAULT_SUBNET) -> dict[str, Any]:
     }
 
     # Scripts
-    for script in ("vm.py", "deploy-lustre.sh"):
+    for script in ("ltvm", "deploy-lustre.sh"):
         results[script] = {
             "installed": shutil.which(script) is not None,
             "path": shutil.which(script),
@@ -802,7 +785,7 @@ def verify(subnet: str = DEFAULT_SUBNET) -> dict[str, Any]:
             results["kvm"]["available"],
             results["bridge"]["up"],
             results["dnsmasq"]["running"],
-            results["vm.py"]["installed"],
+            results["ltvm"]["installed"],
             results["deploy-lustre.sh"]["installed"],
             results["podman"]["installed"],
             results["ssh"]["configured"],
@@ -849,7 +832,7 @@ def print_verify(results: dict[str, Any]) -> None:
     else:
         fail("dnsmasq: not running")
 
-    for script in ("vm.py", "deploy-lustre.sh"):
+    for script in ("ltvm", "deploy-lustre.sh"):
         s = results[script]
         if s["installed"]:
             ok(f"{script}: {s['path']}")

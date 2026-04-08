@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
-from .config import TARGETS_DIR
+from .config import TARGETS_DIR, arch_kernel_image, arch_srpm_config_name, arch_deb
 
 if TYPE_CHECKING:
     from .config import TargetConfig
@@ -107,6 +107,7 @@ def resolve_lustre_files(
     lustre_tree: str | Path,
     lustre_target: str,
     target_info: dict[str, str],
+    arch: str = "x86_64",
 ) -> LustreFiles:
     """Locate kernel config, series file, and patch files.
 
@@ -115,9 +116,10 @@ def resolve_lustre_files(
     lt = Path(lustre_tree)
     kp = lt / "lustre/kernel_patches"
 
-    # Kernel config
+    # Kernel config -- use arch-specific config name
+    srpm_arch = arch_srpm_config_name(arch)
     config_glob = (
-        f"kernel-{target_info['lnxmaj']}-{lustre_target}-x86_64.config"
+        f"kernel-{target_info['lnxmaj']}-{lustre_target}-{srpm_arch}.config"
     )
     _config = kp / "kernel_configs" / config_glob
     # No Lustre-provided config -- will extract from SRPM at build time
@@ -187,7 +189,13 @@ def _ensure_container_image(target_config: TargetConfig) -> str:
 
     Returns the image tag.
     """
-    tag = f"ltvm-build-{target_config.name}"
+    # Arch-qualify the tag so cross-compile containers coexist with native
+    arch = target_config.arch
+    default_arch = "x86_64"
+    if arch != default_arch:
+        tag = f"ltvm-build-{target_config.name}-{arch}"
+    else:
+        tag = f"ltvm-build-{target_config.name}"
     dockerfile = target_config.target_dir / "container.Dockerfile"
 
     log.info("Building container image: %s", tag)
@@ -215,7 +223,7 @@ def _ensure_container_image(target_config: TargetConfig) -> str:
 
 
 def _build_config_fragment(target_config: TargetConfig) -> str:
-    """Assemble the merged config fragment (common + target).
+    """Assemble the merged config fragment (common + arch + target).
 
     Returns the fragment text.
     """
@@ -226,6 +234,11 @@ def _build_config_fragment(target_config: TargetConfig) -> str:
     common = targets_dir / "common" / "kernel-config.fragment"
     if common.exists():
         lines.append(common.read_text())
+
+    # Arch-specific fragment (e.g. kernel-config-aarch64.fragment)
+    arch_frag = targets_dir / "common" / f"kernel-config-{target_config.arch}.fragment"
+    if arch_frag.exists():
+        lines.append(arch_frag.read_text())
 
     # Per-target overrides from kernel.conf [config]
     for key, val in target_config.kernel_config_overrides.items():
@@ -335,6 +348,8 @@ def _build_kernel_deb(
             f"JOBS={jobs}",
             "-e",
             f"KERNEL_DEB_SOURCE={deb_source}",
+            "-e",
+            f"TARGET_ARCH={target_config.arch}",
             image_tag,
             "-c",
             "/input/staging/kernel-build-inner-deb.sh",
@@ -406,7 +421,9 @@ def _build_kernel_srpm(
     log.info("Kernel SRPM: %s", target_info["srpm"])
 
     # Resolve Lustre kernel config and patches
-    lustre_files = resolve_lustre_files(lustre_tree, lustre_target, target_info)
+    lustre_files = resolve_lustre_files(
+        lustre_tree, lustre_target, target_info, arch=target_config.arch
+    )
     lustre_config = lustre_files["config"]
     lustre_patches = lustre_files["patches"]
     assert isinstance(lustre_patches, list)
@@ -496,6 +513,8 @@ def _build_kernel_srpm(
             f"LNXMAJ={target_info['lnxmaj']}",
             "-e",
             f"LNXREL={target_info['lnxrel']}",
+            "-e",
+            f"TARGET_ARCH={target_config.arch}",
             image_tag,
             "-c",
             "/input/staging/kernel-build-inner.sh",

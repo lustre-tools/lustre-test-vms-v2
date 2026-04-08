@@ -24,6 +24,60 @@ _DEFAULTS = {
     "server": True,
 }
 
+# Architecture mapping tables
+# Keys are the canonical arch name used in targets.yaml (x86_64, aarch64).
+_ARCH_TO_DEB = {"x86_64": "amd64", "aarch64": "arm64"}
+_ARCH_TO_KERNEL = {"x86_64": "x86", "aarch64": "arm64"}
+_ARCH_TO_KERNEL_IMAGE = {
+    "x86_64": "arch/x86/boot/bzImage",
+    "aarch64": "arch/arm64/boot/Image.gz",
+}
+_ARCH_TO_QEMU_SYSTEM = {
+    "x86_64": "qemu-system-x86_64",
+    "aarch64": "qemu-system-aarch64",
+}
+_ARCH_TO_QEMU_MACHINE = {
+    "x86_64": "microvm,accel=kvm,pit=off,pic=off,rtc=on",
+    "aarch64": "virt,accel=kvm,gic-version=max",
+}
+_ARCH_TO_QEMU_PKG = {"x86_64": "qemu-system-x86", "aarch64": "qemu-system-arm"}
+_ARCH_TO_SRPM_CONFIG = {"x86_64": "x86_64", "aarch64": "aarch64"}
+
+
+def arch_deb(arch: str) -> str:
+    """Map canonical arch to Debian arch name (amd64, arm64)."""
+    return _ARCH_TO_DEB.get(arch, arch)
+
+
+def arch_kernel(arch: str) -> str:
+    """Map canonical arch to kernel source tree arch dir (x86, arm64)."""
+    return _ARCH_TO_KERNEL.get(arch, arch)
+
+
+def arch_kernel_image(arch: str) -> str:
+    """Return the relative path to the kernel boot image for an arch."""
+    return _ARCH_TO_KERNEL_IMAGE.get(arch, _ARCH_TO_KERNEL_IMAGE["x86_64"])
+
+
+def arch_qemu_binary(arch: str) -> str:
+    """Return the qemu-system-<arch> binary name."""
+    return _ARCH_TO_QEMU_SYSTEM.get(arch, f"qemu-system-{arch}")
+
+
+def arch_qemu_machine(arch: str) -> str:
+    """Return the QEMU -machine argument for an arch."""
+    return _ARCH_TO_QEMU_MACHINE.get(arch, _ARCH_TO_QEMU_MACHINE["x86_64"])
+
+
+def arch_qemu_package(arch: str) -> str:
+    """Return the apt package name for the QEMU system emulator."""
+    return _ARCH_TO_QEMU_PKG.get(arch, "qemu-system-misc")
+
+
+def arch_srpm_config_name(arch: str) -> str:
+    """Return the arch string used in SRPM kernel config filenames."""
+    return _ARCH_TO_SRPM_CONFIG.get(arch, arch)
+
 
 def _load_registry() -> dict[str, Any]:
     """Load and return the full targets.yaml registry."""
@@ -35,12 +89,20 @@ def _load_registry() -> dict[str, Any]:
 
 
 class TargetConfig:
-    """Parsed configuration for a single build target."""
+    """Parsed configuration for a single build target.
 
-    def __init__(self, name: str) -> None:
+    Args:
+        name: Target name from targets.yaml (e.g. rocky9).
+        arch: Optional architecture override.  When given, replaces the
+              target's default arch and routes output to an
+              arch-qualified subdirectory (output/<target>/<arch>/).
+              When None (default), the target's configured arch is used
+              and output goes to output/<target>/ (backward-compatible).
+    """
+
+    def __init__(self, name: str, arch: str | None = None) -> None:
         self.name = name
         self.target_dir = TARGETS_DIR / name
-        self.output_dir = OUTPUT_DIR / name
 
         registry = _load_registry()
         targets = registry.get("targets", {})
@@ -54,6 +116,19 @@ class TargetConfig:
         # Merge defaults under target fields
         self._data: dict[str, Any] = {**defaults, **raw}
         self._kernels: dict[str, Any] = self._data.get("kernels", {})
+
+        # Resolve effective arch: CLI override > target > defaults
+        default_arch = str(self._data["arch"])
+        if arch is not None:
+            self._data["arch"] = arch
+
+        # Output directory: include arch subdirectory when an explicit
+        # override was given (so x86_64 and aarch64 artifacts coexist).
+        # When no override, keep the flat layout for backward compat.
+        if arch is not None and arch != default_arch:
+            self.output_dir = OUTPUT_DIR / name / arch
+        else:
+            self.output_dir = OUTPUT_DIR / name
 
         status = self._data.get("status", "working")
         if status not in ("working", "experimental"):

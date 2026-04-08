@@ -267,6 +267,7 @@ class TestEnsureContainerImage:
         (target_dir / "container.Dockerfile").write_text("FROM rockylinux:9\n")
         cfg = MagicMock()
         cfg.name = "rocky9"
+        cfg.arch = "x86_64"
         cfg.target_dir = target_dir
         return cfg
 

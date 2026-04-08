@@ -9,13 +9,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 from typing import Any
 
 from lib import setup as host_setup
-from lib import vmctl
 from lib.config import TargetConfig, add_target, list_targets
 from lib.image import build_image, image_status
 from lib.kernel import build_kernel, kernel_status
@@ -27,7 +28,6 @@ from lib.package import (
     snapshot_lustre,
 )
 from lib.validate import print_results, validate_target
-from lib.vmctl import RunResult
 
 # Exit codes
 EXIT_OK = 0
@@ -155,21 +155,29 @@ def _artifact_label(status_dict: dict[str, Any]) -> str:
     return "current"
 
 
-def _runtime_result(res: RunResult, use_json: bool) -> int:
-    """Print a runtime result dict and return the exit code."""
-    if use_json:
-        print(json.dumps(res, indent=2))
-    else:
-        if res["output"]:
-            print(res["output"])
-        if not res["ok"] and not res["output"]:
-            print("Command failed with no output", file=sys.stderr)
-    return 0 if res["ok"] else res.get("returncode", EXIT_ERROR)
+def _require_root(use_json: bool, hint: str = "") -> int | None:
+    """Return an error code if not root, or None if root."""
+    if os.getuid() != 0:
+        msg = "This command requires root. Use: sudo ltvm ..."
+        if hint:
+            msg += f"\n  {hint}"
+        return _error(msg, use_json)
+    return None
+
+
+def _qemu_ns(**kwargs: Any) -> argparse.Namespace:
+    """Build a minimal argparse.Namespace for qemu command functions."""
+    return argparse.Namespace(**kwargs)
 
 
 def _parse_vm_kwargs(extra_args: list[str]) -> dict[str, Any]:
-    """Parse --vcpus, --mem, --mdt-disks, --ost-disks, --target
-    from a flat list of strings."""
+    """Parse --vcpus, --mem, --mdt-disks, --ost-disks, --target, --arch
+    from a flat list of strings.
+
+    Note: argparse REMAINDER captures all args after the positional,
+    so flags like --arch that appear in vm_args must be parsed here
+    rather than relying on the parent parser.
+    """
     kwargs: dict[str, Any] = {}
     i = 0
     while i < len(extra_args):
@@ -191,6 +199,9 @@ def _parse_vm_kwargs(extra_args: list[str]) -> dict[str, Any]:
             i += 2
         elif arg == "--os" and i + 1 < len(extra_args):
             kwargs["target"] = extra_args[i + 1]
+            i += 2
+        elif arg == "--arch" and i + 1 < len(extra_args):
+            kwargs["arch"] = extra_args[i + 1]
             i += 2
         else:
             i += 1
@@ -515,6 +526,7 @@ def cmd_package(args: argparse.Namespace) -> int:
             tc.output_dir,
             kernel=kernel,
             dest_dir=getattr(args, "output", None),
+            arch=tc.arch,
         )
     except Exception as e:
         return _error(f"Package failed: {e}", use_json)
@@ -545,16 +557,24 @@ def _gh_api(endpoint: str) -> dict:
 def _find_release_url(
     target: str,
     filter_str: str | None = None,
+    arch: str = "x86_64",
 ) -> str:
     """Find a tarball download URL from GitHub releases.
 
     Searches all releases for one whose tag starts with the target
     name and optionally contains filter_str.  Returns the first
     matching asset's download URL.
+
+    For non-x86_64 arches, the asset filename contains '-<arch>'
+    (e.g. ubuntu2404-6.8.12-aarch64.tar.gz).  x86_64 assets have
+    no arch suffix, so we exclude files ending in known arch suffixes
+    to avoid picking up an aarch64 asset for an x86_64 request.
     """
     releases = _gh_api("releases")
     if not isinstance(releases, list):
         releases = [releases]
+
+    non_default_arches = ("aarch64",)  # arches that get a suffix in asset names
 
     for rel in releases:
         tag = rel.get("tag_name", "")
@@ -564,8 +584,17 @@ def _find_release_url(
             continue
         for asset in rel.get("assets", []):
             name = asset.get("name", "")
-            if name.endswith((".tar.zst", ".tar.gz")):
-                return str(asset["browser_download_url"])
+            if not name.endswith((".tar.zst", ".tar.gz")):
+                continue
+            # For non-default arch, require the arch suffix in the asset name
+            if arch != "x86_64":
+                if f"-{arch}." not in name:
+                    continue
+            else:
+                # For x86_64, skip assets that belong to other arches
+                if any(f"-{a}." in name for a in non_default_arches):
+                    continue
+            return str(asset["browser_download_url"])
 
     avail = [r.get("tag_name", "?") for r in releases]
     hint = f" matching '{filter_str}'" if filter_str else ""
@@ -603,6 +632,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     url = getattr(args, "url", None)
     target = getattr(args, "target", None)
     filt = getattr(args, "filter", None)
+    arch = getattr(args, "arch", None) or "x86_64"
 
     # --list: show available releases
     if getattr(args, "list", False):
@@ -629,14 +659,17 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         if not use_json:
             print(f"Looking up {target} from GitHub releases...")
         try:
-            url = _find_release_url(target, filter_str=filt)
+            url = _find_release_url(target, filter_str=filt, arch=arch)
         except RuntimeError as e:
             return _error(str(e), use_json)
 
-    # Extract release tag from URL to check if already fetched
+    # Extract release tag from URL to check if already fetched.
     # URL: .../releases/download/<tag>/<filename>
+    # For non-default arch use an arch-qualified tag file so x86_64 and
+    # aarch64 fetches don't stomp on each other.
     release_tag = url.split("/releases/download/")[1].split("/")[0] if "/releases/download/" in url else ""
-    tag_file = OUTPUT_DIR / target / ".ltvm-release-tag"
+    arch_suffix = f"-{arch}" if arch != "x86_64" else ""
+    tag_file = OUTPUT_DIR / target / f".ltvm-release-tag{arch_suffix}"
     if release_tag and tag_file.exists():
         existing_tag = tag_file.read_text().strip()
         if existing_tag == release_tag:
@@ -650,8 +683,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         print(f"Fetching {target}...")
 
     try:
-        target_dir = fetch_target(target, url, OUTPUT_DIR)
-        # Record the release tag
+        target_dir = fetch_target(target, url, OUTPUT_DIR, arch=arch)
+        # Record the release tag so repeat fetches are instant
         tag_file.parent.mkdir(parents=True, exist_ok=True)
         tag_file.write_text(release_tag + "\n")
     except Exception as e:
@@ -663,7 +696,8 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     if not use_json:
         print()
         print("Next:")
-        print(f"  sudo ltvm vm create co1-test --os {target} "
+        arch_flag = f" --arch {arch}" if arch != "x86_64" else ""
+        print(f"  sudo ltvm vm create co1-test --os {target}{arch_flag} "
               f"--vcpus 2 --mem 2048 --mdt-disks 1 --ost-disks 2")
         print(f"  sudo ltvm deploy co1-test --mount")
 
@@ -995,20 +1029,84 @@ def cmd_update(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------
 
 
+def _lustre_mount_vm(name: str, os_family: str) -> int:
+    """Run llmount.sh inside a VM. Returns exit code."""
+    from qemu.models import VMInfo, VMNotFound
+    from qemu.net import run_ssh
+    try:
+        vm = VMInfo.load(name)
+    except VMNotFound as e:
+        print(f"error: {e}", file=sys.stderr)
+        return EXIT_NOT_FOUND
+    libdir = "/usr/lib/lustre" if os_family == "debian" else "/usr/lib64/lustre"
+    try:
+        r = run_ssh(
+            vm.ip,
+            f"cd {libdir}/tests && LUSTRE={libdir} bash llmount.sh",
+            timeout=180,
+        )
+        if r.stdout:
+            print(r.stdout, end="")
+        return r.returncode
+    except Exception as e:
+        print(f"error: Lustre mount failed: {e}", file=sys.stderr)
+        return EXIT_ERROR
+
+
+def _os_family_for_vm(name: str) -> str:
+    """Return os_family for a VM's os_id, defaulting to 'rhel'."""
+    from qemu.models import VMInfo, VMNotFound
+    try:
+        vm = VMInfo.load(name)
+        os_id = vm.os_id or ""
+        if os_id:
+            return TargetConfig(os_id).os_family
+    except Exception:
+        pass
+    return "rhel"
+
+
 def cmd_vm(args: argparse.Namespace) -> int:
     use_json = args.json
     action = args.action
     vm_args = args.vm_args
 
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+
+    from qemu.commands import (
+        cmd_create as _qcreate,
+        cmd_destroy as _qdestroy,
+        cmd_ensure as _qensure,
+        cmd_list as _qlist,
+        cmd_log as _qlog,
+        cmd_dmesg as _qdmesg,
+        cmd_lustre_log as _qlustre_log,
+        cmd_restart as _qrestart,
+        cmd_start as _qstart,
+        cmd_status as _qstatus,
+        cmd_stop as _qstop,
+    )
+    from qemu.models import VMNotFound
+
+    def _call(fn, ns):
+        """Call a qemu command function, catching SystemExit."""
+        try:
+            fn(ns)
+            return EXIT_OK
+        except SystemExit as e:
+            return int(e.code) if e.code is not None else EXIT_ERROR
+        except VMNotFound as e:
+            return _error(str(e), use_json)
+
     if action == "list":
-        res = vmctl.vm_list(json_output=use_json)
-        return _runtime_result(res, use_json)
+        return _call(_qlist, _qemu_ns(json=use_json))
 
     if action == "status":
         if not vm_args:
             return _error("vm status requires a VM name", use_json)
-        res = vmctl.vm_status(vm_args[0], json_output=use_json)
-        return _runtime_result(res, use_json)
+        return _call(_qstatus, _qemu_ns(name=vm_args[0], json=use_json))
 
     if action in ("create", "ensure"):
         if not vm_args:
@@ -1016,77 +1114,63 @@ def cmd_vm(args: argparse.Namespace) -> int:
         name = vm_args[0]
         mount_lustre = "--mount-lustre" in vm_args
         remaining = [a for a in vm_args[1:] if a != "--mount-lustre"]
-        kwargs = _parse_vm_kwargs(remaining)
+        kw = _parse_vm_kwargs(remaining)
 
-        # Resolve --arch: if an arch override was given, resolve the
-        # correct image/kernel from the arch-qualified output dir and
-        # pass them explicitly to vmctl (which passes them to vm.py).
-        arch = getattr(args, "arch", None)
-        os_target = kwargs.pop("target", None)
-        if arch and arch != "x86_64" and os_target:
-            from qemu.models import resolve_os_artifacts
-            try:
-                os_arts = resolve_os_artifacts(os_target, arch=arch)
-                kwargs["image"] = str(os_arts.image)
-                kwargs["kernel"] = str(os_arts.kernel)
-                kwargs["arch"] = arch
-            except FileNotFoundError as e:
-                return _error(str(e), use_json)
-        elif os_target:
-            # Pass --target through for default arch
-            kwargs["target"] = os_target
+        arch = kw.pop("arch", None) or getattr(args, "arch", None) or "x86_64"
+        os_target = kw.pop("target", None) or ""
 
-        fn = vmctl.vm_create if action == "create" else vmctl.vm_ensure
-        res = fn(name, **kwargs)
-        if not res["ok"]:
-            return _runtime_result(res, use_json)
+        ns = _qemu_ns(
+            name=name,
+            vcpus=kw.get("vcpus", 2),
+            mem=kw.get("mem", 4096),
+            ip=None,
+            rootfs="",
+            image=kw.get("image", ""),
+            kernel=kw.get("kernel", ""),
+            mdt_disks=kw.get("mdt_disks", 0),
+            ost_disks=kw.get("ost_disks", 0),
+            arch=arch,
+            os=os_target,
+            _quiet=False,
+            json=use_json,
+        )
+        rc = _call(_qcreate if action == "create" else _qensure, ns)
+        if rc != EXIT_OK:
+            return rc
         if mount_lustre:
-            # Detect os_family from VM metadata
             os_family = "rhel"
-            try:
-                st = vmctl.vm_status(name, json_output=True)
-                if st["ok"]:
-                    import json as _json
-                    info = _json.loads(st["output"])
-                    os_id = info.get("os_id", "")
-                    tc = TargetConfig(os_id)
-                    os_family = tc.os_family
-            except Exception:
-                pass
-            res = vmctl.lustre_mount(name, os_family=os_family)
-        return _runtime_result(res, use_json)
+            if os_target:
+                try:
+                    os_family = TargetConfig(os_target).os_family
+                except Exception:
+                    pass
+            return _lustre_mount_vm(name, os_family)
+        return EXIT_OK
 
     if action == "destroy":
         if not vm_args:
             return _error("vm destroy requires a VM name", use_json)
-        res = vmctl.vm_destroy(vm_args[0])
-        return _runtime_result(res, use_json)
+        return _call(_qdestroy, _qemu_ns(names=[vm_args[0]]))
 
-    if action in ("start", "stop", "restart"):
+    if action == "start":
         if not vm_args:
-            return _error(f"vm {action} requires a VM name", use_json)
-        fn = getattr(vmctl, f"vm_{action}")
-        res = fn(vm_args[0])
-        return _runtime_result(res, use_json)
+            return _error("vm start requires a VM name", use_json)
+        return _call(_qstart, _qemu_ns(names=[vm_args[0]]))
+
+    if action == "stop":
+        if not vm_args:
+            return _error("vm stop requires a VM name", use_json)
+        return _call(_qstop, _qemu_ns(names=[vm_args[0]]))
+
+    if action == "restart":
+        if not vm_args:
+            return _error("vm restart requires a VM name", use_json)
+        return _call(_qrestart, _qemu_ns(names=[vm_args[0]]))
 
     if action == "mount-lustre":
         if not vm_args:
             return _error("vm mount-lustre requires a VM name", use_json)
-        name = vm_args[0]
-        # Detect os_family from VM metadata
-        os_family = "rhel"
-        try:
-            res = vmctl.vm_status(name, json_output=True)
-            if res["ok"]:
-                import json as _json
-                status = _json.loads(res["output"])
-                os_id = status.get("os_id", "")
-                tc = TargetConfig(os_id)
-                os_family = tc.os_family
-        except Exception:
-            pass
-        res = vmctl.lustre_mount(name, os_family=os_family)
-        return _runtime_result(res, use_json)
+        return _lustre_mount_vm(vm_args[0], _os_family_for_vm(vm_args[0]))
 
     return _error(f"Unknown vm action: {action}", use_json)
 
@@ -1097,18 +1181,24 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     kernel = getattr(args, "kernel", None)
     ltvm_root = Path(__file__).parent.parent
 
-    # Auto-detect target from VM metadata if not specified
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+
+    from qemu.models import VMInfo, VMNotFound
+    from qemu.net import run_ssh
+
+    # Get VM info
+    try:
+        vm = VMInfo.load(args.vm)
+    except VMNotFound as e:
+        return _error(str(e), use_json)
+
+    # Auto-detect target from VM metadata
     if not target:
-        try:
-            res = vmctl.vm_status(args.vm, json_output=True)
-            if res["ok"]:
-                import json as _json
-                status = _json.loads(res["output"])
-                target = status.get("os_id") or None
-                if target and not use_json:
-                    print(f"  Auto-detected target: {target}")
-        except Exception:
-            pass
+        target = vm.os_id or None
+        if target and not use_json:
+            print(f"  Auto-detected target: {target}")
         if not target:
             return _error(
                 f"Cannot detect target OS for VM '{args.vm}'. "
@@ -1116,25 +1206,21 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 use_json,
             )
 
-    # Resolve kernel name for path lookups
+    # Resolve kernel name and target config
     try:
         tc = TargetConfig(target)
         resolved_kernel = tc.resolve_kernel(kernel)
     except ValueError:
+        tc = None
         resolved_kernel = kernel or "unknown"
 
-    # Resolve build path: explicit --build, or packaged Lustre,
-    # or cwd
+    os_family = tc.os_family if tc else "rhel"
+
+    # Resolve build path: explicit --build, packaged Lustre, or cwd
     build_arg = getattr(args, "build", ".")
     if build_arg == ".":
-        # Check for packaged Lustre tree first
         packaged = (
-            ltvm_root
-            / "output"
-            / target
-            / "kernels"
-            / resolved_kernel
-            / "lustre"
+            ltvm_root / "output" / target / "kernels" / resolved_kernel / "lustre"
         )
         if packaged.is_dir():
             build_path = packaged
@@ -1148,29 +1234,109 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if not build_path.is_dir():
         return _error(f"Build path not found: {build_path}", use_json)
 
-    res = vmctl.deploy(
-        args.vm,
-        str(build_path),
-        mount=args.mount,
-        os_family=tc.os_family,
+    # Auto-build Lustre (podman rootless — run as the real user if under sudo)
+    staging = build_path / ".staging"
+    build_cmd = ["ltvm", "build-lustre", target, "--lustre-tree", str(build_path)]
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        build_cmd = ["sudo", "-u", sudo_user] + build_cmd
+    r = subprocess.run(build_cmd, capture_output=False)
+    if r.returncode != 0:
+        return _error(f"Lustre build failed (rc={r.returncode})", use_json)
+
+    if not staging.is_dir():
+        return _error(
+            f"No .staging/ in {build_path} -- run: ltvm build-lustre {target}",
+            use_json,
+        )
+
+    # Stream staging tree into the VM, unpacking directly into /
+    tar_cmd = (
+        f"tar cf - -C {shlex.quote(str(staging))} . "
+        f"| sshpass -p initial0 ssh "
+        f"-o StrictHostKeyChecking=no -o LogLevel=ERROR "
+        f"root@{vm.ip} 'tar xf - -C / --keep-directory-symlink'"
     )
-    return _runtime_result(res, use_json)
+    r = subprocess.run(
+        ["bash", "-c", tar_cmd], capture_output=True, text=True, timeout=120
+    )
+    if r.returncode != 0:
+        output = (r.stdout or "") + (r.stderr or "")
+        return _error(f"Deploy failed: {output.strip()}", use_json)
+
+    # depmod + ldconfig to pick up new modules and libraries
+    try:
+        r = run_ssh(vm.ip, "depmod -a && ldconfig", timeout=60)
+        if r.returncode != 0:
+            return _error(
+                f"depmod/ldconfig failed (rc={r.returncode}): {r.stderr}", use_json
+            )
+    except Exception as e:
+        return _error(f"depmod/ldconfig failed: {e}", use_json)
+
+    if not use_json:
+        print(f"  Deployed Lustre to {args.vm}")
+
+    # Optionally mount Lustre
+    if args.mount:
+        rc = _lustre_mount_vm(args.vm, os_family)
+        if rc != EXIT_OK:
+            return rc
+        if not use_json:
+            print(f"  Lustre mounted on {args.vm}")
+
+    return EXIT_OK
 
 
 def cmd_exec(args: argparse.Namespace) -> int:
     use_json = args.json
     if not args.cmd:
         return _error("exec requires a command", use_json)
+
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+
+    from qemu.commands import cmd_exec as _qexec
+
     cmd_str = " ".join(args.cmd)
     timeout = getattr(args, "timeout", 120)
-    res = vmctl.vm_exec(args.vm, cmd_str, timeout=timeout)
-    return _runtime_result(res, use_json)
+    try:
+        _qexec(_qemu_ns(
+            name=args.vm,
+            command=[cmd_str],
+            timeout=timeout,
+            json=use_json,
+        ))
+        return EXIT_OK
+    except SystemExit as e:
+        return int(e.code) if e.code is not None else EXIT_ERROR
 
 
 def cmd_cluster(args: argparse.Namespace) -> int:
     use_json = args.json
     action = args.action
     cargs = args.cluster_args
+
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+
+    from qemu.cluster import (
+        cmd_cluster_create as _qc_create,
+        cmd_cluster_destroy as _qc_destroy,
+        cmd_cluster_deploy as _qc_deploy,
+        cmd_cluster_status as _qc_status,
+        cmd_cluster_exec as _qc_exec,
+        cmd_cluster_list as _qc_list,
+    )
+
+    def _call(fn, ns):
+        try:
+            fn(ns)
+            return EXIT_OK
+        except SystemExit as e:
+            return int(e.code) if e.code is not None else EXIT_ERROR
 
     if action == "create":
         if len(cargs) < 2:
@@ -1179,24 +1345,23 @@ def cmd_cluster(args: argparse.Namespace) -> int:
                 use_json,
                 hint="ltvm cluster create <name> <role:vm[:disks]> ...",
             )
-        name = cargs[0]
-        specs = cargs[1:]
-        res = vmctl.cluster_create(name, *specs)
-        return _runtime_result(res, use_json)
+        return _call(
+            _qc_create,
+            _qemu_ns(name=cargs[0], nodes=cargs[1:], vcpus=2, mem=4096),
+        )
 
     if action == "destroy":
         if not cargs:
             return _error("cluster destroy requires a name", use_json)
-        res = vmctl.cluster_destroy(cargs[0])
-        return _runtime_result(res, use_json)
+        return _call(_qc_destroy, _qemu_ns(name=cargs[0]))
 
     if action == "deploy":
         if not cargs:
             return _error("cluster deploy requires a name", use_json)
         name = cargs[0]
-        # Parse --build and --mount from remaining args
         build_path = "."
         mount = False
+        server_only = False
         i = 1
         while i < len(cargs):
             if cargs[i] == "--build" and i + 1 < len(cargs):
@@ -1205,16 +1370,25 @@ def cmd_cluster(args: argparse.Namespace) -> int:
             elif cargs[i] == "--mount":
                 mount = True
                 i += 1
+            elif cargs[i] == "--server-only":
+                server_only = True
+                i += 1
             else:
                 i += 1
-        res = vmctl.cluster_deploy(name, build_path, mount=mount)
-        return _runtime_result(res, use_json)
+        return _call(
+            _qc_deploy,
+            _qemu_ns(
+                name=name,
+                lustre_source=build_path,
+                mount=mount,
+                server_only=server_only,
+            ),
+        )
 
     if action == "status":
         if not cargs:
             return _error("cluster status requires a name", use_json)
-        res = vmctl.cluster_status(cargs[0])
-        return _runtime_result(res, use_json)
+        return _call(_qc_status, _qemu_ns(name=cargs[0]))
 
     if action == "exec":
         if len(cargs) < 3:
@@ -1223,11 +1397,16 @@ def cmd_cluster(args: argparse.Namespace) -> int:
                 use_json,
                 hint="ltvm cluster exec <name> <role> '<cmd>'",
             )
-        name = cargs[0]
-        role = cargs[1]
-        cmd_str = " ".join(cargs[2:])
-        res = vmctl.cluster_exec(name, role, cmd_str)
-        return _runtime_result(res, use_json)
+        return _call(
+            _qc_exec,
+            _qemu_ns(
+                name=cargs[0],
+                target=cargs[1],
+                command=cargs[2:],
+                timeout=120,
+                json=use_json,
+            ),
+        )
 
     return _error(f"Unknown cluster action: {action}", use_json)
 

@@ -517,6 +517,7 @@ class TestVerify:
 def _all_ok_result() -> dict:
     return {
         "qemu": {"installed": True, "version": "9.2.2", "path": "/opt/qemu"},
+        "qemu_aarch64": {"installed": False, "version": None},
         "kvm": {"available": True},
         "bridge": {"up": True, "address": "192.168.100.1/24"},
         "dnsmasq": {"running": True},
@@ -565,14 +566,14 @@ class TestPrintVerify:
     def test_qemu_missing_prints_warning(
         self, capsys: pytest.CaptureFixture
     ) -> None:
-        """When QEMU is missing, prints 'WARNING: QEMU: not installed'."""
+        """When QEMU is missing, prints 'WARNING: QEMU x86_64: not installed'."""
         result = _all_ok_result()
         result["qemu"]["installed"] = False
         result["qemu"]["version"] = None
         result["all_ok"] = False
         print_verify(result)
         captured = capsys.readouterr()
-        assert "WARNING: QEMU: not installed" in captured.out
+        assert "WARNING: QEMU x86_64: not installed" in captured.out
 
     def test_kvm_missing_prints_warning(
         self, capsys: pytest.CaptureFixture

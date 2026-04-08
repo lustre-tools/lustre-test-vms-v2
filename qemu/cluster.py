@@ -196,9 +196,9 @@ def _create_one_node(
     mgs_disk = 1 if (node.is_mgs and not node.is_mds) else 0
     cmd = [
         "sudo",
-        "vm.py",
+        "ltvm",
+        "vm",
         "create",
-        "--name",
         node.name,
         "--vcpus",
         str(vcpus),

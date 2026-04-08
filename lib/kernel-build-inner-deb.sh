@@ -25,12 +25,50 @@ set -euo pipefail
 
 JOBS="${JOBS:-$(nproc)}"
 KERNEL_DEB_SOURCE="${KERNEL_DEB_SOURCE:-linux-source-6.8.0}"
+TARGET_ARCH="${TARGET_ARCH:-x86_64}"
 BUILD=/build/kernel-src
 
+# Architecture-dependent paths and cross-compilation
+HOST_ARCH=$(uname -m)
+MAKE_ARCH_FLAGS=()
+
+case "$TARGET_ARCH" in
+	aarch64)
+		DEB_ARCH="arm64"
+		KERNEL_IMAGE="arch/arm64/boot/Image.gz"
+		MAKE_TARGETS="vmlinux Image.gz"
+		MAKE_ARCH_FLAGS=(ARCH=arm64)
+		if [[ "$HOST_ARCH" != "aarch64" ]]; then
+			MAKE_ARCH_FLAGS+=(CROSS_COMPILE=aarch64-linux-gnu-)
+			# Cross-compiler may be stricter than native; demote -Werror
+			# variants to warnings.
+			MAKE_ARCH_FLAGS+=("KCFLAGS=-Wno-error -Wno-error=incompatible-pointer-types -Wno-error=missing-prototypes -Wno-error=enum-int-mismatch")
+			echo "    Cross-compiling: ${HOST_ARCH} -> aarch64"
+		fi
+		;;
+	*)
+		DEB_ARCH="amd64"
+		KERNEL_IMAGE="arch/x86/boot/bzImage"
+		MAKE_TARGETS="vmlinux bzImage"
+		;;
+esac
+
 echo "=== kernel-build-inner-deb.sh ==="
-echo "    GCC: $(gcc --version | head -1)"
 echo "    Jobs: ${JOBS}"
+echo "    Target arch: ${TARGET_ARCH}"
 echo "    Source package: ${KERNEL_DEB_SOURCE}"
+
+# Install cross-compiler if cross-compiling
+if [[ "$TARGET_ARCH" == "aarch64" && "$(uname -m)" != "aarch64" ]]; then
+	echo "--- Installing aarch64 cross-compiler..."
+	if command -v dnf &>/dev/null; then
+		dnf -y install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu 2>&1 | tail -3
+	elif command -v apt-get &>/dev/null; then
+		apt-get update -qq && apt-get install -y gcc-aarch64-linux-gnu 2>&1 | tail -3
+	fi
+fi
+
+echo "    GCC: $(gcc --version | head -1)"
 
 # ------------------------------------------------------------------
 # 1. Extract kernel source from deb package
@@ -108,9 +146,9 @@ echo "--- Configuring kernel..."
 # For a clean build, use the arch default + ubuntu annotations,
 # or just use the distro config shipped with linux-source.
 UBUNTU_CONFIG=$(find /usr/src -path "*/linux-source*/debian*/config" \
-	-name "amd64" -type f 2>/dev/null | head -1)
-# Try debian.master/config/amd64/config.flavour.generic
-UBUNTU_CONFIG2=$(find "$BUILD" -path "*/debian.master/config/amd64/config.flavour.generic" \
+	-name "$DEB_ARCH" -type f 2>/dev/null | head -1)
+# Try debian.master/config/<arch>/config.flavour.generic
+UBUNTU_CONFIG2=$(find "$BUILD" -path "*/debian.master/config/${DEB_ARCH}/config.flavour.generic" \
 	2>/dev/null | head -1)
 # Try the annotations-based approach
 UBUNTU_ANNOTATIONS=$(find "$BUILD" -path "*/debian.master/config/annotations" \
@@ -121,13 +159,41 @@ if [[ -n "$UBUNTU_ANNOTATIONS" ]] && [[ -f "$BUILD/debian.master/config/annotati
 	# Ubuntu 24.04 uses an annotations file + config script to
 	# generate the actual .config. Use make defconfig as base
 	# then apply the fragment.
-	make defconfig 2>&1 | tail -3
+	make "${MAKE_ARCH_FLAGS[@]}" defconfig 2>&1 | tail -3
 elif [[ -n "$UBUNTU_CONFIG2" ]] && [[ -f "$UBUNTU_CONFIG2" ]]; then
 	echo "    Using Ubuntu flavour config: $UBUNTU_CONFIG2"
 	cp "$UBUNTU_CONFIG2" .config
 else
 	echo "    No Ubuntu config found, using defconfig as base"
-	make defconfig 2>&1 | tail -3
+	make "${MAKE_ARCH_FLAGS[@]}" defconfig 2>&1 | tail -3
+fi
+
+# For cross-compiled aarch64: defconfig enables thousands of HW
+# drivers we don't need in QEMU virt.  Disable entire subsystems
+# that are irrelevant for a virtual machine to avoid broken drivers.
+if [[ "$TARGET_ARCH" == "aarch64" && "$HOST_ARCH" != "aarch64" ]]; then
+	echo "    Trimming config for QEMU virt (cross-compile)..."
+	scripts/config --disable DRM
+	scripts/config --disable SOUND
+	scripts/config --disable MEDIA_SUPPORT
+	scripts/config --disable WLAN
+	scripts/config --disable WIRELESS
+	scripts/config --disable NFC
+	scripts/config --disable CAN
+	scripts/config --disable BT
+	scripts/config --disable INFINIBAND
+	scripts/config --disable USB_GADGET
+	scripts/config --disable PCI_ENDPOINT
+	scripts/config --disable CORESIGHT
+	scripts/config --disable HWTRACING
+	scripts/config --disable MTD
+	scripts/config --disable SPI
+	scripts/config --disable I2C
+	scripts/config --disable GPIO_SYSFS
+	scripts/config --disable HWMON
+	scripts/config --disable REGULATOR
+	scripts/config --disable MFD_CORE
+	scripts/config --disable IIO
 fi
 
 # Apply the microvm config fragment on top
@@ -164,7 +230,7 @@ for opt in CONFIG_NETWORK_FILESYSTEMS CONFIG_LNET CONFIG_LUSTRE_FS; do
 done
 
 echo "--- Running olddefconfig..."
-make olddefconfig 2>&1 | tail -3
+make "${MAKE_ARCH_FLAGS[@]}" olddefconfig 2>&1 | tail -3
 
 # Verify critical overrides survived olddefconfig
 echo "--- Verifying config overrides..."
@@ -185,20 +251,20 @@ done < /input/staging/config.fragment
 # 4. Build
 # ------------------------------------------------------------------
 
-echo "=== Building vmlinux + bzImage (j${JOBS}) ==="
-make -j"$JOBS" vmlinux bzImage 2>&1
+echo "=== Building ${MAKE_TARGETS} (j${JOBS}) ==="
+make "${MAKE_ARCH_FLAGS[@]}" -j"$JOBS" $MAKE_TARGETS 2>&1
 
 echo "--- Build complete"
 
 # Also build modules to populate build tree for Lustre
 echo "=== Building modules (j${JOBS}) ==="
-make -j"$JOBS" modules 2>&1
+make "${MAKE_ARCH_FLAGS[@]}" -j"$JOBS" modules 2>&1
 
 echo "--- Modules complete"
 
 # Prepare build tree for external module builds
 echo "--- Running modules_prepare..."
-make modules_prepare 2>&1 | tail -3
+make "${MAKE_ARCH_FLAGS[@]}" modules_prepare 2>&1 | tail -3
 
 # ------------------------------------------------------------------
 # 5. Install outputs
@@ -207,10 +273,10 @@ make modules_prepare 2>&1 | tail -3
 echo "--- Installing outputs to /output/..."
 
 cp vmlinux /output/vmlinux
-cp arch/x86/boot/bzImage /output/vmlinuz
+cp "$KERNEL_IMAGE" /output/vmlinuz
 
 # Kernel version
-KVER=$(make -s kernelrelease)
+KVER=$(make "${MAKE_ARCH_FLAGS[@]}" -s kernelrelease)
 echo "    Kernel version: $KVER"
 
 # Create the build tree for Lustre module compilation
@@ -247,7 +313,7 @@ echo "$KVER" > "$BUILD_TREE/kernel-version"
 echo "--- Installing modules..."
 MODULES_DIR=/output/modules
 rm -rf "$MODULES_DIR"
-make INSTALL_MOD_PATH="$MODULES_DIR" \
+make "${MAKE_ARCH_FLAGS[@]}" INSTALL_MOD_PATH="$MODULES_DIR" \
 	INSTALL_MOD_STRIP=1 \
 	CONFIG_MODULE_SIG_ALL= \
 	modules_install 2>&1 | tail -5

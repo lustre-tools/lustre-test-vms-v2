@@ -77,6 +77,7 @@ def launch_qemu(vm: VMInfo) -> None:
         die(f"VM '{vm.name}' has no kernel path set — recreate with --os")
     kernel = Path(vm.kernel)
 
+    import platform as _platform
     arch = vm.arch
     qemu_bin = qemu_binary_for_arch(arch)
     machine = qemu_machine_for_arch(arch)
@@ -86,9 +87,21 @@ def launch_qemu(vm: VMInfo) -> None:
     if arch == "aarch64":
         blk_driver = "virtio-blk-pci"
         net_driver = "virtio-net-pci"
+        rng_driver = "virtio-rng-pci"
     else:
         blk_driver = "virtio-blk-device"
         net_driver = "virtio-net-device"
+        rng_driver = "virtio-rng-device"
+
+    # KVM allows -cpu host; TCG (cross-arch emulation) needs a real model.
+    host_arch = _platform.machine()
+    if (arch == "x86_64" and host_arch in ("x86_64", "amd64")) or \
+       (arch == "aarch64" and host_arch in ("aarch64", "arm64")):
+        cpu_model = "host"
+    elif arch == "aarch64":
+        cpu_model = "cortex-a57"
+    else:
+        cpu_model = "qemu64"
 
     qemu_args = [
         qemu_bin,
@@ -97,7 +110,7 @@ def launch_qemu(vm: VMInfo) -> None:
         "-machine",
         machine,
         "-cpu",
-        "host",
+        cpu_model,
         "-smp",
         str(vm.vcpus),
         "-m",
@@ -110,7 +123,7 @@ def launch_qemu(vm: VMInfo) -> None:
         "-no-user-config",
         "-nographic",
         "-object", "rng-random,id=rng0,filename=/dev/urandom",
-        "-device", "virtio-rng-device,rng=rng0",
+        "-device", f"{rng_driver},rng=rng0",
         "-serial",
         "chardev:serial0",
         "-chardev",

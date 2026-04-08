@@ -19,19 +19,45 @@ QEMU_IMG = str(QEMU_PREFIX / "bin" / "qemu-img")
 
 
 def qemu_binary_for_arch(arch: str = "x86_64") -> str:
-    """Return the full path to qemu-system-<arch>."""
-    _BINARY_MAP = {"x86_64": "qemu-system-x86_64", "aarch64": "qemu-system-aarch64"}
-    name = _BINARY_MAP.get(arch, f"qemu-system-{arch}")
-    return str(QEMU_PREFIX / "bin" / name)
+    """Return the full path to qemu-system-<arch>.
+
+    x86_64 uses our custom-built binary under QEMU_PREFIX.
+    Other arches fall back to the system binary (e.g. from qemu-system-arm
+    package) since we only ship x86_64 in the release tarball.
+    """
+    import shutil
+    name = f"qemu-system-{arch}"
+    if arch == "x86_64":
+        return str(QEMU_PREFIX / "bin" / name)
+    # For non-x86_64, prefer QEMU_PREFIX if it has the binary, else system PATH
+    candidate = QEMU_PREFIX / "bin" / name
+    if candidate.exists():
+        return str(candidate)
+    found = shutil.which(name)
+    if found:
+        return found
+    return str(candidate)  # will fail with a clear FileNotFoundError
 
 
 def qemu_machine_for_arch(arch: str = "x86_64") -> str:
-    """Return the -machine argument for a given arch."""
-    _MACHINE_MAP = {
-        "x86_64": "microvm,accel=kvm,pit=off,pic=off,rtc=on",
-        "aarch64": "virt,accel=kvm,gic-version=max",
-    }
-    return _MACHINE_MAP.get(arch, _MACHINE_MAP["x86_64"])
+    """Return the -machine argument for a given arch.
+
+    Uses KVM only when the host arch matches (KVM can't accelerate a
+    different ISA).  Cross-arch VMs fall back to TCG emulation.
+    """
+    import platform
+    host_arch = platform.machine()
+    # Normalise: aarch64 == arm64, x86_64 == amd64
+    host_is_x86 = host_arch in ("x86_64", "amd64")
+    host_is_arm64 = host_arch in ("aarch64", "arm64")
+
+    if arch == "x86_64":
+        accel = "accel=kvm" if host_is_x86 else "accel=tcg"
+        return f"microvm,{accel},pit=off,pic=off,rtc=on"
+    if arch == "aarch64":
+        accel = "accel=kvm" if host_is_arm64 else "accel=tcg"
+        return f"virt,{accel},gic-version=max"
+    return "virt,accel=tcg"
 DISK_SIZE_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB
 BASE_IMAGE = VM_DIR / "images" / "rocky9-ltvm.ext4"
 KERNEL = VM_DIR / "kernel" / "vmlinux"
@@ -83,16 +109,26 @@ def resolve_os_artifacts(os_name: str, arch: str = "x86_64") -> OSArtifacts:
         except Exception:
             pass
 
-    output_dir = _LTVM_ROOT / "output" / os_name
+    # Determine effective arch (CLI override > target config > default)
+    effective_arch = target_cfg.get("arch", arch)
+    default_arch = "x86_64"
 
-    # Find image in output/<os>/image/
+    # Output directory: arch-qualified subdir when non-default arch
+    output_dir = _LTVM_ROOT / "output" / os_name
+    if effective_arch != default_arch:
+        arch_dir = output_dir / effective_arch
+        if arch_dir.is_dir():
+            output_dir = arch_dir
+
+    # Find image in output/<os>[/<arch>]/image/
     img = output_dir / "image" / "base.ext4"
     if not img.exists():
         img = None
     if not img:
+        arch_hint = f" --arch {effective_arch}" if effective_arch != default_arch else ""
         raise FileNotFoundError(
-            f"No image for '{os_name}'\n"
-            f"Run: ltvm fetch {os_name}  (or: ltvm build-image {os_name})"
+            f"No image for '{os_name}' (arch={effective_arch})\n"
+            f"Run: ltvm fetch {os_name}{arch_hint}  (or: ltvm build-image {os_name}{arch_hint})"
         )
 
     # Find kernel: check output dir first, then install dir
@@ -124,13 +160,13 @@ def resolve_os_artifacts(os_name: str, arch: str = "x86_64") -> OSArtifacts:
                 break
 
     if not kern:
+        arch_hint = f" --arch {effective_arch}" if effective_arch != default_arch else ""
         raise FileNotFoundError(
-            f"No kernel for '{os_name}'\n"
-            f"Run: ltvm fetch {os_name}  (or: ltvm build-kernel {os_name})"
+            f"No kernel for '{os_name}' (arch={effective_arch})\n"
+            f"Run: ltvm fetch {os_name}{arch_hint}  (or: ltvm build-kernel {os_name}{arch_hint})"
         )
 
-    target_arch = target_cfg.get("arch", arch)
-    return OSArtifacts(image=img, kernel=kern, default_mem=default_mem, arch=target_arch)
+    return OSArtifacts(image=img, kernel=kern, default_mem=default_mem, arch=effective_arch)
 OVERLAYS = VM_DIR / "overlays"
 SOCKETS = VM_DIR / "sockets"
 BRIDGE = "fcbr0"

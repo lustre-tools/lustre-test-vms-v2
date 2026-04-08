@@ -1,0 +1,40 @@
+# Kernel config overrides for aarch64 targets
+# Applied on top of the common kernel-config.fragment
+
+# aarch64 does not support PVH or XEN_PVH -- override common fragment
+# CONFIG_PVH is not set
+# CONFIG_XEN_PVH is not set
+
+# Disable -Werror: cross-compilers may be stricter than the
+# toolchain the kernel was validated with
+CONFIG_WERROR=n
+
+# QEMU virt machine uses PL011 UART, not 8250
+CONFIG_SERIAL_AMBA_PL011=y
+CONFIG_SERIAL_AMBA_PL011_CONSOLE=y
+
+# GICv3 interrupt controller (QEMU virt default)
+CONFIG_ARM_GIC_V3=y
+
+# PSCI for CPU hotplug / power management
+CONFIG_ARM_PSCI_FW=y
+
+# EFI stub for direct kernel boot on virt machine
+CONFIG_EFI=y
+CONFIG_EFI_STUB=y
+
+# Disable hardware-specific subsystems that are unnecessary
+# for QEMU virt and can have build issues when cross-compiling
+CONFIG_SCSI_UFS_EXYNOS=n
+CONFIG_PCI_ENDPOINT=n
+CONFIG_SOUND=n
+CONFIG_DRM=n
+CONFIG_MEDIA_SUPPORT=n
+CONFIG_WLAN=n
+CONFIG_WIRELESS=n
+CONFIG_USB_GADGET=n
+CONFIG_NFC=n
+CONFIG_CAN=n
+CONFIG_BT=n
+CONFIG_INFINIBAND=n
+CONFIG_GPU_NOVA=n

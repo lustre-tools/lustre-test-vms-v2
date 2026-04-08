@@ -26,11 +26,49 @@ set -euo pipefail
 JOBS="${JOBS:-$(nproc)}"
 LNXMAJ="${LNXMAJ:-}"
 LNXREL="${LNXREL:-}"
+TARGET_ARCH="${TARGET_ARCH:-x86_64}"
 BUILD=/build/kernel-src
 
+# Architecture-dependent paths and cross-compilation
+HOST_ARCH=$(uname -m)
+MAKE_ARCH_FLAGS=()
+
+case "$TARGET_ARCH" in
+	aarch64)
+		SRPM_CONFIG_ARCH="aarch64"
+		KERNEL_IMAGE="arch/arm64/boot/Image.gz"
+		MAKE_TARGETS="vmlinux Image.gz"
+		MAKE_ARCH_FLAGS=(ARCH=arm64)
+		if [[ "$HOST_ARCH" != "aarch64" ]]; then
+			MAKE_ARCH_FLAGS+=(CROSS_COMPILE=aarch64-linux-gnu-)
+			# Cross-compiler may be stricter than native; demote -Werror
+			# variants to warnings.
+			MAKE_ARCH_FLAGS+=("KCFLAGS=-Wno-error -Wno-error=incompatible-pointer-types -Wno-error=missing-prototypes -Wno-error=enum-int-mismatch")
+			echo "    Cross-compiling: ${HOST_ARCH} -> aarch64"
+		fi
+		;;
+	*)
+		SRPM_CONFIG_ARCH="x86_64"
+		KERNEL_IMAGE="arch/x86/boot/bzImage"
+		MAKE_TARGETS="vmlinux bzImage"
+		;;
+esac
+
 echo "=== kernel-build-inner.sh ==="
-echo "    GCC: $(gcc --version | head -1)"
 echo "    Jobs: ${JOBS}"
+echo "    Target arch: ${TARGET_ARCH}"
+
+# Install cross-compiler if cross-compiling
+if [[ "$TARGET_ARCH" == "aarch64" && "$(uname -m)" != "aarch64" ]]; then
+	echo "--- Installing aarch64 cross-compiler..."
+	if command -v dnf &>/dev/null; then
+		dnf -y install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu 2>&1 | tail -3
+	elif command -v apt-get &>/dev/null; then
+		apt-get update -qq && apt-get install -y gcc-aarch64-linux-gnu 2>&1 | tail -3
+	fi
+fi
+
+echo "    GCC: $(gcc --version | head -1)"
 
 # ------------------------------------------------------------------
 # 1. Extract SRPM
@@ -112,15 +150,15 @@ if [[ -s /input/staging/kernel.config ]]; then
 else
 	# No Lustre-provided config -- extract from SRPM.
 	# RHEL/Rocky SRPMs ship kernel-<arch>-rhel.config files.
-	echo "    Extracting kernel config from SRPM..."
-	SRPM_CONFIG=$(find "$SRPM_DIR" -name "kernel-x86_64-rhel.config" | head -1)
+	echo "    Extracting kernel config from SRPM (arch=$SRPM_CONFIG_ARCH)..."
+	SRPM_CONFIG=$(find "$SRPM_DIR" -name "kernel-${SRPM_CONFIG_ARCH}-rhel.config" | head -1)
 	if [[ -z "$SRPM_CONFIG" ]]; then
-		# Fallback: any x86_64 non-debug config
-		SRPM_CONFIG=$(find "$SRPM_DIR" -name "kernel-x86_64*.config" \
+		# Fallback: any config for this arch, non-debug
+		SRPM_CONFIG=$(find "$SRPM_DIR" -name "kernel-${SRPM_CONFIG_ARCH}*.config" \
 			| grep -v debug | head -1)
 	fi
 	if [[ -z "$SRPM_CONFIG" ]]; then
-		echo "ERROR: No x86_64 kernel config found in SRPM" >&2
+		echo "ERROR: No ${SRPM_CONFIG_ARCH} kernel config found in SRPM" >&2
 		echo "    Available configs:"
 		find "$SRPM_DIR" -name "*.config" | head -20
 		exit 1
@@ -161,7 +199,7 @@ done < /input/staging/config.fragment
 echo "    Applied overrides from config fragment"
 
 echo "--- Running olddefconfig..."
-make olddefconfig 2>&1 | tail -3
+make "${MAKE_ARCH_FLAGS[@]}" olddefconfig 2>&1 | tail -3
 
 # Verify critical overrides survived olddefconfig
 echo "--- Verifying config overrides..."
@@ -191,20 +229,20 @@ fi
 # 5. Build
 # ------------------------------------------------------------------
 
-echo "=== Building vmlinux + bzImage (j${JOBS}) ==="
-make -j"$JOBS" vmlinux bzImage 2>&1
+echo "=== Building ${MAKE_TARGETS} (j${JOBS}) ==="
+make "${MAKE_ARCH_FLAGS[@]}" -j"$JOBS" $MAKE_TARGETS 2>&1
 
 echo "--- Build complete"
 
 # Also build modules to populate build tree for Lustre
 echo "=== Building modules (j${JOBS}) ==="
-make -j"$JOBS" modules 2>&1
+make "${MAKE_ARCH_FLAGS[@]}" -j"$JOBS" modules 2>&1
 
 echo "--- Modules complete"
 
 # Prepare build tree for external module builds
 echo "--- Running modules_prepare..."
-make modules_prepare 2>&1 | tail -3
+make "${MAKE_ARCH_FLAGS[@]}" modules_prepare 2>&1 | tail -3
 
 # ------------------------------------------------------------------
 # 6. Install outputs
@@ -213,10 +251,10 @@ make modules_prepare 2>&1 | tail -3
 echo "--- Installing outputs to /output/..."
 
 cp vmlinux /output/vmlinux
-cp arch/x86/boot/bzImage /output/vmlinuz
+cp "$KERNEL_IMAGE" /output/vmlinuz
 
 # Kernel version
-KVER=$(make -s kernelrelease)
+KVER=$(make "${MAKE_ARCH_FLAGS[@]}" -s kernelrelease)
 echo "    Kernel version: $KVER"
 
 # Create the build tree for Lustre module compilation.
@@ -259,7 +297,7 @@ echo "$KVER" > "$BUILD_TREE/kernel-version"
 echo "--- Installing modules..."
 MODULES_DIR=/output/modules
 rm -rf "$MODULES_DIR"
-make INSTALL_MOD_PATH="$MODULES_DIR" \
+make "${MAKE_ARCH_FLAGS[@]}" INSTALL_MOD_PATH="$MODULES_DIR" \
 	INSTALL_MOD_STRIP=1 \
 	CONFIG_MODULE_SIG_ALL= \
 	modules_install 2>&1 | tail -5

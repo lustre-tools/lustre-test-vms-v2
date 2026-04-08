@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import os
+import time
 
 import pytest
 
@@ -61,11 +62,28 @@ def vm_name(request: pytest.FixtureRequest) -> str:  # type: ignore[return]
     vm_destroy(name)
 
 
+SSH_READY_TIMEOUT = 60  # seconds to wait for SSH after vm_ensure
+
+
+def _wait_for_ssh(name: str, timeout: int = SSH_READY_TIMEOUT) -> None:
+    """Poll vm_exec until SSH is reachable or timeout expires."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        result = vm_exec(name, "true", timeout=5)
+        if result["ok"]:
+            return
+        time.sleep(2)
+    pytest.fail(
+        f"VM {name!r} SSH not reachable after {timeout}s"
+    )
+
+
 @pytest.fixture
 def running_vm(request: pytest.FixtureRequest) -> str:  # type: ignore[return]
-    """Ensure a running VM, yield its name, destroy in teardown."""
+    """Ensure a running VM, wait for SSH, yield its name, destroy in teardown."""
     name = _vm_name(request.node.name)
     vm_ensure(name, vcpus=1, mem=1024)
+    _wait_for_ssh(name)
     yield name
     vm_destroy(name)
 

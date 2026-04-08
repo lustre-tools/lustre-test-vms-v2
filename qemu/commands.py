@@ -84,13 +84,17 @@ def cmd_create(args: argparse.Namespace) -> None:
     mac = mac_for_name(name)
 
     os_target = getattr(args, "os", "")
-    if not os_target:
-        os_target = "rocky9"
-        print(f"using default target: {os_target}")
+    explicit_image = getattr(args, "image", "") or args.rootfs
+    explicit_kernel = getattr(args, "kernel", "")
     arch = getattr(args, "arch", None) or "x86_64"
+    if not os_target:
+        # Only print default-target notice when no explicit image was given
+        os_target = "rocky9"
+        if not explicit_image and not explicit_kernel:
+            print(f"using default target: {os_target}")
     os_arts = resolve_os_artifacts(os_target, arch=arch)
-    image = getattr(args, "image", "") or args.rootfs or str(os_arts.image)
-    kernel = getattr(args, "kernel", "") or str(os_arts.kernel)
+    image = explicit_image or str(os_arts.image)
+    kernel = explicit_kernel or str(os_arts.kernel)
     if args.mem == 2048 and os_arts.default_mem > 2048:
         args.mem = os_arts.default_mem
 

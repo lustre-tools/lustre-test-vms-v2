@@ -109,6 +109,7 @@ def build_lustre(
     extra_configure: list[str] | None = None,
     jobs: int | None = None,
     force: bool = False,
+    arch: str = "x86_64",
 ) -> BuildResult:
     """Build a Lustre source tree.
 
@@ -163,6 +164,7 @@ def build_lustre(
             extra_configure,
             jobs,
             force,
+            arch=arch,
         )
     else:
         if container_tag:
@@ -191,6 +193,7 @@ def _build_in_container(
     extra_configure: list[str] | None,
     jobs: int,
     force: bool,
+    arch: str = "x86_64",
 ) -> BuildResult:
     """Build Lustre inside the build container.
 
@@ -208,8 +211,42 @@ def _build_in_container(
         lustre_tree, build_tree, force, container_kernel
     )
 
+    # Detect cross-compilation
+    import platform
+    host_machine = platform.machine()
+    cross_compiling = (arch == "aarch64" and host_machine != "aarch64")
+
     # Build the shell script to run inside the container
     script_parts = ["set -e", "cd /lustre"]
+
+    # Install cross-compiler and cross-arch dev libraries if needed
+    if cross_compiling:
+        script_parts.append("echo '--- Installing aarch64 cross-compiler and dev libs...'")
+        script_parts.append(
+            "if command -v dnf &>/dev/null; then "
+            "dnf -y install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu 2>&1 | tail -3; "
+            "elif command -v apt-get &>/dev/null; then "
+            # Install the cross-compiler first (amd64 package, no multiarch needed)
+            "apt-get update -qq && "
+            "apt-get install -y gcc-aarch64-linux-gnu 2>&1 | tail -3 && "
+            # Now set up multiarch for arm64 cross-dev libraries.
+            # Ubuntu 24.04 uses DEB822 .sources files; pin them to amd64
+            # and add a separate arm64 source pointing at ports.ubuntu.com
+            "dpkg --add-architecture arm64 && "
+            r"grep -rl '^Types:' /etc/apt/sources.list.d/*.sources 2>/dev/null "
+            r"| xargs -I{} sed -i '/^Architectures:/d; /^Types:/a Architectures: amd64' {} && "
+            "printf 'Types: deb\\n"
+            "URIs: http://ports.ubuntu.com/ubuntu-ports\\n"
+            "Suites: noble noble-updates\\n"
+            "Components: main universe\\n"
+            "Architectures: arm64\\n' > /etc/apt/sources.list.d/arm64-ports.sources && "
+            "apt-get update -qq 2>&1 | tail -3 && "
+            "apt-get install -y "
+            "libmount-dev:arm64 libyaml-dev:arm64 libselinux1-dev:arm64 "
+            "zlib1g-dev:arm64 libnl-3-dev:arm64 libnl-genl-3-dev:arm64 "
+            "libaio-dev:arm64 libkeyutils-dev:arm64 2>&1 | tail -5; "
+            "fi"
+        )
 
     if force:
         script_parts.append(
@@ -240,6 +277,13 @@ def _build_in_container(
     # configure with a different autoconf version mid-build.
     script_parts.append("bash autogen.sh")
     cfg = "./configure --with-linux=/kernel --disable-gss --disable-crypto"
+    if cross_compiling:
+        cfg += " --host=aarch64-linux-gnu"
+        cfg += " CC=aarch64-linux-gnu-gcc"
+        cfg += " ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-"
+        # Point pkg-config at the cross-arch library paths
+        cfg += " PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig"
+        cfg += " PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig"
     if enable_server:
         cfg += " --enable-server"
     else:
@@ -248,11 +292,14 @@ def _build_in_container(
         cfg += " " + " ".join(extra_configure)
     script_parts.append(cfg)
 
-    script_parts.append(f"make -j{jobs}")
+    make_cross = ""
+    if cross_compiling:
+        make_cross = " ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-"
+    script_parts.append(f"make{make_cross} -j{jobs}")
     # Create a staging tree so deploy-lustre.sh can rsync the
     # installed layout directly instead of tracking individual files.
     script_parts.append("rm -rf /lustre/.staging")
-    script_parts.append(f"make install DESTDIR=/lustre/.staging -j{jobs}")
+    script_parts.append(f"make{make_cross} install DESTDIR=/lustre/.staging -j{jobs}")
     script = "\n".join(script_parts)
 
     # Use a persistent ccache volume so incremental container

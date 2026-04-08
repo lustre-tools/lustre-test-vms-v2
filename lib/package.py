@@ -230,17 +230,31 @@ def package_target(
     output_dir: str | Path,
     kernel: str | None = None,
     dest_dir: str | Path | None = None,
+    arch: str = "x86_64",
 ) -> Path:
     """Create a compressed tarball of all target artifacts.
 
     kernel: kernel name under kernels/; auto-detected if None.
+    arch: architecture of the artifacts (x86_64, aarch64, etc.).
+          Non-x86_64 arches get an -<arch> suffix in the tarball name.
     Returns the path to the created tarball.
+
+    The tarball always extracts to <target_name>/ at the extraction
+    base, regardless of arch.  For non-default arches the output_dir
+    is a subdirectory (output/<target>/<arch>/), and tar --transform
+    strips the arch prefix so paths land at <target_name>/kernels/...
     """
     output_dir = Path(output_dir)
     artifacts = _find_artifacts(output_dir, kernel=kernel)
 
+    # dest_dir: for non-default arch keep tarballs in the main output parent
+    # (output/), not inside the arch subdir.
+    base_output_dir = output_dir
+    if arch != "x86_64" and output_dir.name == arch:
+        base_output_dir = output_dir.parent
+
     if dest_dir is None:
-        dest_dir = output_dir.parent
+        dest_dir = base_output_dir.parent
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
 
@@ -254,16 +268,42 @@ def package_target(
         meta = json.loads(kernel_meta.read_text())
         version = meta.get("kernel_version", "unknown")
 
-    tarball = dest_dir / f"{target_name}-{version}.tar.gz"
+    arch_suffix = f"-{arch}" if arch != "x86_64" else ""
+    tarball = dest_dir / f"{target_name}-{version}{arch_suffix}.tar.gz"
 
-    print(f"  Packaging {target_name} (kernel={kernel_name}) -> {tarball.name}")
+    print(f"  Packaging {target_name} (kernel={kernel_name}, arch={arch}) -> {tarball.name}")
     print(f"    Kernel: {artifacts['vmlinux']}")
     print(f"    Image:  {artifacts['image']}")
     if "lustre" in artifacts:
         print(f"    Lustre: {artifacts['lustre']}")
 
+    # Build tar from only the known artifacts (not the whole output dir,
+    # which may contain arch-specific sub-builds, caches, etc.).
+    #
+    # Layout inside the tarball:
+    #   x86_64:  <target>/kernels/...   <target>/image/...
+    #   aarch64: <target>/aarch64/kernels/...   <target>/aarch64/image/...
+    #
+    # This means fetch can always extract to OUTPUT_DIR and find artifacts
+    # at output/<target>/ (x86_64) or output/<target>/<arch>/ (others).
+    #
+    # We use two levels of parent for the non-default-arch case:
+    #   tar_base = output/  (so paths start with <target>/<arch>/...)
+    # and for x86_64:
+    #   tar_base = output/  (so paths start with <target>/kernels/...)
+    tar_base = base_output_dir.parent  # always output/
+    tar_paths = []
+    kernel_rel = kernel_dir.relative_to(tar_base)
+    image_rel = artifacts["image"].parent.relative_to(tar_base)
+    tar_paths.append(str(kernel_rel))
+    tar_paths.append(str(image_rel))
+    # Include container meta if present (lives at base_output_dir level)
+    container_meta = base_output_dir / "container" / "meta.json"
+    if container_meta.exists():
+        tar_paths.append(str(container_meta.relative_to(tar_base)))
+
     subprocess.run(
-        ["tar", "-czf", str(tarball), "-C", str(output_dir.parent), target_name],
+        ["tar", "-czf", str(tarball), "-C", str(tar_base)] + tar_paths,
         check=True,
     )
 
@@ -282,6 +322,7 @@ def package_target(
         "target": target_name,
         "kernel": kernel_name,
         "kernel_version": version,
+        "arch": arch,
         "contents": list(artifacts.keys()),
         "has_lustre": "lustre" in artifacts,
         "lustre_commit": lustre_commit,
@@ -293,12 +334,21 @@ def package_target(
     return tarball
 
 
-def fetch_target(target_name: str, url: str, output_base: str | Path) -> Path:
+def fetch_target(
+    target_name: str,
+    url: str,
+    output_base: str | Path,
+    arch: str = "x86_64",
+) -> Path:
     """Download and extract a target package.
 
     url: direct URL to the tarball
     output_base: parent of output/<target>/ (usually the
                  ltvm repo root's output/ directory)
+    arch: architecture; non-x86_64 tarballs extract to
+          output/<target>/<arch>/ instead of output/<target>/
+
+    Returns the path to the extracted target directory.
     """
     output_base = Path(output_base)
     output_base.mkdir(parents=True, exist_ok=True)
@@ -328,7 +378,14 @@ def fetch_target(target_name: str, url: str, output_base: str | Path) -> Path:
     finally:
         os.unlink(tmp_path)
 
-    target_dir = output_base / target_name
+    # x86_64 extracts to output/<target>/
+    # non-x86_64 extracts to output/<target>/<arch>/  (the tarball
+    # contains paths like <target>/<arch>/kernels/...)
+    if arch != "x86_64":
+        target_dir = output_base / target_name / arch
+    else:
+        target_dir = output_base / target_name
+
     if not target_dir.is_dir():
         raise RuntimeError(
             f"Expected {target_dir} after extraction but not found"
@@ -356,10 +413,12 @@ def install_target(
     *,
     kernel_dir: str | Path | None = None,
     image_dir: str | Path | None = None,
+    arch: str = "x86_64",
 ) -> dict[str, str]:
     """Install kernel + image to system paths for vm.py.
 
     kernel: kernel name under kernels/; auto-detected if None.
+    arch: target architecture (appended to filenames when non-default).
     This requires sudo (writes to /opt/qemu-vms/).
     Returns dict of installed paths.
     """
@@ -374,9 +433,10 @@ def install_target(
 
     installed: dict[str, str] = {}
 
-    # Install kernel -- include kernel name in destination filename
-    vmlinux_dest = kernel_dir / f"vmlinux-{target_name}-{kernel_name}"
-    vmlinuz_dest = kernel_dir / f"vmlinuz-{target_name}-{kernel_name}"
+    # Install kernel -- include kernel name (and arch if non-default) in filename
+    arch_suffix = f"-{arch}" if arch != "x86_64" else ""
+    vmlinux_dest = kernel_dir / f"vmlinux-{target_name}-{kernel_name}{arch_suffix}"
+    vmlinuz_dest = kernel_dir / f"vmlinuz-{target_name}-{kernel_name}{arch_suffix}"
 
     print(f"  Installing kernel ({kernel_name}) to {kernel_dir}/")
     subprocess.run(["sudo", "mkdir", "-p", str(kernel_dir)], check=True)
@@ -401,7 +461,7 @@ def install_target(
 
     # Install image
     image_src = artifacts["image"]
-    image_dest = image_dir / f"{target_name}-ltvm.ext4"
+    image_dest = image_dir / f"{target_name}-ltvm{arch_suffix}.ext4"
 
     print(f"  Installing image to {image_dir}/")
     subprocess.run(["sudo", "mkdir", "-p", str(image_dir)], check=True)
