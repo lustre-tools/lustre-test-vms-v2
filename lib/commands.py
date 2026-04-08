@@ -1063,7 +1063,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         if packaged.is_dir():
             build_path = packaged
             if not use_json:
-                print(f"  Using packaged Lustre from {packaged}")
+                print(f"  Using bundled Lustre (from ltvm fetch)")
         else:
             build_path = Path(".").resolve()
     else:

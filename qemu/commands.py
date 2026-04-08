@@ -159,7 +159,11 @@ def cmd_create(args: argparse.Namespace) -> None:
             f"name={vm.name} ip={vm.ip} pid={vm.pid} "
             f"mdt_disks={vm.mdt_disks} ost_disks={vm.ost_disks}"
         )
-        print(f"\n  sudo ltvm deploy {vm.name} --mount")
+        print()
+        print("Next steps:")
+        print(f"  sudo ltvm deploy {vm.name} --mount    # deploy Lustre and mount filesystem")
+        print(f"  sudo ltvm vm exec {vm.name} 'lfs df'  # run commands in the VM")
+        print(f"  sudo ltvm vm ssh {vm.name}             # interactive shell")
 
 
 def cmd_start(args: argparse.Namespace) -> None:
