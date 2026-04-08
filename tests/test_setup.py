@@ -1,4 +1,4 @@
-"""Tests for lib/setup.py -- host detection, package mapping, SSH."""
+"""Tests for lib/host_setup.py -- host detection, package mapping, SSH."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lib.setup import (
+from lib.host_setup import (
     MARKER,
     HostInfo,
     _qemu_installed_version,
@@ -75,7 +75,7 @@ class TestSetupSsh:
         config = ssh_dir / "config"
 
         with (
-            patch("lib.setup.Path") as mock_path_cls,
+            patch("lib.host_setup.Path") as mock_path_cls,
         ):
             # Make Path("/root/.ssh") return our tmp path
             def side_effect(p: str) -> Path:
@@ -168,7 +168,7 @@ class TestCheckPrerequisites:
         """When all cmds present, _pkg_install is not called."""
         host = self._make_host("dnf")
         with patch("shutil.which", return_value="/usr/bin/cmd"):
-            with patch("lib.setup._pkg_install") as mock_install:
+            with patch("lib.host_setup._pkg_install") as mock_install:
                 check_prerequisites(host)
         mock_install.assert_not_called()
 
@@ -183,7 +183,7 @@ class TestCheckPrerequisites:
             return f"/usr/bin/{cmd}"
 
         with patch("shutil.which", side_effect=_which):
-            with patch("lib.setup._pkg_install") as mock_install:
+            with patch("lib.host_setup._pkg_install") as mock_install:
                 check_prerequisites(host)
 
         # Should be called once with the two missing packages
@@ -203,7 +203,7 @@ class TestCheckPrerequisites:
             return f"/usr/bin/{cmd}"
 
         with patch("shutil.which", side_effect=_which):
-            with patch("lib.setup._pkg_install") as mock_install:
+            with patch("lib.host_setup._pkg_install") as mock_install:
                 check_prerequisites(host)
 
         args = mock_install.call_args[0]
@@ -220,7 +220,7 @@ class TestCheckPrerequisites:
             return f"/usr/bin/{cmd}"
 
         with patch("shutil.which", side_effect=_which):
-            with patch("lib.setup._pkg_install") as mock_install:
+            with patch("lib.host_setup._pkg_install") as mock_install:
                 check_prerequisites(host)
 
         args = mock_install.call_args[0]
@@ -238,7 +238,7 @@ class TestCheckPrerequisites:
 
         # Should not raise
         with patch("shutil.which", side_effect=_which):
-            with patch("lib.setup._pkg_install"):
+            with patch("lib.host_setup._pkg_install"):
                 check_prerequisites(host)
 
 
@@ -250,7 +250,7 @@ class TestCheckPrerequisites:
 class TestCheckKvm:
     def test_kvm_exists_returns_true(self) -> None:
         """Returns True when /dev/kvm is present."""
-        with patch("lib.setup.Path") as mock_path_cls:
+        with patch("lib.host_setup.Path") as mock_path_cls:
             mock_kvm = MagicMock()
             mock_kvm.exists.return_value = True
             mock_path_cls.return_value = mock_kvm
@@ -259,7 +259,7 @@ class TestCheckKvm:
 
     def test_kvm_missing_require_true_raises(self) -> None:
         """Raises RuntimeError when /dev/kvm absent and require=True."""
-        with patch("lib.setup.Path") as mock_path_cls:
+        with patch("lib.host_setup.Path") as mock_path_cls:
             mock_kvm = MagicMock()
             mock_kvm.exists.return_value = False
             mock_path_cls.return_value = mock_kvm
@@ -268,7 +268,7 @@ class TestCheckKvm:
 
     def test_kvm_missing_require_false_returns_false(self) -> None:
         """Returns False without raising when require=False."""
-        with patch("lib.setup.Path") as mock_path_cls:
+        with patch("lib.host_setup.Path") as mock_path_cls:
             mock_kvm = MagicMock()
             mock_kvm.exists.return_value = False
             mock_path_cls.return_value = mock_kvm
@@ -286,7 +286,7 @@ class TestQemuInstalledVersion:
         """Returns None when the qemu binary does not exist."""
         fake_prefix = tmp_path / "qemu"
         # Do NOT create the binary -- it should not exist.
-        with patch("lib.setup.QEMU_PREFIX", fake_prefix):
+        with patch("lib.host_setup.QEMU_PREFIX", fake_prefix):
             result = _qemu_installed_version()
         assert result is None
 
@@ -299,8 +299,8 @@ class TestQemuInstalledVersion:
         completed = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="QEMU emulator version 9.2.2\n"
         )
-        with patch("lib.setup.QEMU_PREFIX", tmp_path):
-            with patch("lib.setup._run_quiet", return_value=completed):
+        with patch("lib.host_setup.QEMU_PREFIX", tmp_path):
+            with patch("lib.host_setup._run_quiet", return_value=completed):
                 result = _qemu_installed_version()
         assert result == "9.2.2"
 
@@ -313,8 +313,8 @@ class TestQemuInstalledVersion:
         completed = subprocess.CompletedProcess(
             args=[], returncode=0, stdout="something completely different\n"
         )
-        with patch("lib.setup.QEMU_PREFIX", tmp_path):
-            with patch("lib.setup._run_quiet", return_value=completed):
+        with patch("lib.host_setup.QEMU_PREFIX", tmp_path):
+            with patch("lib.host_setup._run_quiet", return_value=completed):
                 result = _qemu_installed_version()
         assert result == "unknown"
 
@@ -324,8 +324,8 @@ class TestQemuInstalledVersion:
         fake_bin.parent.mkdir(parents=True)
         fake_bin.touch()
 
-        with patch("lib.setup.QEMU_PREFIX", tmp_path):
-            with patch("lib.setup._run_quiet", side_effect=OSError("oops")):
+        with patch("lib.host_setup.QEMU_PREFIX", tmp_path):
+            with patch("lib.host_setup._run_quiet", side_effect=OSError("oops")):
                 result = _qemu_installed_version()
         assert result is None
 
@@ -346,7 +346,7 @@ class TestVerify:
     def _patch_all_ok(self) -> dict:
         """Return a dict of patch kwargs representing a fully healthy host."""
         return {
-            "lib.setup._qemu_installed_version": "9.2.2",
+            "lib.host_setup._qemu_installed_version": "9.2.2",
             # /dev/kvm exists
             # bridge ip cmd succeeds with an inet address
             # dnsmasq is active
@@ -374,16 +374,16 @@ class TestVerify:
             return _mock_completed(0)
 
         with (
-            patch("lib.setup._qemu_installed_version", return_value="9.2.2"),
+            patch("lib.host_setup._qemu_installed_version", return_value="9.2.2"),
             patch(
-                "lib.setup.Path",
+                "lib.host_setup.Path",
                 side_effect=lambda p: (
                     ssh_mock
                     if p == "/root/.ssh/config"
                     else MagicMock(exists=MagicMock(return_value=True))
                 ),
             ),
-            patch("lib.setup._run_quiet", side_effect=_run_quiet_side),
+            patch("lib.host_setup._run_quiet", side_effect=_run_quiet_side),
             patch(
                 "shutil.which",
                 side_effect=lambda cmd: f"/usr/bin/{cmd}",
@@ -418,16 +418,16 @@ class TestVerify:
             return _mock_completed(0)
 
         with (
-            patch("lib.setup._qemu_installed_version", return_value=None),
+            patch("lib.host_setup._qemu_installed_version", return_value=None),
             patch(
-                "lib.setup.Path",
+                "lib.host_setup.Path",
                 side_effect=lambda p: (
                     ssh_mock
                     if p == "/root/.ssh/config"
                     else MagicMock(exists=MagicMock(return_value=True))
                 ),
             ),
-            patch("lib.setup._run_quiet", side_effect=_run_quiet_side),
+            patch("lib.host_setup._run_quiet", side_effect=_run_quiet_side),
             patch("shutil.which", side_effect=lambda cmd: f"/usr/bin/{cmd}"),
         ):
             result = verify()
@@ -461,9 +461,9 @@ class TestVerify:
             return _mock_completed(0)
 
         with (
-            patch("lib.setup._qemu_installed_version", return_value="9.2.2"),
-            patch("lib.setup.Path", side_effect=_path_side),
-            patch("lib.setup._run_quiet", side_effect=_run_quiet_side),
+            patch("lib.host_setup._qemu_installed_version", return_value="9.2.2"),
+            patch("lib.host_setup.Path", side_effect=_path_side),
+            patch("lib.host_setup._run_quiet", side_effect=_run_quiet_side),
             patch("shutil.which", side_effect=lambda cmd: f"/usr/bin/{cmd}"),
         ):
             result = verify()
@@ -481,16 +481,16 @@ class TestVerify:
             return _mock_completed(1)
 
         with (
-            patch("lib.setup._qemu_installed_version", return_value=None),
+            patch("lib.host_setup._qemu_installed_version", return_value=None),
             patch(
-                "lib.setup.Path",
+                "lib.host_setup.Path",
                 side_effect=lambda p: (
                     ssh_mock
                     if p == "/root/.ssh/config"
                     else MagicMock(exists=MagicMock(return_value=False))
                 ),
             ),
-            patch("lib.setup._run_quiet", side_effect=_run_quiet_side),
+            patch("lib.host_setup._run_quiet", side_effect=_run_quiet_side),
             patch("shutil.which", return_value=None),
         ):
             result = verify()

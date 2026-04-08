@@ -20,7 +20,7 @@ from .platform import is_wsl2
 log = logging.getLogger(__name__)
 
 # Override the log format for setup output so it
-# prints "==> message" instead of "lib.setup: message".
+# prints "==> message" instead of "lib.host_setup: message".
 _handler = logging.StreamHandler()
 _handler.setFormatter(logging.Formatter("==> %(message)s"))
 log.addHandler(_handler)

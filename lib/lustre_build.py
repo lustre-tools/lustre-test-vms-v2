@@ -150,38 +150,27 @@ def build_lustre(
 
     kver = _kernel_release(build_tree)
 
-    # Decide: container or host build
-    use_container = container_tag and _container_exists(container_tag)
+    if not container_tag:
+        raise RuntimeError(
+            "No build container specified. Run: ltvm build-container <target>"
+        )
+    if not _container_exists(container_tag):
+        raise RuntimeError(
+            f"Build container '{container_tag}' not found.\n"
+            f"Run: ltvm build-container <target>"
+        )
 
-    if use_container:
-        assert container_tag is not None  # narrowing for mypy
-        return _build_in_container(
-            lustre_tree,
-            build_tree,
-            container_tag,
-            kver,
-            enable_server,
-            extra_configure,
-            jobs,
-            force,
-            arch=arch,
-        )
-    else:
-        if container_tag:
-            print(
-                f"  WARNING: container {container_tag} "
-                f"not found, building on host"
-            )
-            print("  Run 'ltvm build-container <target>' for cross-OS builds")
-        return _build_on_host(
-            lustre_tree,
-            build_tree,
-            kver,
-            enable_server,
-            extra_configure,
-            jobs,
-            force,
-        )
+    return _build_in_container(
+        lustre_tree,
+        build_tree,
+        container_tag,
+        kver,
+        enable_server,
+        extra_configure,
+        jobs,
+        force,
+        arch=arch,
+    )
 
 
 def _build_in_container(
@@ -355,89 +344,6 @@ fi""")
         "kernel_version": kver,
         "ko_count": len(ko_files),
         "container": container_tag,
-    }
-
-
-def _build_on_host(
-    lustre_tree: Path,
-    build_tree: Path,
-    kver: str,
-    enable_server: bool,
-    extra_configure: list[str] | None,
-    jobs: int,
-    force: bool,
-) -> BuildResult:
-    """Build Lustre directly on the host."""
-    print(f"  Lustre:  {lustre_tree}")
-    print(f"  Kernel:  {build_tree}")
-    print(f"  Kernel:  {kver}")
-    print("  (host build)")
-
-    need_reconf = _needs_reconfigure(lustre_tree, build_tree, force, build_tree)
-
-    if force:
-        if (lustre_tree / "Makefile").exists():
-            print("--- Cleaning (make distclean)...")
-            subprocess.run(
-                ["make", "distclean"], cwd=str(lustre_tree), capture_output=True
-            )
-
-    if need_reconf or force:
-        # Remove stale .ko files from any previous build before
-        # reconfiguring (see container build path for rationale).
-        subprocess.run(
-            ["find", ".", "-name", "*.ko", "-delete"],
-            cwd=str(lustre_tree),
-            capture_output=True,
-        )
-
-    if need_reconf:
-        _run_step(["bash", "autogen.sh"], lustre_tree, "autogen.sh")
-
-        cfg_cmd = [
-            "./configure",
-            f"--with-linux={build_tree}",
-            "--disable-gss",
-            "--disable-crypto",
-        ]
-        if enable_server:
-            cfg_cmd.append("--enable-server")
-        else:
-            cfg_cmd.append("--disable-server")
-        if extra_configure:
-            cfg_cmd.extend(extra_configure)
-
-        _run_step(cfg_cmd, lustre_tree, "configure")
-
-    (lustre_tree / ".ltvm-kernel").write_text(kver + "\n")
-    (lustre_tree / ".ltvm-kernel-path").write_text(str(build_tree) + "\n")
-
-    _run_step(["make", f"-j{jobs}"], lustre_tree, f"make -j{jobs}")
-
-    # Create a staging tree so deploy-lustre.sh can rsync the
-    # installed layout directly instead of tracking individual files.
-    staging = lustre_tree / ".staging"
-    if staging.exists():
-        import shutil
-
-        shutil.rmtree(staging)
-    _run_step(
-        ["make", "install", f"DESTDIR={staging}", f"-j{jobs}"],
-        lustre_tree,
-        "make install (staging)",
-    )
-
-    ko_files = [
-        f for f in lustre_tree.rglob("*.ko") if "kconftest" not in str(f)
-    ]
-    print(f"--- Build complete: {len(ko_files)} kernel modules")
-
-    return {
-        "lustre_tree": str(lustre_tree),
-        "kernel_tree": str(build_tree),
-        "kernel_version": kver,
-        "ko_count": len(ko_files),
-        "container": None,
     }
 
 

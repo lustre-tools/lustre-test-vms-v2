@@ -16,11 +16,11 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from lib import setup as host_setup
+from lib import host_setup
 from lib.config import TargetConfig, add_target, list_targets
 from lib.image import build_image, image_status
-from lib.kernel import build_kernel, kernel_status
-from lib.lustre import build_lustre
+from lib.kernel_build import build_kernel, kernel_status
+from lib.lustre_build import build_lustre
 from lib.package import (
     fetch_target,
     install_target,

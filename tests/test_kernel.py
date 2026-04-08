@@ -1,4 +1,4 @@
-"""Tests for lib/kernel.py -- target parsing and file resolution."""
+"""Tests for lib/kernel_build.py -- target parsing and file resolution."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lib.kernel import (
+from lib.kernel_build import (
     _build_config_fragment,
     _ensure_container_image,
     _find_srpm_url,
@@ -215,7 +215,7 @@ class TestDownloadSrpm:
         cached = cache_dir / srpm
         cached.touch()
 
-        with patch("lib.kernel.subprocess.run") as mock_run:
+        with patch("lib.kernel_build.subprocess.run") as mock_run:
             result = download_srpm(srpm, cache_dir, _ROCKY9_SRPM_URL)
 
         assert result == cached
@@ -225,7 +225,7 @@ class TestDownloadSrpm:
         srpm = "kernel-5.14.0-503.26.1.el9_7.src.rpm"
         cache_dir = tmp_path / "cache"
 
-        with patch("lib.kernel.subprocess.run") as mock_run:
+        with patch("lib.kernel_build.subprocess.run") as mock_run:
             result = download_srpm(srpm, cache_dir, _ROCKY9_SRPM_URL)
 
         assert result == cache_dir / srpm
@@ -238,7 +238,7 @@ class TestDownloadSrpm:
         srpm = "kernel-5.14.0-503.26.1.el9_7.src.rpm"
         cache_dir = tmp_path / "cache" / "nested"
 
-        with patch("lib.kernel.subprocess.run"):
+        with patch("lib.kernel_build.subprocess.run"):
             download_srpm(srpm, cache_dir, _ROCKY9_SRPM_URL)
 
         assert cache_dir.exists()
@@ -247,7 +247,7 @@ class TestDownloadSrpm:
         srpm = "kernel-5.14.0-503.26.1.el9_7.src.rpm"
         cache_dir = tmp_path / "cache"
 
-        with patch("lib.kernel.subprocess.run") as mock_run:
+        with patch("lib.kernel_build.subprocess.run") as mock_run:
             download_srpm(srpm, cache_dir, _ROCKY9_SRPM_URL)
 
         cmd = mock_run.call_args[0][0]
@@ -273,13 +273,13 @@ class TestEnsureContainerImage:
 
     def test_returns_correct_tag(self, tmp_path: Path) -> None:
         cfg = self._make_target_config(tmp_path)
-        with patch("lib.kernel.subprocess.run"):
+        with patch("lib.kernel_build.subprocess.run"):
             tag = _ensure_container_image(cfg)
         assert tag == "ltvm-build-rocky9"
 
     def test_calls_podman_build(self, tmp_path: Path) -> None:
         cfg = self._make_target_config(tmp_path)
-        with patch("lib.kernel.subprocess.run") as mock_run:
+        with patch("lib.kernel_build.subprocess.run") as mock_run:
             _ensure_container_image(cfg)
         mock_run.assert_called_once()
         cmd = mock_run.call_args[0][0]
@@ -288,7 +288,7 @@ class TestEnsureContainerImage:
 
     def test_podman_build_uses_tag(self, tmp_path: Path) -> None:
         cfg = self._make_target_config(tmp_path)
-        with patch("lib.kernel.subprocess.run") as mock_run:
+        with patch("lib.kernel_build.subprocess.run") as mock_run:
             _ensure_container_image(cfg)
         cmd = mock_run.call_args[0][0]
         assert "ltvm-build-rocky9" in cmd
@@ -296,7 +296,7 @@ class TestEnsureContainerImage:
     def test_podman_build_uses_dockerfile(self, tmp_path: Path) -> None:
         cfg = self._make_target_config(tmp_path)
         dockerfile = str(cfg.target_dir / "container.Dockerfile")
-        with patch("lib.kernel.subprocess.run") as mock_run:
+        with patch("lib.kernel_build.subprocess.run") as mock_run:
             _ensure_container_image(cfg)
         cmd = mock_run.call_args[0][0]
         assert dockerfile in cmd

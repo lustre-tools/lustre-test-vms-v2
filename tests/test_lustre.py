@@ -4,7 +4,7 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-from lib.lustre import (
+from lib.lustre_build import (
     _container_exists,
     _kernel_release,
     _needs_reconfigure,
@@ -53,7 +53,7 @@ class TestKernelRelease:
 
 class TestContainerExists:
     def test_returns_true_when_podman_exits_zero(self) -> None:
-        with patch("lib.lustre.subprocess.run") as mock_run:
+        with patch("lib.lustre_build.subprocess.run") as mock_run:
             mock_run.return_value = _make_completed(0)
             assert _container_exists("ltvm-build-rocky9") is True
         mock_run.assert_called_once_with(
@@ -62,12 +62,12 @@ class TestContainerExists:
         )
 
     def test_returns_false_when_podman_exits_nonzero(self) -> None:
-        with patch("lib.lustre.subprocess.run") as mock_run:
+        with patch("lib.lustre_build.subprocess.run") as mock_run:
             mock_run.return_value = _make_completed(1)
             assert _container_exists("no-such-image") is False
 
     def test_returns_false_on_exit_125(self) -> None:
-        with patch("lib.lustre.subprocess.run") as mock_run:
+        with patch("lib.lustre_build.subprocess.run") as mock_run:
             mock_run.return_value = _make_completed(125)
             assert _container_exists("ltvm-build-rocky9") is False
 
