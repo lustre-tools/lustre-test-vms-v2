@@ -595,6 +595,7 @@ def setup_network(host: HostInfo, subnet: str = DEFAULT_SUBNET) -> None:
     Path("/etc/dnsmasq.d").mkdir(exist_ok=True)
     Path("/etc/dnsmasq.d/qemu-vms.conf").write_text(dns_text)
 
+
     _run(["systemctl", "daemon-reload"])
     _run(["systemctl", "enable", "--now", "qemu-bridge"])
     _run(["systemctl", "restart", "dnsmasq"])

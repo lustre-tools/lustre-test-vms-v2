@@ -302,15 +302,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_publish)
 
-    # -- install --
-    sp = sub.add_parser(
-        "install",
-        parents=[common, kernel_arg],
-        help="Install kernel + image to system paths for vm.sh (requires sudo)",
-    )
-    sp.add_argument("target")
-    sp.set_defaults(func=cmd_install)
-
     # -- shell --
     sp = sub.add_parser(
         "shell",
