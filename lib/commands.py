@@ -201,7 +201,7 @@ def _parse_vm_kwargs(extra_args: list[str]) -> dict[str, Any]:
 
 def _do_build_container(target_config: TargetConfig) -> str:
     """Run podman build for the build container and write meta."""
-    tag = f"ltvm-build-{target_config.name}"
+    tag = _build_container_tag(target_config)
     dockerfile = target_config.target_dir / "container.Dockerfile"
     if not dockerfile.exists():
         raise FileNotFoundError(
@@ -681,7 +681,10 @@ def cmd_publish(args: argparse.Namespace) -> int:
     else:
         # Look for existing tarball in output/
         pattern = f"{args.target}-*.tar.*"
-        candidates = sorted(tc.output_dir.parent.glob(pattern))
+        candidates = [
+            c for c in sorted(tc.output_dir.parent.glob(pattern))
+            if c.suffix in (".gz", ".zst") or c.name.endswith(".tar.gz") or c.name.endswith(".tar.zst")
+        ]
         if kernel:
             candidates = [c for c in candidates if kernel in c.name]
         if not candidates:
