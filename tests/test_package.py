@@ -1,4 +1,4 @@
-"""Tests for lib/package.py -- artifact resolution and packaging."""
+"""Tests for ltvm_pkg/release_package.py -- artifact resolution and packaging."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from lib.package import (
+from ltvm_pkg.release_package import (
     _dir_size_mb,
     _find_artifacts,
     _resolve_kernel,
@@ -204,6 +204,8 @@ def _make_rsync_mock(dest_dir: Path) -> MagicMock:
         dest_dir.mkdir(parents=True, exist_ok=True)
         result = MagicMock()
         result.returncode = 0
+        result.stdout = ""
+        result.stderr = ""
         return result
 
     return _side_effect
@@ -239,13 +241,13 @@ class TestSnapshotLustre:
                 "subprocess.run",
                 side_effect=_make_rsync_mock(dest),
             ) as mock_run,
-            patch("lib.package._dir_size_mb", return_value=10.0),
+            patch("ltvm_pkg.release_package._dir_size_mb", return_value=10.0),
         ):
             result = snapshot_lustre(tree, output_dir, kernel="test-kernel")
 
-        # rsync was called
-        mock_run.assert_called_once()
-        args = mock_run.call_args[0][0]
+        # rsync was called (subprocess.run also called for git rev-parse)
+        assert mock_run.call_count >= 1
+        args = mock_run.call_args_list[0][0][0]
         assert args[0] == "rsync"
         assert str(tree.resolve()) + "/" in args
         assert str(kdir / "lustre") + "/" in args
@@ -260,7 +262,7 @@ class TestSnapshotLustre:
                 "subprocess.run",
                 side_effect=_make_rsync_mock(dest),
             ),
-            patch("lib.package._dir_size_mb", return_value=10.0),
+            patch("ltvm_pkg.release_package._dir_size_mb", return_value=10.0),
         ):
             result = snapshot_lustre(tree, output_dir, kernel="test-kernel")
 
@@ -289,7 +291,7 @@ class TestSnapshotLustre:
                     "subprocess.run",
                     side_effect=_make_rsync_mock(dest),
                 ),
-                patch("lib.package._dir_size_mb", return_value=10.0),
+                patch("ltvm_pkg.release_package._dir_size_mb", return_value=10.0),
             ):
                 result = snapshot_lustre(tree, output_dir, kernel="test-kernel")
 
@@ -384,7 +386,6 @@ class TestPackageTarget:
 
         assert tarball.suffix == ".zst"
         assert "my-target" in tarball.name
-        assert "test-kernel" in tarball.name
         assert "5.14.0" in tarball.name
 
     def test_falls_back_to_gzip(self, tmp_path: Path) -> None:

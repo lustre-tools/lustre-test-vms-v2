@@ -45,12 +45,9 @@ BEGIN {
 	# a[3] = CPU.TYPE[F]
 	# a[4] = SEC.USEC (single field, dot-separated)
 	p_ts = a[4]
-	p_stack = a[5]
 	p_pid = a[6]
-	p_epid = a[7]
 	p_file = a[8]
 	gsub("^\\(", "", p_file)
-	p_line = a[9]
 	p_rest = a[10]
 	split(p_rest, fr, "\\)")
 	p_func = fr[1]

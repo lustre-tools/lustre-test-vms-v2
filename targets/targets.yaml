@@ -1,88 +1,80 @@
-# ltvm target registry
-#
-# Each target defines an OS + kernel set for building and testing Lustre.
-# Dockerfiles and package lists live in targets/<name>/.
-#
-# Fields:
-#   os_name:         short OS name (rocky, ubuntu, ...)
-#   os_version:      OS release version string
-#   os_family:       rhel or debian (default: rhel)
-#   arch:            cpu arch (default: x86_64)
-#   server:          build server-side Lustre (default: true)
-#   container_image: base image for the build container Dockerfile
-#   status:          working | planned | experimental
-#   kernels.default: lustre target name used when --kernel not specified
-#   kernels.available: all lustre target names for this OS
-#   kernels.config:  kernel .config overrides (merged with common fragment)
-#   srpm_url:        base URL for downloading kernel SRPMs
-#                    (omit for targets that don't use SRPMs, e.g. Ubuntu)
-#   root_password:   root password for VM SSH access (default: initial0)
-#   ssh_timeout:     seconds to wait for SSH after boot (default: 30)
-
 defaults:
   arch: x86_64
   os_family: rhel
-  server: true
   root_password: initial0
+  server: true
   ssh_timeout: 30
-
 targets:
-  rocky9:
-    os_name: rocky
-    os_version: "9.7"
-    container_image: rockylinux:9
-    status: working
-    srpm_url: "https://dl.rockylinux.org/pub/rocky/9/BaseOS/source/tree/Packages/k"
+  alma9:
+    container_image: almalinux:9.4
     kernels:
-      default: 5.14-rhel9.7
       available:
-        - 5.14-rhel9.7
-        - 5.14-rhel9.5
-      config:
-        CONFIG_XEN_PVH: "y"
-
-  rocky8:
-    os_name: rocky
-    os_version: "8.9"
-    container_image: rockylinux:8.9
-    server: true     # server builds OK with --force (stale configure was the issue)
-    status: working
-    srpm_url: "https://dl.rockylinux.org/pub/rocky/8/BaseOS/source/tree/Packages/k"
-    kernels:
-      default: 4.18-rhel8.10
-      available:
-        - 4.18-rhel8.10
-      config:
-        CONFIG_XEN_PVH: "y"
-
-  rocky10:
-    os_name: rocky
-    os_version: "10.1"
-    container_image: quay.io/rockylinux/rockylinux:10.1
-    server: false    # Two blockers: (1) 10.0 SRPM 55.43.1 not published by Rocky yet, (2) ldiskfs.m4 lacks RHEL_RELEASE_NO 101 for 10.1
-    default_mem: 4096  # 6.12 kernel + EL10 services need more RAM
-    status: working
-    srpm_url: "https://dl.rockylinux.org/pub/rocky/10/BaseOS/source/tree/Packages/k"
-    kernels:
-      default: 6.12-rhel10.1
-      available:
-        - 6.12-rhel10.1
-      config:
-        CONFIG_XEN_PVH: "y"
-
-  ubuntu2404:
-    os_name: ubuntu
-    os_version: "24.04"
+      - 5.14-rhel9.4
+      config: {}
+      default: 5.14-rhel9.4
+    os_name: alma
+    os_version: '9.4'
+    status: planned
+  debian12:
+    container_image: debian:12
     os_family: debian
+    os_name: debian
+    os_version: '12'
+    server: false
+    status: planned
+  rocky10:
+    container_image: quay.io/rockylinux/rockylinux:10.1
+    default_mem: 4096
+    kernels:
+      available:
+      - 6.12-rhel10.1
+      config:
+        CONFIG_XEN_PVH: y
+      default: 6.12-rhel10.1
+    os_name: rocky
+    os_version: '10.1'
+    server: false
+    srpm_url: https://dl.rockylinux.org/pub/rocky/10/BaseOS/source/tree/Packages/k
+    status: working
+  rocky8:
+    container_image: rockylinux:8.9
+    kernels:
+      available:
+      - 4.18-rhel8.10
+      config:
+        CONFIG_XEN_PVH: y
+      default: 4.18-rhel8.10
+    os_name: rocky
+    os_version: '8.9'
+    server: true
+    srpm_url: https://dl.rockylinux.org/pub/rocky/8/BaseOS/source/tree/Packages/k
+    status: working
+  rocky9:
+    container_image: rockylinux:9
+    kernels:
+      available:
+      - 5.14-rhel9.7
+      - 5.14-rhel9.5
+      config:
+        CONFIG_XEN_PVH: y
+      default: 5.14-rhel9.7
+    os_name: rocky
+    os_version: '9.7'
+    srpm_url: https://dl.rockylinux.org/pub/rocky/9/BaseOS/source/tree/Packages/k
+    status: working
+  ubuntu2404:
+    configure_args:
+    - --with-o2ib=no
     container_image: ubuntu:24.04
+    kernel_deb_source: linux-source-6.8.0
+    kernels:
+      available:
+      - 6.8-ubuntu2404
+      config:
+        CONFIG_PVH: y
+      default: 6.8-ubuntu2404
+    os_family: debian
+    os_name: ubuntu
+    os_version: '24.04'
     server: false
     status: experimental
-    kernel_deb_source: linux-source-6.8.0
-    configure_args:
-      - "--with-o2ib=no"
-    kernels:
-      default: 6.8-ubuntu2404
-      available:
-        - 6.8-ubuntu2404
-      config:
-        CONFIG_PVH: "y"

@@ -7,13 +7,13 @@ from unittest.mock import patch
 
 import pytest
 
-from qemu.models import VMInfo, VMNotFound
+from ltvm_pkg.vm_state import VMInfo, VMNotFound
 
 
 @pytest.fixture
 def tmp_sockets(tmp_path: Path) -> Path:
     """Redirect SOCKETS to a temp directory for isolation."""
-    with patch("qemu.models.SOCKETS", tmp_path):
+    with patch("ltvm_pkg.vm_state.SOCKETS", tmp_path):
         yield tmp_path
 
 

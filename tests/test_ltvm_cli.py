@@ -35,7 +35,7 @@ def _load_ltvm() -> Any:
 
 ltvm = _load_ltvm()
 
-from lib.commands import (  # noqa: E402, I001
+from ltvm_pkg.cli import (  # noqa: E402, I001
     EXIT_ERROR,
     EXIT_NOT_FOUND,
     EXIT_OK,
@@ -241,10 +241,10 @@ class TestLoadTarget:
     ) -> None:
         # TargetConfig raises ValueError for unknown target names;
         # _load_target must catch it and return EXIT_NOT_FOUND.
-        def _raise(name: str) -> None:
+        def _raise(name: str, arch: str = "x86_64") -> None:
             raise ValueError(f"Unknown target: {name}")
 
-        with patch("lib.commands.TargetConfig", side_effect=_raise):
+        with patch("ltvm_pkg.cli.TargetConfig", side_effect=_raise):
             tc, code = _load_target("no_such_target", use_json=False)
         assert tc is None
         assert code == EXIT_NOT_FOUND
@@ -259,7 +259,7 @@ class TestCmdStatus:
     def test_status_no_targets_human(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        with patch("lib.commands.list_targets", return_value=[]):
+        with patch("ltvm_pkg.cli.list_targets", return_value=[]):
             rc = _run_main(["status"], capsys)
         assert rc == EXIT_OK
         assert "No targets" in capsys.readouterr().out
@@ -268,7 +268,7 @@ class TestCmdStatus:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         # --json must follow the subcommand name
-        with patch("lib.commands.list_targets", return_value=[]):
+        with patch("ltvm_pkg.cli.list_targets", return_value=[]):
             rc = _run_main(["status", "--json"], capsys)
         assert rc == EXIT_OK
         payload = json.loads(capsys.readouterr().out)
@@ -278,7 +278,7 @@ class TestCmdStatus:
         self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
     ) -> None:
         """With one configured target, status table includes its name."""
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         # Build a real TargetConfig against tmp_targets so it won't raise
         with (
@@ -288,14 +288,14 @@ class TestCmdStatus:
             tc = cfg.TargetConfig("rocky9")
 
         with (
-            patch("lib.commands.list_targets", return_value=["rocky9"]),
-            patch("lib.commands.TargetConfig", return_value=tc),
+            patch("ltvm_pkg.cli.list_targets", return_value=["rocky9"]),
+            patch("ltvm_pkg.cli.TargetConfig", return_value=tc),
             patch(
-                "lib.commands.kernel_status",
+                "ltvm_pkg.cli.kernel_status",
                 return_value={"built": False, "stale": True},
             ),
             patch(
-                "lib.commands.image_status",
+                "ltvm_pkg.cli.image_status",
                 return_value={"built": False, "stale": True},
             ),
         ):
@@ -315,7 +315,7 @@ class TestCmdStatusJson:
     def test_json_output_is_valid(
         self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
     ) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -324,14 +324,14 @@ class TestCmdStatusJson:
             tc = cfg.TargetConfig("rocky9")
 
         with (
-            patch("lib.commands.list_targets", return_value=["rocky9"]),
-            patch("lib.commands.TargetConfig", return_value=tc),
+            patch("ltvm_pkg.cli.list_targets", return_value=["rocky9"]),
+            patch("ltvm_pkg.cli.TargetConfig", return_value=tc),
             patch(
-                "lib.commands.kernel_status",
+                "ltvm_pkg.cli.kernel_status",
                 return_value={"built": False, "stale": True},
             ),
             patch(
-                "lib.commands.image_status",
+                "ltvm_pkg.cli.image_status",
                 return_value={"built": False, "stale": True},
             ),
         ):
@@ -466,7 +466,8 @@ class TestCmdVm:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         args = self._make_args("status", [])
-        rc = cmd_vm(args)
+        with patch("ltvm_pkg.cli._require_root", return_value=None):
+            rc = cmd_vm(args)
         assert rc == EXIT_ERROR
         assert "requires a VM name" in capsys.readouterr().err
 
@@ -484,6 +485,7 @@ class TestCmdVm:
         import argparse
 
         args = argparse.Namespace(json=False, action="bogus", vm_args=[])
-        rc = cmd_vm(args)
+        with patch("ltvm_pkg.cli._require_root", return_value=None):
+            rc = cmd_vm(args)
         assert rc == EXIT_ERROR
         assert "Unknown vm action" in capsys.readouterr().err

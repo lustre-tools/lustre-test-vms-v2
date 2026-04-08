@@ -4,7 +4,7 @@
 Single entry point for building containers, kernels, and VM images,
 plus runtime VM management.
 
-Command implementations live in lib/commands.py; this file owns
+Command implementations live in ltvm_pkg/cli.py; this file owns
 argparse setup and dispatch only.
 """
 
@@ -15,10 +15,10 @@ import logging
 import sys
 from pathlib import Path
 
-# Ensure lib/ is importable
+# Ensure repo root is importable
 sys.path.insert(0, str(Path(__file__).parent))
 
-from lib.commands import (
+from ltvm_pkg.cli import (
     EXIT_ERROR,
     _error,
     cmd_add_target,  # noqa: F401 (used via set_defaults)
@@ -31,14 +31,12 @@ from lib.commands import (
     cmd_deploy,
     cmd_exec,
     cmd_fetch,
-    cmd_install,
     cmd_package,
     cmd_publish,
     cmd_setup,
     cmd_shell,
     cmd_status,
     cmd_update,
-    cmd_validate,
     cmd_vm,
 )
 
@@ -221,6 +219,11 @@ def build_parser() -> argparse.ArgumentParser:
         "target", nargs="?", default="rocky9", help="Target (default: rocky9)"
     )
     sp.add_argument(
+        "lustre_tree_pos", nargs="?", default=None,
+        metavar="lustre-tree",
+        help="Path to Lustre source tree (positional or --lustre-tree)",
+    )
+    sp.add_argument(
         "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
     )
     sp.add_argument(
@@ -339,19 +342,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_update)
 
-    # -- validate --
-    sp = sub.add_parser(
-        "validate",
-        parents=[common],
-        help="Validate a built target (boot, packages, optional Lustre deploy)",
-    )
-    sp.add_argument("target")
-    sp.add_argument(
-        "--lustre-tree",
-        help="Path to Lustre build tree (enables deploy+mount checks)",
-    )
-    sp.set_defaults(func=cmd_validate)
-
     # -- vm --
     sp = sub.add_parser(
         "vm", parents=[common], help="VM management (create/ensure/destroy/...)"
@@ -368,6 +358,18 @@ def build_parser() -> argparse.ArgumentParser:
             "list",
             "status",
             "mount-lustre",
+            "start-all",
+            "stop-all",
+            "ssh",
+            "cp-to",
+            "cp-from",
+            "log",
+            "dmesg",
+            "lustre-log",
+            "crash-collect",
+            "snapshot",
+            "restore",
+            "doctor",
         ],
         help="VM action",
     )
@@ -416,7 +418,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "action",
-        choices=["create", "destroy", "deploy", "status", "exec"],
+        choices=["create", "destroy", "deploy", "status", "exec", "list", "ssh"],
         help="Cluster action",
     )
     sp.add_argument("cluster_args", nargs="*")

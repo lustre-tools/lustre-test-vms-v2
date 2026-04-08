@@ -7,7 +7,7 @@
 # Rsyncs kernel modules, userspace binaries, shared libraries, and test scripts
 # to the target VM, runs depmod, and optionally runs llmount.sh.
 #
-# By default deploys everything. Use --userspace-only or --tests-only to limit scope.
+# By default deploys everything.
 
 set -euo pipefail
 
@@ -20,8 +20,6 @@ VM_NAME=""
 BUILD_DIR=""
 DO_MOUNT=false
 SERVER_ONLY=false
-DEPLOY_USERSPACE=true
-DEPLOY_TESTS=true
 OS_FAMILY=""  # rhel or debian — passed from ltvm, auto-detected if empty
 
 usage() {
@@ -32,8 +30,6 @@ Usage: ${0##*/} --vm NAME --build DIR [options]
   --build DIR       Path to a built lustre-release tree
   --mount           After deploying, run llmount.sh to create and mount a filesystem
   --server-only     With --mount, pass --server-only to llmount.sh (no client mount)
-  --userspace-only  Deploy only userspace binaries and libraries (skip modules and tests)
-  --tests-only      Deploy only the test framework scripts
   -h, --help        This help
 
 By default all components are deployed (modules + userspace + tests).
@@ -47,8 +43,6 @@ while [[ $# -gt 0 ]]; do
         --build)           BUILD_DIR="$2"; shift 2;;
         --mount)           DO_MOUNT=true; shift;;
         --server-only)     SERVER_ONLY=true; shift;;
-        --userspace-only)  DEPLOY_TESTS=false; shift;;
-        --tests-only)      DEPLOY_USERSPACE=false; shift;;
         --os-family)       OS_FAMILY="$2"; shift 2;;
         -h|--help)         usage;;
         *)                 echo "Unknown option: $1"; usage;;
@@ -62,8 +56,10 @@ done
 # Resolve VM IP
 INFO="${VM_DIR}/sockets/${VM_NAME}.info"
 [[ -f "${INFO}" ]] || { echo "Error: VM '${VM_NAME}' not found (no ${INFO})"; exit 1; }
-source "${INFO}"
-# INFO may use VM_NAME or NAME depending on which script created it
+_get_info() { grep "^$1=" "${INFO}" 2>/dev/null | cut -d= -f2-; }
+IP=$(_get_info IP)
+MDT_DISKS=${MDT_DISKS:-$(_get_info MDT_DISKS)}
+OST_DISKS=${OST_DISKS:-$(_get_info OST_DISKS)}
 TARGET_IP="${IP}"
 
 RSYNC="$SSHPASS rsync -az -e 'ssh ${SSH_OPTS}'"
@@ -107,8 +103,6 @@ $SSHPASS ssh $SSH_OPTS ${REMOTE} "which rsync" &>/dev/null || {
 KVER=$($SSHPASS ssh $SSH_OPTS ${REMOTE} uname -r)
 echo "    VM kernel: ${KVER}"
 echo "    VM OS family: ${OS_FAMILY}"
-
-MODDIR="/lib/modules/${KVER}/extra/lustre"
 
 # --- Clean up existing Lustre state ---
 echo "--- Cleaning existing Lustre state..."

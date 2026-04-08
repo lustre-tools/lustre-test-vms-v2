@@ -1,19 +1,19 @@
 #!/bin/bash
-# kernel-build-inner-deb.sh -- runs INSIDE the build container.
+# kernel-build-inner.sh -- runs INSIDE the build container.
 #
-# Extracts kernel source from a deb linux-source package, applies
-# the microvm config fragment, and builds vmlinux + bzImage.
-# Used for Debian/Ubuntu targets where kernels come from apt
-# rather than SRPMs.
+# Extracts a kernel SRPM, applies Lustre patches, merges the
+# microvm config fragment, and builds vmlinux + bzImage.
 #
 # Expected environment:
-#   JOBS              -- parallel make jobs (default: nproc)
-#   KERNEL_DEB_SOURCE -- deb package name (e.g., linux-source-6.8.0)
+#   JOBS     -- parallel make jobs (default: nproc)
+#   LNXMAJ  -- kernel major version (e.g., 5.14.0)
 #
 # Expected bind mounts:
+#   /input/kernel.src.rpm    -- the kernel SRPM
+#   /input/staging/kernel.config     -- base kernel .config
 #   /input/staging/config.fragment   -- microvm config overrides
-#   /input/staging/series            -- patch filenames (optional)
-#   /input/staging/patches/          -- patch files (optional)
+#   /input/staging/series            -- patch filenames, one per line
+#   /input/staging/patches/          -- patch files
 #   /output/                         -- where we install results
 #
 # Outputs written to /output/:
@@ -24,7 +24,8 @@
 set -euo pipefail
 
 JOBS="${JOBS:-$(nproc)}"
-KERNEL_DEB_SOURCE="${KERNEL_DEB_SOURCE:-linux-source-6.8.0}"
+LNXMAJ="${LNXMAJ:-}"
+LNXREL="${LNXREL:-}"
 TARGET_ARCH="${TARGET_ARCH:-x86_64}"
 BUILD=/build/kernel-src
 
@@ -34,7 +35,7 @@ MAKE_ARCH_FLAGS=()
 
 case "$TARGET_ARCH" in
 	aarch64)
-		DEB_ARCH="arm64"
+		SRPM_CONFIG_ARCH="aarch64"
 		KERNEL_IMAGE="arch/arm64/boot/Image.gz"
 		MAKE_TARGETS="vmlinux Image.gz"
 		MAKE_ARCH_FLAGS=(ARCH=arm64)
@@ -47,16 +48,15 @@ case "$TARGET_ARCH" in
 		fi
 		;;
 	*)
-		DEB_ARCH="amd64"
+		SRPM_CONFIG_ARCH="x86_64"
 		KERNEL_IMAGE="arch/x86/boot/bzImage"
 		MAKE_TARGETS="vmlinux bzImage"
 		;;
 esac
 
-echo "=== kernel-build-inner-deb.sh ==="
+echo "=== kernel-build-inner.sh ==="
 echo "    Jobs: ${JOBS}"
 echo "    Target arch: ${TARGET_ARCH}"
-echo "    Source package: ${KERNEL_DEB_SOURCE}"
 
 # Install cross-compiler if cross-compiling
 if [[ "$TARGET_ARCH" == "aarch64" && "$(uname -m)" != "aarch64" ]]; then
@@ -71,24 +71,29 @@ fi
 echo "    GCC: $(gcc --version | head -1)"
 
 # ------------------------------------------------------------------
-# 1. Extract kernel source from deb package
+# 1. Extract SRPM
 # ------------------------------------------------------------------
 
-echo "--- Extracting kernel source..."
+echo "--- Extracting SRPM..."
+SRPM_DIR=/build/srpm
+mkdir -p "$SRPM_DIR"
+cd "$SRPM_DIR"
+rpm2cpio /input/kernel.src.rpm | cpio -idm 2>/dev/null
 
-# The linux-source-X.Y.Z package installs a tarball under /usr/src/
-SRC_TAR=$(find /usr/src -name "linux-source-*.tar.bz2" \
-	-o -name "linux-source-*.tar.xz" \
-	-o -name "linux-source-*.tar.gz" 2>/dev/null | head -1)
-
+# Find the kernel source tarball
+SRC_TAR=$(find "$SRPM_DIR" -name "linux-*.tar.xz" \
+	-o -name "linux-*.tar.gz" | head -1)
 if [[ -z "$SRC_TAR" ]]; then
-	echo "ERROR: No linux-source tarball found in /usr/src/" >&2
-	echo "       Expected from package: ${KERNEL_DEB_SOURCE}" >&2
-	ls -la /usr/src/ >&2
+	echo "ERROR: No linux source tarball in SRPM" >&2
 	exit 1
 fi
 echo "    Source: $(basename "$SRC_TAR")"
 
+# ------------------------------------------------------------------
+# 2. Extract source
+# ------------------------------------------------------------------
+
+echo "--- Extracting kernel source..."
 mkdir -p /build/extract
 tar xf "$SRC_TAR" -C /build/extract
 
@@ -104,99 +109,77 @@ mv "$SRC_DIR" "$BUILD"
 echo "    Source dir: $BUILD"
 
 # ------------------------------------------------------------------
-# 2. Apply patches (if any)
+# 3. Apply Lustre patches
 # ------------------------------------------------------------------
 
 cd "$BUILD"
 
 SERIES=/input/staging/series
 if [[ -s "$SERIES" ]]; then
-	echo "--- Applying patches..."
+	echo "--- Applying Lustre patches..."
 	count=0
+	failures=0
 	while IFS= read -r patch_name; do
 		[[ -n "$patch_name" ]] || continue
 		patch_file="/input/staging/patches/${patch_name}"
 		if [[ ! -f "$patch_file" ]]; then
 			echo "WARNING: patch not found: $patch_name" >&2
+			((failures++)) || true
 			continue
 		fi
-		if ! patch -p1 --forward --silent \
+		if patch -p1 --forward --silent \
 				< "$patch_file" 2>/dev/null; then
-			if ! patch -p1 --forward --fuzz=2 --silent \
-					< "$patch_file" 2>/dev/null; then
-				echo "WARNING: patch failed: $patch_name" >&2
+			((count++)) || true
+		else
+			# Try with --fuzz=2 for minor context issues
+			if patch -p1 --forward --fuzz=2 --silent \
+					< "$patch_file"; then
+				((count++)) || true
+			else
+				echo "ERROR: patch failed: $patch_name" >&2
+				((failures++)) || true
 			fi
 		fi
-		((count++)) || true
 	done < "$SERIES"
 	echo "    Applied $count patches"
+	if [[ $failures -gt 0 ]]; then
+		echo "ERROR: $failures patch(es) failed -- aborting build" >&2
+		exit 1
+	fi
 else
 	echo "--- No patches to apply"
 fi
 
 # ------------------------------------------------------------------
-# 3. Configure kernel
+# 4. Configure kernel
 # ------------------------------------------------------------------
 
 echo "--- Configuring kernel..."
-
-# Use the Ubuntu default config as starting point.
-# Ubuntu's config is in debian.master/config/ or we can use the
-# running config from the deb package.
-# For a clean build, use the arch default + ubuntu annotations,
-# or just use the distro config shipped with linux-source.
-UBUNTU_CONFIG=$(find /usr/src -path "*/linux-source*/debian*/config" \
-	-name "$DEB_ARCH" -type f 2>/dev/null | head -1)
-# Try debian.master/config/<arch>/config.flavour.generic
-UBUNTU_CONFIG2=$(find "$BUILD" -path "*/debian.master/config/${DEB_ARCH}/config.flavour.generic" \
-	2>/dev/null | head -1)
-# Try the annotations-based approach
-UBUNTU_ANNOTATIONS=$(find "$BUILD" -path "*/debian.master/config/annotations" \
-	2>/dev/null | head -1)
-
-if [[ -n "$UBUNTU_ANNOTATIONS" ]] && [[ -f "$BUILD/debian.master/config/annotations" ]]; then
-	echo "    Using Ubuntu annotations-based config..."
-	# Ubuntu 24.04 uses an annotations file + config script to
-	# generate the actual .config. Use make defconfig as base
-	# then apply the fragment.
-	make "${MAKE_ARCH_FLAGS[@]}" defconfig 2>&1 | tail -3
-elif [[ -n "$UBUNTU_CONFIG2" ]] && [[ -f "$UBUNTU_CONFIG2" ]]; then
-	echo "    Using Ubuntu flavour config: $UBUNTU_CONFIG2"
-	cp "$UBUNTU_CONFIG2" .config
+if [[ -s /input/staging/kernel.config ]]; then
+	cp /input/staging/kernel.config .config
 else
-	echo "    No Ubuntu config found, using defconfig as base"
-	make "${MAKE_ARCH_FLAGS[@]}" defconfig 2>&1 | tail -3
+	# No Lustre-provided config -- extract from SRPM.
+	# RHEL/Rocky SRPMs ship kernel-<arch>-rhel.config files.
+	echo "    Extracting kernel config from SRPM (arch=$SRPM_CONFIG_ARCH)..."
+	SRPM_CONFIG=$(find "$SRPM_DIR" -name "kernel-${SRPM_CONFIG_ARCH}-rhel.config" | head -1)
+	if [[ -z "$SRPM_CONFIG" ]]; then
+		# Fallback: any config for this arch, non-debug
+		SRPM_CONFIG=$(find "$SRPM_DIR" -name "kernel-${SRPM_CONFIG_ARCH}*.config" \
+			| grep -v debug | head -1)
+	fi
+	if [[ -z "$SRPM_CONFIG" ]]; then
+		echo "ERROR: No ${SRPM_CONFIG_ARCH} kernel config found in SRPM" >&2
+		echo "    Available configs:"
+		find "$SRPM_DIR" -name "*.config" | head -20
+		exit 1
+	fi
+	echo "    Using SRPM config: $(basename "$SRPM_CONFIG")"
+	cp "$SRPM_CONFIG" .config
 fi
 
-# For cross-compiled aarch64: defconfig enables thousands of HW
-# drivers we don't need in QEMU virt.  Disable entire subsystems
-# that are irrelevant for a virtual machine to avoid broken drivers.
-if [[ "$TARGET_ARCH" == "aarch64" && "$HOST_ARCH" != "aarch64" ]]; then
-	echo "    Trimming config for QEMU virt (cross-compile)..."
-	scripts/config --disable DRM
-	scripts/config --disable SOUND
-	scripts/config --disable MEDIA_SUPPORT
-	scripts/config --disable WLAN
-	scripts/config --disable WIRELESS
-	scripts/config --disable NFC
-	scripts/config --disable CAN
-	scripts/config --disable BT
-	scripts/config --disable INFINIBAND
-	scripts/config --disable USB_GADGET
-	scripts/config --disable PCI_ENDPOINT
-	scripts/config --disable CORESIGHT
-	scripts/config --disable HWTRACING
-	scripts/config --disable MTD
-	scripts/config --disable SPI
-	scripts/config --disable I2C
-	scripts/config --disable GPIO_SYSFS
-	scripts/config --disable HWMON
-	scripts/config --disable REGULATOR
-	scripts/config --disable MFD_CORE
-	scripts/config --disable IIO
-fi
-
-# Apply the microvm config fragment on top
+# Apply the microvm config fragment on top.
+# Use scripts/kconfig/merge_config.sh if available,
+# otherwise append and run olddefconfig.
 if [[ -f scripts/kconfig/merge_config.sh ]]; then
 	KCONFIG_CONFIG=.config \
 		./scripts/kconfig/merge_config.sh \
@@ -206,7 +189,10 @@ else
 	cat /input/staging/config.fragment >> .config
 fi
 
-# Force-apply config fragment values using sed
+# Force-apply config fragment values using sed.
+# merge_config.sh handles most cases but olddefconfig
+# can revert =y back to =m due to dependency resolution.
+# Applying via sed after merge ensures they stick.
 echo "--- Force-applying config fragment overrides..."
 while IFS= read -r line; do
 	[[ "$line" =~ ^# ]] && continue
@@ -222,13 +208,6 @@ while IFS= read -r line; do
 done < /input/staging/config.fragment
 echo "    Applied overrides from config fragment"
 
-# Ensure key options for Lustre client modules
-for opt in CONFIG_NETWORK_FILESYSTEMS CONFIG_LNET CONFIG_LUSTRE_FS; do
-	if ! grep -q "^${opt}=" .config; then
-		echo "${opt}=m" >> .config
-	fi
-done
-
 echo "--- Running olddefconfig..."
 make "${MAKE_ARCH_FLAGS[@]}" olddefconfig 2>&1 | tail -3
 
@@ -243,12 +222,21 @@ while IFS= read -r line; do
 		echo "    WARNING: $key override not preserved"
 		echo "      wanted: $line"
 		echo "      got:    $actual"
+		# Force it again
 		sed -i "s|^${key}=.*|${line}|" .config
 	fi
 done < /input/staging/config.fragment
 
+# Set EXTRAVERSION from LNXREL so kernel version matches the SRPM
+# e.g., 5.14.0 becomes 5.14.0-611.13.1.el9_7_lustre
+if [[ -n "$LNXREL" ]]; then
+	EXTRAVER="-${LNXREL}_lustre"
+	sed -i "s/^EXTRAVERSION.*/EXTRAVERSION = ${EXTRAVER}/" Makefile
+	echo "    EXTRAVERSION set to: ${EXTRAVER}"
+fi
+
 # ------------------------------------------------------------------
-# 4. Build
+# 5. Build
 # ------------------------------------------------------------------
 
 echo "=== Building ${MAKE_TARGETS} (j${JOBS}) ==="
@@ -267,7 +255,7 @@ echo "--- Running modules_prepare..."
 make "${MAKE_ARCH_FLAGS[@]}" modules_prepare 2>&1 | tail -3
 
 # ------------------------------------------------------------------
-# 5. Install outputs
+# 6. Install outputs
 # ------------------------------------------------------------------
 
 echo "--- Installing outputs to /output/..."
@@ -279,7 +267,12 @@ cp "$KERNEL_IMAGE" /output/vmlinuz
 KVER=$(make "${MAKE_ARCH_FLAGS[@]}" -s kernelrelease)
 echo "    Kernel version: $KVER"
 
-# Create the build tree for Lustre module compilation
+# Create the build tree for Lustre module compilation.
+# Lustre needs the full source tree (not just headers)
+# because ldiskfs builds from the ext4 source.
+# Use rsync to copy everything except .o/.ko files
+# (which are huge and not needed for external builds).
+
 BUILD_TREE=/output/build-tree
 rm -rf "$BUILD_TREE"
 mkdir -p "$BUILD_TREE"
@@ -296,7 +289,8 @@ rsync -a \
 	--exclude='*.a' \
 	./ "$BUILD_TREE/"
 
-# Copy back essential build artifacts excluded by the .o filter
+# Copy back the essential build artifacts that were
+# excluded by the .o filter
 cp Module.symvers "$BUILD_TREE/"
 cp .config "$BUILD_TREE/"
 if [[ -d scripts ]]; then

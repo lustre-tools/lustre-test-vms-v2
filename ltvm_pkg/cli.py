@@ -16,18 +16,17 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from lib import host_setup
-from lib.config import TargetConfig, add_target, list_targets
-from lib.image import build_image, image_status
-from lib.kernel_build import build_kernel, kernel_status
-from lib.lustre_build import build_lustre
-from lib.package import (
+from ltvm_pkg import host_setup
+from ltvm_pkg.target_config import TargetConfig, add_target, list_targets
+from ltvm_pkg.image_build import build_image, image_status
+from ltvm_pkg.kernel_build import build_kernel, kernel_status
+from ltvm_pkg.lustre_build import build_lustre
+from ltvm_pkg.release_package import (
     fetch_target,
-    install_target,
     package_target,
     snapshot_lustre,
 )
-from lib.validate import print_results, validate_target
+from ltvm_pkg.vm_state import ROOT_PASSWORD
 
 # Exit codes
 EXIT_OK = 0
@@ -170,9 +169,19 @@ def _qemu_ns(**kwargs: Any) -> argparse.Namespace:
     return argparse.Namespace(**kwargs)
 
 
+def _parse_size(s: str) -> int:
+    """Parse a human-readable size like '1G', '512M', '2048' to bytes."""
+    s = s.strip().upper()
+    if s.endswith("G"):
+        return int(s[:-1]) * 1024 * 1024 * 1024
+    if s.endswith("M"):
+        return int(s[:-1]) * 1024 * 1024
+    return int(s)
+
+
 def _parse_vm_kwargs(extra_args: list[str]) -> dict[str, Any]:
-    """Parse --vcpus, --mem, --mdt-disks, --ost-disks, --target, --arch
-    from a flat list of strings.
+    """Parse --vcpus, --mem, --mdt-disks, --ost-disks, --disk-size,
+    --target, --arch from a flat list of strings.
 
     Note: argparse REMAINDER captures all args after the positional,
     so flags like --arch that appear in vm_args must be parsed here
@@ -193,6 +202,9 @@ def _parse_vm_kwargs(extra_args: list[str]) -> dict[str, Any]:
             i += 2
         elif arg == "--ost-disks" and i + 1 < len(extra_args):
             kwargs["ost_disks"] = int(extra_args[i + 1])
+            i += 2
+        elif arg == "--disk-size" and i + 1 < len(extra_args):
+            kwargs["disk_size"] = _parse_size(extra_args[i + 1])
             i += 2
         elif arg == "--target" and i + 1 < len(extra_args):
             kwargs["target"] = extra_args[i + 1]
@@ -222,7 +234,7 @@ def _do_build_container(target_config: TargetConfig) -> str:
             f"No container.Dockerfile for target {target_config.name}"
         )
 
-    from lib.config import TARGETS_DIR
+    from ltvm_pkg.target_config import TARGETS_DIR
 
     subprocess.run(
         ["podman", "build", "-t", tag, "-f", str(dockerfile), str(TARGETS_DIR)],
@@ -245,7 +257,8 @@ def cmd_build_all(args: argparse.Namespace) -> int:
         return err
     assert tc is not None
 
-    lustre_tree, err_msg = _resolve_lustre_tree(args.lustre_tree)
+    lustre_tree_arg = getattr(args, "lustre_tree_pos", None) or args.lustre_tree
+    lustre_tree, err_msg = _resolve_lustre_tree(lustre_tree_arg)
     if err_msg:
         return _error(
             err_msg,
@@ -424,9 +437,10 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
         return err
     assert tc is not None
 
-    lustre_tree, err_msg = _resolve_lustre_tree(
-        getattr(args, "lustre_tree", None)
+    lustre_tree_arg = getattr(args, "lustre_tree_pos", None) or getattr(
+        args, "lustre_tree", None
     )
+    lustre_tree, err_msg = _resolve_lustre_tree(lustre_tree_arg)
     if err_msg:
         return _error(
             err_msg,
@@ -455,8 +469,6 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
 
     extra = list(tc.configure_args)
     if getattr(args, "configure", None):
-        import shlex
-
         extra += shlex.split(args.configure)
 
     jobs = getattr(args, "jobs", None)
@@ -652,7 +664,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     if not target:
         return _error("target required (e.g. ltvm fetch rocky9)", use_json)
 
-    from lib.config import OUTPUT_DIR
+    from ltvm_pkg.target_config import OUTPUT_DIR
 
     # Resolve URL: explicit --url, or GitHub release lookup
     if not url:
@@ -814,45 +826,6 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 
 # ------------------------------------------------------------------
-# Subcommand: install
-# ------------------------------------------------------------------
-
-
-def cmd_install(args: argparse.Namespace) -> int:
-    use_json = args.json
-    tc, err = _load_target(args.target, use_json, arch=getattr(args, "arch", None))
-    if err is not None:
-        return err
-    assert tc is not None
-
-    if not tc.output_dir.is_dir():
-        return _error(
-            f"No artifacts for {args.target}",
-            use_json,
-            hint=f"Run 'ltvm fetch {args.target}' or "
-            f"'ltvm build-all {args.target}' first",
-        )
-
-    kernel = getattr(args, "kernel", None)
-
-    if not use_json:
-        print(f"Installing {args.target} to system paths...")
-
-    try:
-        installed = install_target(
-            args.target,
-            tc.output_dir,
-            kernel=kernel,
-            arch=tc.arch,
-        )
-    except Exception as e:
-        return _error(f"Install failed: {e}", use_json)
-
-    _output(installed, use_json)
-    return EXIT_OK
-
-
-# ------------------------------------------------------------------
 # Subcommand: shell
 # ------------------------------------------------------------------
 
@@ -923,7 +896,10 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     all_status = {}
     for name in targets:
-        tc = TargetConfig(name)
+        try:
+            tc = TargetConfig(name)
+        except ValueError:
+            continue  # skip planned/disabled targets
         cs = _container_status(tc)
         ks = kernel_status(tc)
         ims = image_status(tc)
@@ -1029,10 +1005,59 @@ def cmd_update(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------
 
 
+def _configure_test_disks(
+    ip: str, mdt_disks: int, ost_disks: int,
+    disk_size_bytes: int = 0, os_family: str = "rhel",
+) -> None:
+    """Write OSTCOUNT/OSTDEV*/MDSCOUNT/MDSDEV*/OSTSIZE into cfg/local.sh.
+
+    Virtio disks are attached in order (MDT first, then OST),
+    starting at /dev/vdb (vda = rootfs).
+    """
+    from ltvm_pkg.vm_net import run_ssh
+
+    testdir = (
+        "/usr/lib/lustre/tests"
+        if os_family == "debian"
+        else "/usr/lib64/lustre/tests"
+    )
+    lines = []
+
+    # Set device sizes in KB (test framework uses KB for OSTSIZE/MDSSIZE)
+    if disk_size_bytes:
+        size_kb = disk_size_bytes // 1024
+        if mdt_disks:
+            lines.append(f"MDSSIZE={size_kb}")
+        if ost_disks:
+            lines.append(f"OSTSIZE={size_kb}")
+
+    if mdt_disks:
+        lines.append(f"MDSCOUNT={mdt_disks}")
+        for n in range(1, mdt_disks + 1):
+            letter = chr(ord('a') + n)
+            lines.append(f"MDSDEV{n}=/dev/vd{letter}")
+
+    if ost_disks:
+        lines.append(f"OSTCOUNT={ost_disks}")
+        for n in range(1, ost_disks + 1):
+            letter = chr(ord('a') + mdt_disks + n)
+            lines.append(f"OSTDEV{n}=/dev/vd{letter}")
+
+    snippet = "\\n".join(lines)
+    script = (
+        f"sed -i '/^# --- VM disk configuration/,/^# --- END VM disk/d' "
+        f"{testdir}/cfg/local.sh 2>/dev/null || true; "
+        f"printf '\\n# --- VM disk configuration (generated by ltvm deploy) ---\\n"
+        f"{snippet}\\n"
+        f"# --- END VM disk configuration ---\\n' >> {testdir}/cfg/local.sh"
+    )
+    run_ssh(ip, script, timeout=30)
+
+
 def _lustre_mount_vm(name: str, os_family: str) -> int:
     """Run llmount.sh inside a VM. Returns exit code."""
-    from qemu.models import VMInfo, VMNotFound
-    from qemu.net import run_ssh
+    from ltvm_pkg.vm_state import VMInfo, VMNotFound
+    from ltvm_pkg.vm_net import run_ssh
     try:
         vm = VMInfo.load(name)
     except VMNotFound as e:
@@ -1054,16 +1079,13 @@ def _lustre_mount_vm(name: str, os_family: str) -> int:
 
 
 def _os_family_for_vm(name: str) -> str:
-    """Return os_family for a VM's os_id, defaulting to 'rhel'."""
-    from qemu.models import VMInfo, VMNotFound
-    try:
-        vm = VMInfo.load(name)
-        os_id = vm.os_id or ""
-        if os_id:
-            return TargetConfig(os_id).os_family
-    except Exception:
-        pass
-    return "rhel"
+    """Return os_family for a VM's os_id."""
+    from ltvm_pkg.vm_state import VMInfo, VMNotFound
+    vm = VMInfo.load(name)
+    os_id = vm.os_id
+    if not os_id:
+        raise RuntimeError(f"VM '{name}' has no os_id recorded; was it created with ltvm?")
+    return TargetConfig(os_id).os_family
 
 
 def cmd_vm(args: argparse.Namespace) -> int:
@@ -1075,7 +1097,7 @@ def cmd_vm(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    from qemu.commands import (
+    from ltvm_pkg.vm_commands import (
         cmd_create as _qcreate,
         cmd_destroy as _qdestroy,
         cmd_ensure as _qensure,
@@ -1085,10 +1107,19 @@ def cmd_vm(args: argparse.Namespace) -> int:
         cmd_lustre_log as _qlustre_log,
         cmd_restart as _qrestart,
         cmd_start as _qstart,
+        cmd_start_all as _qstart_all,
         cmd_status as _qstatus,
         cmd_stop as _qstop,
+        cmd_stop_all as _qstop_all,
+        cmd_ssh as _qssh,
+        cmd_cp_to as _qcp_to,
+        cmd_cp_from as _qcp_from,
+        cmd_crash_collect as _qcrash_collect,
+        cmd_snapshot as _qsnapshot,
+        cmd_restore as _qrestore,
+        cmd_doctor as _qdoctor,
     )
-    from qemu.models import VMNotFound
+    from ltvm_pkg.vm_state import VMNotFound
 
     def _call(fn, ns):
         """Call a qemu command function, catching SystemExit."""
@@ -1129,6 +1160,7 @@ def cmd_vm(args: argparse.Namespace) -> int:
             kernel=kw.get("kernel", ""),
             mdt_disks=kw.get("mdt_disks", 0),
             ost_disks=kw.get("ost_disks", 0),
+            disk_size=kw.get("disk_size", None),
             arch=arch,
             os=os_target,
             _quiet=False,
@@ -1170,7 +1202,102 @@ def cmd_vm(args: argparse.Namespace) -> int:
     if action == "mount-lustre":
         if not vm_args:
             return _error("vm mount-lustre requires a VM name", use_json)
-        return _lustre_mount_vm(vm_args[0], _os_family_for_vm(vm_args[0]))
+        from ltvm_pkg.vm_state import VMNotFound
+        try:
+            os_family = _os_family_for_vm(vm_args[0])
+        except VMNotFound:
+            return _error(f"VM '{vm_args[0]}' not found", use_json)
+        return _lustre_mount_vm(vm_args[0], os_family)
+
+    if action == "start-all":
+        return _call(_qstart_all, _qemu_ns())
+
+    if action == "stop-all":
+        return _call(_qstop_all, _qemu_ns())
+
+    if action == "ssh":
+        if not vm_args:
+            return _error("vm ssh requires a VM name", use_json)
+        p = argparse.ArgumentParser()
+        p.add_argument("name")
+        p.add_argument("command", nargs=argparse.REMAINDER)
+        ns = p.parse_args(vm_args)
+        return _call(_qssh, ns)
+
+    if action == "cp-to":
+        if len(vm_args) < 3:
+            return _error(
+                "vm cp-to requires a VM name, src, and dest", use_json,
+                hint="ltvm vm cp-to <name> <src> <dest>",
+            )
+        return _call(_qcp_to, _qemu_ns(name=vm_args[0], src=vm_args[1], dest=vm_args[2]))
+
+    if action == "cp-from":
+        if len(vm_args) < 3:
+            return _error(
+                "vm cp-from requires a VM name, src, and dest", use_json,
+                hint="ltvm vm cp-from <name> <src> <dest>",
+            )
+        return _call(_qcp_from, _qemu_ns(name=vm_args[0], src=vm_args[1], dest=vm_args[2]))
+
+    if action == "log":
+        if not vm_args:
+            return _error("vm log requires a VM name", use_json)
+        p = argparse.ArgumentParser()
+        p.add_argument("name")
+        p.add_argument("--lines", type=int, default=50)
+        ns = p.parse_args(vm_args)
+        return _call(_qlog, ns)
+
+    if action == "dmesg":
+        if not vm_args:
+            return _error("vm dmesg requires a VM name", use_json)
+        p = argparse.ArgumentParser()
+        p.add_argument("name")
+        p.add_argument("--tail", type=int, default=100)
+        ns = p.parse_args(vm_args)
+        return _call(_qdmesg, ns)
+
+    if action == "lustre-log":
+        if not vm_args:
+            return _error("vm lustre-log requires a VM name", use_json)
+        return _call(_qlustre_log, _qemu_ns(name=vm_args[0]))
+
+    if action == "crash-collect":
+        if not vm_args:
+            return _error("vm crash-collect requires a VM name", use_json)
+        p = argparse.ArgumentParser()
+        p.add_argument("name")
+        p.add_argument("--outdir", default="/tmp/crashes")
+        p.add_argument("--trigger", action="store_true", default=False)
+        p.add_argument("--wait", type=int, default=120)
+        p.add_argument("--mod-dir", default=None)
+        ns = p.parse_args(vm_args)
+        return _call(_qcrash_collect, ns)
+
+    if action == "snapshot":
+        if not vm_args:
+            return _error("vm snapshot requires a VM name", use_json)
+        p = argparse.ArgumentParser()
+        p.add_argument("name")
+        p.add_argument("--tag", default=None)
+        ns = p.parse_args(vm_args)
+        return _call(_qsnapshot, ns)
+
+    if action == "restore":
+        if not vm_args:
+            return _error("vm restore requires a VM name", use_json)
+        p = argparse.ArgumentParser()
+        p.add_argument("name")
+        p.add_argument("--tag", default=None)
+        ns = p.parse_args(vm_args)
+        return _call(_qrestore, ns)
+
+    if action == "doctor":
+        p = argparse.ArgumentParser()
+        p.add_argument("--fix", action="store_true", default=False)
+        ns = p.parse_args(vm_args)
+        return _call(_qdoctor, ns)
 
     return _error(f"Unknown vm action: {action}", use_json)
 
@@ -1185,8 +1312,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    from qemu.models import VMInfo, VMNotFound
-    from qemu.net import run_ssh
+    from ltvm_pkg.vm_state import VMInfo, VMNotFound
+    from ltvm_pkg.vm_net import run_ssh
 
     # Get VM info
     try:
@@ -1235,24 +1362,44 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         return _error(f"Build path not found: {build_path}", use_json)
 
     # Auto-build Lustre unless .staging/ is already fresh.
-    # Fresh = .staging/ exists AND no source file (*.c, *.h, *.sh, Makefile*,
-    # configure.ac) is newer than the staging directory itself.
+    # Fresh = .staging/ exists AND no source file is newer than the
+    # staging directory itself.  We use an exclude list (build artifacts,
+    # generated files, VCS dirs) rather than an include list so that new
+    # source languages (*.rs, *.py, etc.) are caught automatically.
     staging = build_path / ".staging"
 
     def _staging_is_fresh(staging: Path, src: Path) -> bool:
         if not staging.is_dir():
             return False
-        staging_mtime = staging.stat().st_mtime
-        # find any source file newer than .staging/
+        # find any source file newer than .staging/ by excluding artifacts
         r = subprocess.run(
             [
                 "find", str(src),
+                # prune entire directories first (fast)
                 "-path", str(staging), "-prune", "-o",
-                "-path", "*/.git*", "-prune", "-o",
-                r"\(", "-name", "*.c", "-o", "-name", "*.h",
-                "-o", "-name", "*.am", "-o", "-name", "configure.ac",
-                "-o", "-name", "Makefile.am", r"\)", "-newer", str(staging), "-print",
-                "-quit",
+                "-path", "*/.git", "-prune", "-o",
+                "-path", "*/autom4te.cache", "-prune", "-o",
+                "-path", "*/_lpb", "-prune", "-o",
+                "-path", "*/kconftest.dir", "-prune", "-o",
+                # exclude build artifacts and generated files by name
+                r"\(",
+                "-name", "*.o",
+                "-o", "-name", "*.ko",
+                "-o", "-name", "*.a",
+                "-o", "-name", "*.so",
+                "-o", "-name", "*.so.*",
+                "-o", "-name", "*.cmd",
+                "-o", "-name", "*.d",
+                "-o", "-name", "*.tmp_*",
+                "-o", "-name", "conftest*",
+                "-o", "-name", "config.log",
+                "-o", "-name", "config.status",
+                "-o", "-name", ".ltvm-*",
+                # Makefile is generated from Makefile.am; Makefile.am is source
+                "-o", "-name", "Makefile",
+                r"\)", "-prune", "-o",
+                # anything not excluded and newer than staging is a source hit
+                "-newer", str(staging), "-print", "-quit",
             ],
             capture_output=True, text=True,
         )
@@ -1281,9 +1428,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     # Stream staging tree into the VM, unpacking directly into /
     tar_cmd = (
         f"tar cf - -C {shlex.quote(str(staging))} . "
-        f"| sshpass -p initial0 ssh "
+        f"| sshpass -p {shlex.quote(ROOT_PASSWORD)} ssh "
         f"-o StrictHostKeyChecking=no -o LogLevel=ERROR "
-        f"root@{vm.ip} 'tar xf - -C / --keep-directory-symlink'"
+        f"root@{shlex.quote(vm.ip)} 'tar xf - -C / --keep-directory-symlink'"
     )
     r = subprocess.run(
         ["bash", "-c", tar_cmd], capture_output=True, text=True, timeout=120
@@ -1301,6 +1448,13 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             )
     except Exception as e:
         return _error(f"depmod/ldconfig failed: {e}", use_json)
+
+    # Configure test framework's local.sh with VM disk topology
+    if vm.mdt_disks or vm.ost_disks:
+        _configure_test_disks(
+            vm.ip, vm.mdt_disks, vm.ost_disks, vm.disk_size,
+            os_family=os_family,
+        )
 
     if not use_json:
         print(f"  Deployed Lustre to {args.vm}")
@@ -1325,7 +1479,7 @@ def cmd_exec(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    from qemu.commands import cmd_exec as _qexec
+    from ltvm_pkg.vm_commands import cmd_exec as _qexec
 
     cmd_str = " ".join(args.cmd)
     timeout = getattr(args, "timeout", 120)
@@ -1350,13 +1504,14 @@ def cmd_cluster(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    from qemu.cluster import (
+    from ltvm_pkg.vm_cluster import (
         cmd_cluster_create as _qc_create,
         cmd_cluster_destroy as _qc_destroy,
         cmd_cluster_deploy as _qc_deploy,
         cmd_cluster_status as _qc_status,
         cmd_cluster_exec as _qc_exec,
         cmd_cluster_list as _qc_list,
+        cmd_cluster_ssh as _qc_ssh,
     )
 
     def _call(fn, ns):
@@ -1436,41 +1591,27 @@ def cmd_cluster(args: argparse.Namespace) -> int:
             ),
         )
 
+    if action == "list":
+        return _call(_qc_list, _qemu_ns())
+
+    if action == "ssh":
+        if len(cargs) < 2:
+            return _error(
+                "cluster ssh requires a name and a target (role or vm name)",
+                use_json,
+                hint="ltvm cluster ssh <name> <role> [cmd...]",
+            )
+        return _call(
+            _qc_ssh,
+            _qemu_ns(name=cargs[0], target=cargs[1], command=cargs[2:]),
+        )
+
     return _error(f"Unknown cluster action: {action}", use_json)
 
 
 # ------------------------------------------------------------------
 # Subcommand: validate
 # ------------------------------------------------------------------
-
-
-def cmd_validate(args: argparse.Namespace) -> int:
-    """Run validation checks on a built target."""
-    use_json = args.json
-    tc, err = _load_target(args.target, use_json, arch=getattr(args, "arch", None))
-    if err is not None:
-        return err
-    assert tc is not None
-
-    lustre_tree = None
-    if args.lustre_tree:
-        lustre_tree, err_msg = _resolve_lustre_tree(args.lustre_tree)
-        if err_msg:
-            return _error(err_msg, use_json)
-
-    try:
-        summary = validate_target(
-            tc, lustre_tree=lustre_tree, verbose=args.verbose
-        )
-    except Exception as e:
-        return _error(f"Validation failed: {e}", use_json)
-
-    if use_json:
-        print(json.dumps(summary, indent=2))
-    else:
-        print_results(summary, verbose=args.verbose)
-
-    return EXIT_OK if summary["all_passed"] else EXIT_ERROR
 
 
 # ------------------------------------------------------------------

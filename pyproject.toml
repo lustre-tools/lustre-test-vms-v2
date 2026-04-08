@@ -17,8 +17,8 @@ dev = [
 ]
 
 [tool.ruff]
-# ltvm and qemu/vm.sh are Python despite lacking .py extension
-extend-include = ["ltvm", "qemu/vm.sh"]
+# ltvm is Python despite lacking .py extension
+extend-include = ["ltvm"]
 exclude = ["output/"]
 # Format targets 80; lint allows up to 100
 line-length = 80
@@ -38,14 +38,14 @@ pycodestyle.max-line-length = 100
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
-addopts = "--cov=lib --cov-report=term-missing --ignore=tests/e2e"
+addopts = "--cov=ltvm_pkg --cov-report=term-missing --ignore=tests/e2e"
 markers = [
     "e2e: end-to-end tests that require a real VM environment (KVM, vm.py, built images)",
 ]
 
 [tool.coverage.run]
-source = ["lib"]
-omit = ["lib/kernel-build-inner.sh"]
+source = ["ltvm_pkg"]
+omit = []
 
 [tool.coverage.report]
 # Show lines missing coverage; exclude boilerplate
@@ -58,7 +58,7 @@ show_missing = true
 
 [tool.mypy]
 python_version = "3.9"
-files = ["ltvm", "lib/"]
+files = ["ltvm", "ltvm_pkg/"]
 warn_unused_configs = true
 warn_redundant_casts = true
 warn_unused_ignores = true

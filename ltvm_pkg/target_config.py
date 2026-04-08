@@ -26,52 +26,7 @@ _DEFAULTS = {
 
 # Architecture mapping tables
 # Keys are the canonical arch name used in targets.yaml (x86_64, aarch64).
-_ARCH_TO_DEB = {"x86_64": "amd64", "aarch64": "arm64"}
-_ARCH_TO_KERNEL = {"x86_64": "x86", "aarch64": "arm64"}
-_ARCH_TO_KERNEL_IMAGE = {
-    "x86_64": "arch/x86/boot/bzImage",
-    "aarch64": "arch/arm64/boot/Image.gz",
-}
-_ARCH_TO_QEMU_SYSTEM = {
-    "x86_64": "qemu-system-x86_64",
-    "aarch64": "qemu-system-aarch64",
-}
-_ARCH_TO_QEMU_MACHINE = {
-    "x86_64": "microvm,accel=kvm,pit=off,pic=off,rtc=on",
-    "aarch64": "virt,accel=kvm,gic-version=max",
-}
-_ARCH_TO_QEMU_PKG = {"x86_64": "qemu-system-x86", "aarch64": "qemu-system-arm"}
 _ARCH_TO_SRPM_CONFIG = {"x86_64": "x86_64", "aarch64": "aarch64"}
-
-
-def arch_deb(arch: str) -> str:
-    """Map canonical arch to Debian arch name (amd64, arm64)."""
-    return _ARCH_TO_DEB.get(arch, arch)
-
-
-def arch_kernel(arch: str) -> str:
-    """Map canonical arch to kernel source tree arch dir (x86, arm64)."""
-    return _ARCH_TO_KERNEL.get(arch, arch)
-
-
-def arch_kernel_image(arch: str) -> str:
-    """Return the relative path to the kernel boot image for an arch."""
-    return _ARCH_TO_KERNEL_IMAGE.get(arch, _ARCH_TO_KERNEL_IMAGE["x86_64"])
-
-
-def arch_qemu_binary(arch: str) -> str:
-    """Return the qemu-system-<arch> binary name."""
-    return _ARCH_TO_QEMU_SYSTEM.get(arch, f"qemu-system-{arch}")
-
-
-def arch_qemu_machine(arch: str) -> str:
-    """Return the QEMU -machine argument for an arch."""
-    return _ARCH_TO_QEMU_MACHINE.get(arch, _ARCH_TO_QEMU_MACHINE["x86_64"])
-
-
-def arch_qemu_package(arch: str) -> str:
-    """Return the apt package name for the QEMU system emulator."""
-    return _ARCH_TO_QEMU_PKG.get(arch, "qemu-system-misc")
 
 
 def arch_srpm_config_name(arch: str) -> str:

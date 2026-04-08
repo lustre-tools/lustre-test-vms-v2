@@ -11,7 +11,7 @@ import pytest
 import yaml
 
 if TYPE_CHECKING:
-    from lib.config import TargetConfig
+    from ltvm_pkg.target_config import TargetConfig
 
 _ROCKY9_YAML: dict = {
     "defaults": {"arch": "x86_64", "os_family": "rhel", "server": True},
@@ -40,7 +40,7 @@ def _write_targets_yaml(targets_dir: Path, data: dict | None = None) -> None:
 
 def _make_config(tmp_targets: Path) -> TargetConfig:
     """Instantiate a TargetConfig with patched paths."""
-    import lib.config as cfg
+    import ltvm_pkg.target_config as cfg
 
     with (
         patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),

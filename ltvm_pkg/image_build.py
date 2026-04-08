@@ -19,19 +19,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from .config import TARGETS_DIR, arch_deb
+from .target_config import TARGETS_DIR
 
 if TYPE_CHECKING:
-    from .config import TargetConfig
+    from .target_config import TargetConfig
 
 log = logging.getLogger(__name__)
 
 # Image sizing:
-#   _IMAGE_SIZE_MB: initial mke2fs allocation (must fit all packages + build outputs)
-#   _IMAGE_HEADROOM_MB: free space added back after resize2fs -M shrink,
-#     so the running VM has room for Lustre modules (~500 MB debug) + runtime data.
+#   _IMAGE_SIZE_MB: initial mke2fs allocation (must fit all packages + build outputs).
+#   After building, the image is shrunk to minimum with resize2fs -M.
+#   The qcow2 overlay is resized to 8G at VM creation, and rc.local runs
+#   resize2fs on boot to expand the ext4 to fill the overlay.
 _IMAGE_SIZE_MB = 8192
-_IMAGE_HEADROOM_MB = 4096  # 4 GiB headroom in running VM
 
 
 def _run(cmd: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
@@ -233,6 +233,11 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
     final_tag = tag
     try:
         kernel_name = target_config.resolve_kernel(None)
+    except (ValueError, FileNotFoundError):
+        log.info("No kernel built yet -- skipping kernel module injection")
+        kernel_name = None
+
+    if kernel_name is not None:
         kdir = target_config.output_dir / "kernels" / kernel_name
         modules_dir = kdir / "modules"
         staging_dir = kdir / "lustre" / ".staging"
@@ -304,8 +309,6 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
             )
             # Clean up inject dir
             shutil.rmtree(str(inject_dir), ignore_errors=True)
-    except (ValueError, FileNotFoundError):
-        log.warning("Could not resolve kernel -- image will not include kernel modules")
 
     # ── Step 2: Export to ext4 ──
     log.info("Exporting container to ext4 ...")
@@ -372,20 +375,15 @@ def _export_to_ext4(
             capture_output=False,
         )
 
-        # Shrink to minimum. qcow2 overlay resizes to 8G at VM
-        # creation, rc.local auto-expands the ext4 on boot.
-        subprocess.run(["e2fsck", "-fy", tmpfile], capture_output=True)
-        _run(["resize2fs", "-M", tmpfile])
-
-        # Remove the podman container
+        # Remove the podman container before shrinking.
         subprocess.run(
             ["podman", "rm", "-f", container_id], capture_output=True
         )
         container_id = None
 
-        # Shrink to minimum + headroom. The qcow2 overlay is resized
-        # to 8G at VM creation, and rc.local auto-expands on boot.
-        # First shrink to minimum, then add headroom for first-boot writes.
+        # Shrink to minimum. The qcow2 overlay is resized to 8G at VM
+        # creation, and rc.local runs resize2fs on first boot to expand
+        # the ext4 to fill the overlay — no headroom needed here.
         subprocess.run(["e2fsck", "-fy", tmpfile], capture_output=True)
         _run(["resize2fs", "-M", tmpfile])
 

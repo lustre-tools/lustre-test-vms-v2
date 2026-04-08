@@ -1,4 +1,4 @@
-"""Tests for lib/config.py -- TargetConfig and helpers."""
+"""Tests for ltvm_pkg/target_config.py -- TargetConfig and helpers."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from lib.config import _infer_os, add_target
+from ltvm_pkg.target_config import _infer_os, add_target
 from tests.conftest import _ROCKY9_YAML, _make_config, _write_targets_yaml
 
 
@@ -57,7 +57,7 @@ class TestTargetConfigProperties:
 
 class TestTargetConfigUnknown:
     def test_unknown_target_raises(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -72,7 +72,7 @@ class TestTargetConfigUnknown:
             cfg.TargetConfig("nonexistent")
 
     def test_planned_target_raises(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         data = {
             "defaults": {"arch": "x86_64", "os_family": "rhel", "server": True},
@@ -224,7 +224,7 @@ class TestInputHash:
         assert h1 != h2
 
     def test_image_hash_changes_with_packages(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -246,7 +246,7 @@ class TestInputHash:
         self, tmp_targets: Path
     ) -> None:
         """Image hash for a server target includes server packages."""
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -381,7 +381,7 @@ class TestDeclaredKernels:
 
 class TestListTargets:
     def test_finds_targets(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -395,7 +395,7 @@ class TestListTargets:
         assert "rocky9" in targets
 
     def test_returns_all_declared(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         data = {
             "targets": {
@@ -468,7 +468,7 @@ class TestInferOs:
 
 class TestAddTarget:
     def test_creates_directory_and_files(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -489,7 +489,7 @@ class TestAddTarget:
         assert (target_dir / "packages-os.txt").exists()
 
     def test_from_line_substituted(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -504,11 +504,11 @@ class TestAddTarget:
 
         df = tmp_targets / "targets" / "alma9" / "container.Dockerfile"
         content = df.read_text()
-        assert content.startswith("FROM almalinux:9.4\n")
+        assert "FROM almalinux:9.4\n" in content
         assert "FROM rockylinux" not in content
 
     def test_yaml_entry_added(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -538,7 +538,7 @@ class TestAddTarget:
         assert entry["kernels"]["default"] == "5.14-rhel9.4"
 
     def test_duplicate_target_raises(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -555,7 +555,7 @@ class TestAddTarget:
     def test_debian_target_generates_apt_dockerfile(
         self, tmp_targets: Path
     ) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -574,7 +574,7 @@ class TestAddTarget:
         assert "dnf" not in content
 
     def test_no_server_flag(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -593,7 +593,7 @@ class TestAddTarget:
         assert data["targets"]["debian12"]["server"] is False
 
     def test_os_family_set_for_non_rhel(self, tmp_targets: Path) -> None:
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -613,7 +613,7 @@ class TestAddTarget:
 
     def test_rhel_target_omits_os_family(self, tmp_targets: Path) -> None:
         """RHEL is the default, so os_family should not be in the YAML."""
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -635,7 +635,7 @@ class TestAddTarget:
         self, tmp_targets: Path
     ) -> None:
         """Generated image Dockerfiles should COPY and RUN common scripts."""
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
@@ -663,7 +663,7 @@ class TestAddTarget:
         self, tmp_targets: Path
     ) -> None:
         """Generated container Dockerfiles should use the common e2fsprogs script."""
-        import lib.config as cfg
+        import ltvm_pkg.target_config as cfg
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),

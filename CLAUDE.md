@@ -22,13 +22,22 @@ targets/
     container.Dockerfile    Build container definition
     image.Dockerfile        VM base image definition
     packages-os.txt         OS-specific packages
-lib/
-  config.py                 Target config parsing, staleness
-  commands.py               CLI command implementations
-  kernel.py                 Kernel build system
+ltvm_pkg/                   Python package (CLI + all implementation)
+  cli.py                    CLI command implementations (cmd_* functions)
+  target_config.py          Target config parsing, staleness detection
+  kernel_build.py           Kernel build (SRPM + patches + config)
   kernel-build-inner.sh     Runs inside build container
-  image.py                  VM image builder (ext4 export)
-  vmctl.py                  Subprocess client for qemu/vm.py (sudo boundary)
+  image_build.py            VM image builder (Dockerfile → ext4)
+  lustre_build.py           Lustre build (containerized)
+  release_package.py        Package and fetch GitHub release artifacts
+  build_validate.py         Pipeline validation suite
+  host_setup.py             Host setup, verify, WSL2 helpers
+  download.py               Robust file downloader
+  vm_state.py               VMInfo, ClusterInfo, paths, constants
+  vm_lifecycle.py           VM create/start/stop/destroy + QEMU launch
+  vm_net.py                 TAP, bridge, DNS, SSH registry
+  vm_commands.py            Single-VM CLI handlers
+  vm_cluster.py             Multi-node cluster management
 output/                     Build artifacts (gitignored)
   <target>/
     container.tag
@@ -260,50 +269,48 @@ to the Lustre source tree as usual.
 
 ### Architecture
 
-- `lib/config.py` -- `TargetConfig` class: parses
+- `ltvm_pkg/target_config.py` -- `TargetConfig` class: parses
   `target.conf` + `kernel.conf`, computes input hashes
   for staleness detection, manages output directories.
   `list_targets()` scans for all configured targets.
 
-- `lib/kernel.py` -- `build_kernel()`: orchestrates
+- `ltvm_pkg/kernel_build.py` -- `build_kernel()`: orchestrates
   SRPM download, Lustre patch resolution, config
   fragment assembly, and containerized build.
   `parse_lustre_target()` reads the `.target` file
   for SRPM version info.
 
-- `lib/image.py` -- `build_image()`: builds the
+- `ltvm_pkg/image_build.py` -- `build_image()`: builds the
   container image via podman, exports to raw ext4
   (dd + mkfs + mount + tar extract + resize2fs).
   Requires root.
 
-- `lib/kernel-build-inner.sh` -- runs inside the
+- `ltvm_pkg/kernel-build-inner.sh` -- runs inside the
   build container. Extracts SRPM, applies patches,
   merges config, builds vmlinux + bzImage + modules,
   and populates the build tree for external module
   builds.
 
+- `ltvm_pkg/vm_state.py` -- `VMInfo`, `ClusterInfo`: on-disk
+  state for running VMs and clusters. Path constants
+  and `resolve_os_artifacts()` for locating build outputs.
+
+- `ltvm_pkg/vm_commands.py` + `ltvm_pkg/vm_cluster.py` --
+  VM and cluster lifecycle handlers called by `ltvm_pkg/cli.py`.
+
 ## Code Review Guidance
 
 When reviewing or auditing this codebase, watch for:
 
-- **Functionality duplication between layers.** The
-  repo has two deployment paths: single-node
-  (`deploy-lustre.sh` / `lib/vmctl.py:deploy`) and
-  cluster (`qemu/cluster.py`). Changes to deploy
-  logic must be reflected in both, or factored into
-  shared code. Check that new features haven't been
-  added to one path but not the other.
-
 - **Subprocess command building.** Never interpolate
   variables into shell strings (`bash -c f"...{x}"`).
   Always use argument lists so subprocess handles
-  quoting. This applies to `lib/`, `qemu/`, and
-  test helpers.
+  quoting. This applies to `ltvm_pkg/` and test helpers.
 
-- **sudo boundary.** `lib/vmctl.py` is the boundary
-  between user-space code (lib/) and root operations
-  (qemu/). Code in lib/ must not assume root. Code
-  in qemu/ runs as root via sudo. Don't mix these.
+- **Root-required operations.** VM lifecycle commands
+  (`vm_commands.py`, `vm_cluster.py`, `vm_net.py`)
+  require root. `cli.py` calls `_require_root()` before
+  dispatching to them. Build commands do not need root.
 
 ## Rebuilding Pre-built QEMU Binaries
 
@@ -343,7 +350,7 @@ gh release upload qemu-9.2.2 /tmp/qemu-9.2.2-el10.tar.gz --clobber
 Notes:
 - Rocky 8 needs `dnf install python38` (system python is too old)
 - Ubuntu uses the system QEMU package (has microvm)
-- Bump `QEMU_VERSION` in `lib/setup.py` when updating
+- Bump `QEMU_VERSION` in `ltvm_pkg/host_setup.py` when updating
 
 ## Issue Tracking
 

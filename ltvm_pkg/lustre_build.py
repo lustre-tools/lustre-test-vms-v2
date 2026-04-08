@@ -347,14 +347,6 @@ fi""")
     }
 
 
-def _run_step(cmd: list[str], cwd: Path, label: str) -> None:
-    """Run a build step, streaming output.  Raises on failure."""
-    print(f"--- {label}...")
-    r = subprocess.run(cmd, cwd=str(cwd))
-    if r.returncode != 0:
-        raise RuntimeError(f"{label} failed (rc={r.returncode})")
-
-
 def lustre_status(
     lustre_tree: str | Path, build_tree: str | Path
 ) -> StatusResult:

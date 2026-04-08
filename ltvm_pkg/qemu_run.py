@@ -10,11 +10,10 @@ import time
 from pathlib import Path
 from typing import Any, NoReturn
 
-from .models import (
+from .vm_state import (
     BRIDGE,
     EXIT_ERROR,
     GATEWAY,
-    QEMU,
     VMInfo,
     qemu_binary_for_arch,
     qemu_machine_for_arch,

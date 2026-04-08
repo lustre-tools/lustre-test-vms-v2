@@ -1,7 +1,8 @@
 """Host setup for Lustre QEMU test VMs.
 
-Prepares a Linux host: builds QEMU, configures the network
-bridge, installs vm.py/deploy-lustre.sh, and sets up SSH.
+Prepares a Linux host: installs QEMU, configures the network
+bridge, installs the ltvm entry point and deploy-lustre.sh,
+and sets up SSH.
 """
 
 from __future__ import annotations
@@ -15,7 +16,20 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
-from .platform import is_wsl2
+def is_wsl2() -> bool:
+    try:
+        v = Path("/proc/version").read_text().lower()
+        return "microsoft" in v or "wsl" in v
+    except OSError:
+        return False
+
+
+def wsl2_has_kvm() -> bool:
+    return Path("/dev/kvm").exists()
+
+
+def wsl2_has_systemd() -> bool:
+    return Path("/run/systemd/private").exists()
 
 log = logging.getLogger(__name__)
 
@@ -31,11 +45,10 @@ QEMU_PREFIX = Path(os.environ.get("LTVM_QEMU_PREFIX", "/opt/qemu"))
 VM_DIR = Path(os.environ.get("LTVM_VM_DIR", "/opt/qemu-vms"))
 DEFAULT_SUBNET = "192.168.100"
 
-# Directory containing qemu/ host-config templates,
-# relative to the repo root.
 REPO_ROOT = Path(__file__).resolve().parent.parent
-QEMU_DIR = REPO_ROOT / "qemu"
-HOST_CONFIG_DIR = QEMU_DIR / "host-config"
+# ltvm_pkg/ holds scripts, host-config templates, etc.
+PKG_DIR = Path(__file__).resolve().parent
+HOST_CONFIG_DIR = PKG_DIR / "host-config"
 
 
 # ------------------------------------------------------------------
@@ -624,7 +637,7 @@ def install_scripts(host: HostInfo) -> None:
 
     # deploy-lustre.sh (standalone shell helper, still used)
     for script in ("deploy-lustre.sh",):
-        src = QEMU_DIR / script
+        src = PKG_DIR / script
         if not src.exists():
             log.warning("%s not found at %s, skipping", script, src)
             continue
@@ -636,7 +649,7 @@ def install_scripts(host: HostInfo) -> None:
         link.symlink_to(dst)
 
     # dk-filter
-    dk = QEMU_DIR / "dk-filter"
+    dk = PKG_DIR / "dk-filter"
     if dk.exists():
         dst = Path("/usr/local/bin/dk-filter")
         shutil.copy2(str(dk), str(dst))

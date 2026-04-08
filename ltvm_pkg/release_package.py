@@ -269,13 +269,7 @@ def package_target(
         version = meta.get("kernel_version", "unknown")
 
     arch_suffix = f"-{arch}" if arch != "x86_64" else ""
-    tarball = dest_dir / f"{target_name}-{version}{arch_suffix}.tar.gz"
-
-    print(f"  Packaging {target_name} (kernel={kernel_name}, arch={arch}) -> {tarball.name}")
-    print(f"    Kernel: {artifacts['vmlinux']}")
-    print(f"    Image:  {artifacts['image']}")
-    if "lustre" in artifacts:
-        print(f"    Lustre: {artifacts['lustre']}")
+    base_name = f"{target_name}-{version}{arch_suffix}"
 
     # Build tar from only the known artifacts (not the whole output dir,
     # which may contain arch-specific sub-builds, caches, etc.).
@@ -302,11 +296,29 @@ def package_target(
     if container_meta.exists():
         tar_paths.append(str(container_meta.relative_to(tar_base)))
 
-    subprocess.run(
-        ["tar", "-czf", str(tarball), "-C", str(tar_base)] + tar_paths,
-        check=True,
+    # Try zstd first (smaller + faster), fall back to gzip
+    tarball_zst = dest_dir / f"{base_name}.tar.zst"
+    tarball_gz = dest_dir / f"{base_name}.tar.gz"
+    r = subprocess.run(
+        ["tar", "--use-compress-program=zstd", "-cf", str(tarball_zst),
+         "-C", str(tar_base)] + tar_paths,
+        capture_output=True,
     )
+    if r.returncode == 0:
+        tarball = tarball_zst
+    else:
+        tarball_zst.unlink(missing_ok=True)  # remove any partial file
+        subprocess.run(
+            ["tar", "-czf", str(tarball_gz), "-C", str(tar_base)] + tar_paths,
+            check=True,
+        )
+        tarball = tarball_gz
 
+    print(f"  Packaging {target_name} (kernel={kernel_name}, arch={arch}) -> {tarball.name}")
+    print(f"    Kernel: {artifacts['vmlinux']}")
+    print(f"    Image:  {artifacts['image']}")
+    if "lustre" in artifacts:
+        print(f"    Lustre: {artifacts['lustre']}")
     size_mb = tarball.stat().st_size / (1024 * 1024)
     print(f"    Size: {size_mb:.0f} MB")
 

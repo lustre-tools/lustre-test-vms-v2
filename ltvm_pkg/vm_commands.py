@@ -12,7 +12,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from .models import (
+from .vm_state import (
     DISK_SIZE_BYTES,
     EXIT_ERROR,
     EXIT_NOT_FOUND,
@@ -29,7 +29,7 @@ from .models import (
     VMNotFound,
     resolve_os_artifacts,
 )
-from .net import (
+from .vm_net import (
     _real_user_ssh_dir,
     check_ip_collision,
     deploy_ssh_key,
@@ -42,7 +42,7 @@ from .net import (
     unregister_ssh_name,
     wait_for_ssh,
 )
-from .process import die, is_running, kill_qemu, launch_qemu, run
+from .qemu_run import die, is_running, kill_qemu, launch_qemu, run
 
 
 def _fmt_epoch(epoch: int) -> str:
@@ -105,10 +105,9 @@ def cmd_create(args: argparse.Namespace) -> None:
     kver = ""
     kernel_meta = Path(kernel).parent / "meta.json"
     if kernel_meta.exists():
-        try:
-            kver = json.loads(kernel_meta.read_text()).get("kernel_version", "")
-        except Exception:
-            pass
+        kver = json.loads(kernel_meta.read_text()).get("kernel_version", "")
+
+    disk_size = getattr(args, "disk_size", None) or DISK_SIZE_BYTES
 
     vm = VMInfo(
         name=name,
@@ -119,6 +118,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         mem=args.mem,
         mdt_disks=args.mdt_disks,
         ost_disks=args.ost_disks,
+        disk_size=disk_size,
         image=image,
         kernel=kernel,
         created=int(time.time()),
@@ -157,7 +157,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     total = vm.mdt_disks + vm.ost_disks
     for n in range(1, total + 1):
         run(
-            ["truncate", "-s", str(DISK_SIZE_BYTES), str(vm.disk_path(n))],
+            ["truncate", "-s", str(vm.disk_size), str(vm.disk_path(n))],
             check=True,
         )
 
@@ -291,8 +291,11 @@ def cmd_ensure(args: argparse.Namespace) -> None:
         rootfs=None,
         image=getattr(args, "image", ""),
         kernel=getattr(args, "kernel", ""),
+        os=getattr(args, "os", ""),
+        arch=getattr(args, "arch", None),
         mdt_disks=args.mdt_disks,
         ost_disks=args.ost_disks,
+        disk_size=getattr(args, "disk_size", None),
         _quiet=True,
     )
     cmd_create(create_args)
@@ -492,7 +495,12 @@ def cmd_list(args: argparse.Namespace) -> None:
     entries: list[dict[str, Any]] = []
 
     for name in VMInfo.all_names():
-        vm = VMInfo.load(name)
+        try:
+            vm = VMInfo.load(name)
+        except VMNotFound:
+            # Race: .info file disappeared between all_names() and load().
+            # Skip this entry rather than crashing.
+            continue
         status = "running" if is_running(vm) else "stopped"
 
         if status == "running":

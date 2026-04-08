@@ -1,0 +1,5 @@
+# packages-os.txt -- alma-specific packages
+# Add distro-specific packages here
+
+alma-release
+epel-release

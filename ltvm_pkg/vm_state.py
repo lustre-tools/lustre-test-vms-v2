@@ -58,11 +58,8 @@ def qemu_machine_for_arch(arch: str = "x86_64") -> str:
         accel = "accel=kvm" if host_is_arm64 else "accel=tcg"
         return f"virt,{accel},gic-version=max"
     return "virt,accel=tcg"
-DISK_SIZE_BYTES = 8 * 1024 * 1024 * 1024  # 8 GiB
-BASE_IMAGE = VM_DIR / "images" / "rocky9-ltvm.ext4"
+DISK_SIZE_BYTES = 500 * 1024 * 1024  # 500 MiB default
 KERNEL = VM_DIR / "kernel" / "vmlinux"
-IMAGES = VM_DIR / "images"
-KERNELS = VM_DIR / "kernel"
 
 # ltvm repo root — find via LTVM_ROOT env var, /usr/local/bin/ltvm
 # symlink, or fall back to this file's location.
@@ -98,16 +95,13 @@ def resolve_os_artifacts(os_name: str, arch: str = "x86_64") -> OSArtifacts:
     default_mem = 2048
     target_cfg: dict = {}
     if TARGETS_YAML.exists():
-        try:
-            import yaml
-            with open(TARGETS_YAML) as f:
-                cfg = yaml.safe_load(f)
-            defaults = cfg.get("defaults", {})
-            target_cfg = cfg.get("targets", {}).get(os_name, {})
-            kernel_suffix = target_cfg.get("kernels", {}).get("default", "")
-            default_mem = int(target_cfg.get("default_mem", defaults.get("default_mem", 2048)))
-        except Exception:
-            pass
+        import yaml
+        with open(TARGETS_YAML) as f:
+            cfg = yaml.safe_load(f)
+        defaults = cfg.get("defaults", {})
+        target_cfg = cfg.get("targets", {}).get(os_name, {})
+        kernel_suffix = target_cfg.get("kernels", {}).get("default", "")
+        default_mem = int(target_cfg.get("default_mem", defaults.get("default_mem", 2048)))
 
     # Determine effective arch (CLI override > target config > default)
     effective_arch = target_cfg.get("arch", arch)
@@ -176,8 +170,6 @@ MARKER = "# qemu-vm"
 ROOT_PASSWORD = "initial0"
 SSH_TIMEOUT = 30
 
-DEPLOY_SCRIPT = VM_DIR / "deploy-lustre.sh"
-
 # Exit codes
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -200,6 +192,7 @@ class VMInfo:
     mem: int = 2048
     mdt_disks: int = 0
     ost_disks: int = 0
+    disk_size: int = DISK_SIZE_BYTES  # per-disk size in bytes
     image: str = ""  # base image path; empty = default (rocky9)
     kernel: str = ""  # kernel path; empty = default (vmlinux)
     created: int = 0  # epoch seconds when VM was created
@@ -245,6 +238,7 @@ class VMInfo:
             f"MEM={self.mem}\n"
             f"MDT_DISKS={self.mdt_disks}\n"
             f"OST_DISKS={self.ost_disks}\n"
+            f"DISK_SIZE={self.disk_size}\n"
             f"IMAGE={self.image}\n"
             f"KERNEL={self.kernel}\n"
             f"CREATED={self.created}\n"
@@ -258,7 +252,11 @@ class VMInfo:
         )
 
     def _update_field(self, key: str, value: str | int) -> None:
-        """Update a single field in the info file (add if missing)."""
+        """Update a single field in the info file (add if missing).
+
+        Written atomically via rename to avoid corruption under concurrent
+        updates (e.g. two cluster nodes deploying in parallel).
+        """
         if not self.info_path.exists():
             return
         text = self.info_path.read_text()
@@ -268,7 +266,9 @@ class VMInfo:
             text = re.sub(pattern, replacement, text, flags=re.MULTILINE)
         else:
             text = text.rstrip("\n") + f"\n{replacement}\n"
-        self.info_path.write_text(text)
+        tmp = self.info_path.with_suffix(".tmp")
+        tmp.write_text(text)
+        tmp.rename(self.info_path)
 
     def update_pid(self, pid: int) -> None:
         self.pid = pid
@@ -306,6 +306,7 @@ class VMInfo:
             mem=int(vals.get("MEM", 2048)),
             mdt_disks=int(vals.get("MDT_DISKS", 0)),
             ost_disks=int(vals.get("OST_DISKS", 0)),
+            disk_size=int(vals.get("DISK_SIZE", DISK_SIZE_BYTES)),
             image=vals.get("IMAGE", ""),
             kernel=vals.get("KERNEL", ""),
             created=int(vals.get("CREATED", 0)),
@@ -402,7 +403,7 @@ class ClusterInfo:
         for n in self.get_nodes():
             if n.is_mgs:
                 return n
-        from .process import die
+        from .qemu_run import die
 
         die("cluster has no MGS node")
 

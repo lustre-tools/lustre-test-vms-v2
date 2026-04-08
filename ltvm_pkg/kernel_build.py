@@ -18,10 +18,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
-from .config import TARGETS_DIR, arch_kernel_image, arch_srpm_config_name, arch_deb
+from .target_config import TARGETS_DIR, arch_srpm_config_name
 
 if TYPE_CHECKING:
-    from .config import TargetConfig
+    from .target_config import TargetConfig
 
 log = logging.getLogger(__name__)
 

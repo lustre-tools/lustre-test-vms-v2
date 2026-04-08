@@ -10,8 +10,8 @@ import tempfile
 import time
 from pathlib import Path
 
-from .models import MARKER, ROOT_PASSWORD, SUBNET, VMInfo, VMNotFound
-from .process import die, run
+from .vm_state import MARKER, ROOT_PASSWORD, SUBNET, VMInfo, VMNotFound
+from .qemu_run import die, run
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -170,7 +170,7 @@ def unregister_ssh_name(name: str) -> None:
                 continue
             skip = False
         out.append(line)
-    ssh_cfg.write_text("\n".join(out) + "\n")
+    _atomic_write(ssh_cfg, "\n".join(out) + "\n")
 
 
 def deploy_ssh_key(ip: str) -> None:
