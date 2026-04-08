@@ -1388,6 +1388,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     def _staging_is_fresh(staging: Path, src: Path) -> bool:
         if not staging.is_dir():
             return False
+        # staging must actually contain built modules
+        if not any(staging.rglob("*.ko")):
+            return False
         # find any source file newer than .staging/ by excluding artifacts
         r = subprocess.run(
             [
