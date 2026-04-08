@@ -189,6 +189,9 @@ def _parse_vm_kwargs(extra_args: list[str]) -> dict[str, Any]:
         elif arg == "--target" and i + 1 < len(extra_args):
             kwargs["target"] = extra_args[i + 1]
             i += 2
+        elif arg == "--os" and i + 1 < len(extra_args):
+            kwargs["target"] = extra_args[i + 1]
+            i += 2
         else:
             i += 1
     return kwargs
@@ -629,14 +632,28 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             url = _find_release_url(target, filter_str=filt)
         except RuntimeError as e:
             return _error(str(e), use_json)
-        if not use_json:
-            print(f"  Found: {url}")
+
+    # Extract release tag from URL to check if already fetched
+    # URL: .../releases/download/<tag>/<filename>
+    release_tag = url.split("/releases/download/")[1].split("/")[0] if "/releases/download/" in url else ""
+    tag_file = OUTPUT_DIR / target / ".ltvm-release-tag"
+    if release_tag and tag_file.exists():
+        existing_tag = tag_file.read_text().strip()
+        if existing_tag == release_tag:
+            if not use_json:
+                print(f"  Already up to date ({release_tag})")
+            result = {"target": target, "path": str(OUTPUT_DIR / target)}
+            _output(result, use_json)
+            return EXIT_OK
 
     if not use_json:
         print(f"Fetching {target}...")
 
     try:
         target_dir = fetch_target(target, url, OUTPUT_DIR)
+        # Record the release tag
+        tag_file.parent.mkdir(parents=True, exist_ok=True)
+        tag_file.write_text(release_tag + "\n")
     except Exception as e:
         return _error(f"Fetch failed: {e}", use_json)
 
@@ -1000,6 +1017,25 @@ def cmd_vm(args: argparse.Namespace) -> int:
         mount_lustre = "--mount-lustre" in vm_args
         remaining = [a for a in vm_args[1:] if a != "--mount-lustre"]
         kwargs = _parse_vm_kwargs(remaining)
+
+        # Resolve --arch: if an arch override was given, resolve the
+        # correct image/kernel from the arch-qualified output dir and
+        # pass them explicitly to vmctl (which passes them to vm.py).
+        arch = getattr(args, "arch", None)
+        os_target = kwargs.pop("target", None)
+        if arch and arch != "x86_64" and os_target:
+            from qemu.models import resolve_os_artifacts
+            try:
+                os_arts = resolve_os_artifacts(os_target, arch=arch)
+                kwargs["image"] = str(os_arts.image)
+                kwargs["kernel"] = str(os_arts.kernel)
+                kwargs["arch"] = arch
+            except FileNotFoundError as e:
+                return _error(str(e), use_json)
+        elif os_target:
+            # Pass --target through for default arch
+            kwargs["target"] = os_target
+
         fn = vmctl.vm_create if action == "create" else vmctl.vm_ensure
         res = fn(name, **kwargs)
         if not res["ok"]:
