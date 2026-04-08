@@ -161,8 +161,10 @@ def cmd_create(args: argparse.Namespace) -> None:
         )
         print()
         print("Next steps:")
-        print(f"  sudo ltvm deploy {vm.name} --mount    # deploy Lustre and mount filesystem")
-        print(f"  sudo ltvm vm exec {vm.name} 'lfs df'  # run commands in the VM")
+        print(f"  sudo ltvm deploy {vm.name} --mount                        # deploy bundled Lustre and mount")
+        print(f"  sudo ltvm deploy {vm.name} --build ~/lustre-release --mount  # deploy your own build")
+        print()
+        print(f"  sudo ltvm vm exec {vm.name} 'lfs df'  # run a command")
         print(f"  sudo ltvm vm ssh {vm.name}             # interactive shell")
 
 
