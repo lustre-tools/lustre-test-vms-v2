@@ -47,3 +47,7 @@ Host *
     LogLevel ERROR
 SSHCFG
 chmod 600 /root/.ssh/config
+
+# runas user (uid=500, gid=500) -- needed by Lustre test framework
+groupadd -g 500 runas 2>/dev/null || true
+useradd -u 500 -g 500 -m -s /bin/bash runas 2>/dev/null || true

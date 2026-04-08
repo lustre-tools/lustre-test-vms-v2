@@ -1234,15 +1234,43 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if not build_path.is_dir():
         return _error(f"Build path not found: {build_path}", use_json)
 
-    # Auto-build Lustre (podman rootless — run as the real user if under sudo)
+    # Auto-build Lustre unless .staging/ is already fresh.
+    # Fresh = .staging/ exists AND no source file (*.c, *.h, *.sh, Makefile*,
+    # configure.ac) is newer than the staging directory itself.
     staging = build_path / ".staging"
-    build_cmd = ["ltvm", "build-lustre", target, "--lustre-tree", str(build_path)]
-    sudo_user = os.environ.get("SUDO_USER")
-    if sudo_user:
-        build_cmd = ["sudo", "-u", sudo_user] + build_cmd
-    r = subprocess.run(build_cmd, capture_output=False)
-    if r.returncode != 0:
-        return _error(f"Lustre build failed (rc={r.returncode})", use_json)
+
+    def _staging_is_fresh(staging: Path, src: Path) -> bool:
+        if not staging.is_dir():
+            return False
+        staging_mtime = staging.stat().st_mtime
+        # find any source file newer than .staging/
+        r = subprocess.run(
+            [
+                "find", str(src),
+                "-path", str(staging), "-prune", "-o",
+                "-path", "*/.git*", "-prune", "-o",
+                r"\(", "-name", "*.c", "-o", "-name", "*.h",
+                "-o", "-name", "*.am", "-o", "-name", "configure.ac",
+                "-o", "-name", "Makefile.am", r"\)", "-newer", str(staging), "-print",
+                "-quit",
+            ],
+            capture_output=True, text=True,
+        )
+        return r.stdout.strip() == ""  # no newer source files found
+
+    staging_fresh = _staging_is_fresh(staging, build_path)
+
+    if staging_fresh:
+        if not use_json:
+            print(f"  .staging/ is up to date, skipping build")
+    else:
+        build_cmd = ["ltvm", "build-lustre", target, "--lustre-tree", str(build_path)]
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user:
+            build_cmd = ["sudo", "-u", sudo_user] + build_cmd
+        r = subprocess.run(build_cmd, capture_output=False)
+        if r.returncode != 0:
+            return _error(f"Lustre build failed (rc={r.returncode})", use_json)
 
     if not staging.is_dir():
         return _error(

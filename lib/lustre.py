@@ -266,22 +266,21 @@ def _build_in_container(
             " kconftest.dir conftest.err 2>/dev/null || true"
         )
 
-    # Always run autogen.sh + configure inside the container.
-    # autogen.sh regenerates aclocal.m4 / libtool stubs with the
-    # container's toolchain (e.g. libtool 2.4.7 on Ubuntu 24.04).
-    # Running autogen.sh on the host (libtool 2.4.6) produces stubs
-    # that are incompatible with the container's libtool 2.4.7,
-    # causing a version mismatch error during the userspace build.
-    # Running configure explicitly (not relying on make's implicit
-    # remade-Makefile rules) prevents make from re-triggering
-    # configure with a different autoconf version mid-build.
-    script_parts.append("bash autogen.sh")
+    # Run autogen.sh + configure only when needed.
+    #
+    # autogen.sh regenerates aclocal.m4/libtool stubs with the container's
+    # toolchain.  We must re-run it when:
+    #   1. _needs_reconfigure() says so (kernel/path changed, --force)
+    #   2. The container's libtool version changed since last autogen run
+    #      (stamp file: .ltvm-container-libtool)
+    #
+    # The libtool check happens inside the container so we can compare the
+    # exact version the container has.
     cfg = "./configure --with-linux=/kernel --disable-gss --disable-crypto"
     if cross_compiling:
         cfg += " --host=aarch64-linux-gnu"
         cfg += " CC=aarch64-linux-gnu-gcc"
         cfg += " ARCH=arm64 CROSS_COMPILE=aarch64-linux-gnu-"
-        # Point pkg-config at the cross-arch library paths
         cfg += " PKG_CONFIG_PATH=/usr/lib/aarch64-linux-gnu/pkgconfig"
         cfg += " PKG_CONFIG_LIBDIR=/usr/lib/aarch64-linux-gnu/pkgconfig"
     if enable_server:
@@ -290,7 +289,22 @@ def _build_in_container(
         cfg += " --disable-server"
     if extra_configure:
         cfg += " " + " ".join(extra_configure)
-    script_parts.append(cfg)
+
+    # Shell block: run autogen+configure when force-requested OR when the
+    # container's libtool version differs from the last autogen stamp.
+    force_reconf_flag = "1" if need_reconf else "0"
+    script_parts.append(f"""\
+FORCE_RECONF={force_reconf_flag}
+LTVER=$(libtool --version 2>/dev/null | head -1)
+STAMPED=$(cat .ltvm-container-libtool 2>/dev/null || echo '')
+if [ "$FORCE_RECONF" = "1" ] || [ "$LTVER" != "$STAMPED" ]; then
+  [ "$LTVER" != "$STAMPED" ] && echo "  libtool changed, re-running autogen+configure"
+  bash autogen.sh
+  {cfg}
+  echo "$LTVER" > .ltvm-container-libtool
+else
+  echo "  autogen/configure up to date, skipping"
+fi""")
 
     make_cross = ""
     if cross_compiling:
