@@ -203,17 +203,16 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
         effective_dockerfile.write_text(patched)
         log.info("Using patched Dockerfile for cross-build: %s", effective_dockerfile)
 
-        # Build context needs to include the prebuilt dir.
-        # We use out_dir as context and symlink targets/ content in.
+        # Build context needs the prebuilt dir AND the targets/ content.
+        # Podman doesn't follow symlinks outside the context, so we
+        # hard-copy the target dirs into the build context.
         build_context = out_dir
-        # Symlink the targets dirs into the build context
         for name in ("common", target_config.name):
-            link = build_context / name
-            link.unlink(missing_ok=True)
-            try:
-                link.symlink_to(TARGETS_DIR / name)
-            except FileExistsError:
-                pass
+            dest = build_context / name
+            src = TARGETS_DIR / name
+            if dest.exists():
+                shutil.rmtree(str(dest))
+            shutil.copytree(str(src), str(dest))
     else:
         build_context = TARGETS_DIR
 
@@ -297,49 +296,47 @@ def _export_to_ext4(
         container_id = result.stdout.strip()
         log.info("Container: %s", container_id[:12])
 
-        # Inject kernel modules into the container
+        # Install kernel modules and Lustre via `make install` in the
+        # image container — same mechanism as deploy to a VM.
         if kernel_modules_dir and kernel_modules_dir.is_dir():
-            for kver_dir in kernel_modules_dir.iterdir():
-                if kver_dir.is_dir():
-                    log.info("  Injecting modules: %s", kver_dir.name)
-                    # Remove dangling symlinks before copy
-                    for name in ("build", "source"):
-                        link = kver_dir / name
-                        if link.is_symlink():
-                            link.unlink()
-                    _run(["podman", "cp", str(kver_dir),
-                          f"{container_id}:/lib/modules/{kver_dir.name}"])
+            mods_parent = kernel_modules_dir.parent.parent  # .../modules/
+            log.info("  Installing kernel modules via bind mount")
+            _run(["podman", "rm", "-f", container_id])
+            # Re-create with the modules dir mounted, run make modules_install
+            install_name = container_id[:12] + "-install"
+            _run([
+                "podman", "run", "--name", install_name,
+                "--entrypoint", "/bin/bash",
+                "-v", f"{mods_parent}:/mnt/modules:ro,Z",
+                container_tag,
+                "-c", "cp -a /mnt/modules/lib/modules/* /lib/modules/ && "
+                      "rm -f /lib/modules/*/build /lib/modules/*/source && "
+                      "depmod -a $(ls /lib/modules/ | head -1)",
+            ])
+            container_id = install_name
 
-        # Inject Lustre staging tree into the container
-        # Only copy /usr/ and /lib/modules/ — not /sbin/ or /lib/
-        # (those are FHS symlinks on EL that would be clobbered)
         if lustre_staging_dir and lustre_staging_dir.is_dir():
-            staging_usr = lustre_staging_dir / "usr"
-            staging_mods = lustre_staging_dir / "lib" / "modules"
-            if staging_usr.is_dir():
-                log.info("  Injecting Lustre userspace")
-                _run(["podman", "cp", str(staging_usr) + "/.",
-                      f"{container_id}:/usr/"])
-            if staging_mods.is_dir():
-                log.info("  Injecting Lustre kernel modules")
-                _run(["podman", "cp", str(staging_mods) + "/.",
-                      f"{container_id}:/lib/modules/"])
-            # Create mount.lustre_tgt symlink
-            subprocess.run(
-                ["podman", "start", container_id], capture_output=True
-            )
-            subprocess.run(
-                ["podman", "exec", container_id,
-                 "ln", "-sf", "mount.lustre", "/usr/sbin/mount.lustre_tgt"],
-                capture_output=True,
-            )
-            subprocess.run(
-                ["podman", "exec", container_id, "ldconfig"],
-                capture_output=True,
-            )
-            subprocess.run(
-                ["podman", "stop", container_id], capture_output=True
-            )
+            log.info("  Installing Lustre from staging tree")
+            with_mods_tag = f"{container_tag}-with-mods"
+            _run(["podman", "commit", container_id, with_mods_tag])
+            _run(["podman", "rm", "-f", container_id])
+            # Mount the staging tree and cp the installed layout.
+            # /usr/ goes to /usr/, /sbin/* goes to /usr/sbin/ (FHS merge),
+            # /lib/modules/ goes to /lib/modules/.
+            lustre_name = container_id[:12] + "-lustre"
+            _run([
+                "podman", "run", "--name", lustre_name,
+                "--entrypoint", "/bin/bash",
+                "-v", f"{lustre_staging_dir}:/mnt/staging:ro,Z",
+                with_mods_tag,
+                "-c",
+                "cp -a /mnt/staging/usr/. /usr/ && "
+                "cp -a /mnt/staging/sbin/* /usr/sbin/ 2>/dev/null; "
+                "cp -a /mnt/staging/lib/modules/. /lib/modules/ 2>/dev/null; "
+                "ln -sf mount.lustre /usr/sbin/mount.lustre_tgt && "
+                "ldconfig && depmod -a $(ls /lib/modules/ | head -1)",
+            ])
+            container_id = lustre_name
 
         # Export container to ext4
         tmpdir = tempfile.mkdtemp(prefix="ltvm-rootfs-")
@@ -361,7 +358,6 @@ def _export_to_ext4(
                 f"tar -C {qtmp} -xf - --exclude=dev/* "
                 f"&& mkdir -p {qtmp}/dev/pts {qtmp}/dev/shm {qtmp}/dev/mqueue "
                 f"&& find {qtmp} ! -readable -exec chmod u+r {{}} + 2>/dev/null; "
-                f"depmod -a -b {qtmp} $(ls {qtmp}/lib/modules/ 2>/dev/null | head -1) 2>/dev/null; "
                 f"mke2fs -t ext4 -d {qtmp} -b 4096 "
                 f"-L rootfs {shlex.quote(tmpfile)} {_IMAGE_SIZE_MB}M'",
             ],
