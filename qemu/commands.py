@@ -96,6 +96,15 @@ def cmd_create(args: argparse.Namespace) -> None:
     base_name = Path(image).name
     os_id = os_target
 
+    # Read kernel version from meta.json next to the kernel binary
+    kver = ""
+    kernel_meta = Path(kernel).parent / "meta.json"
+    if kernel_meta.exists():
+        try:
+            kver = json.loads(kernel_meta.read_text()).get("kernel_version", "")
+        except Exception:
+            pass
+
     vm = VMInfo(
         name=name,
         ip=ip,
@@ -110,6 +119,7 @@ def cmd_create(args: argparse.Namespace) -> None:
         created=int(time.time()),
         base_image=base_name,
         os_id=os_id,
+        kver=kver,
         arch=os_arts.arch,
     )
 

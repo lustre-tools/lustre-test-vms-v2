@@ -180,29 +180,48 @@ def deploy(
     build_path: str | Path = ".",
     mount: bool = False,
     os_family: str = "rhel",
+    auto_build: bool = True,
 ) -> RunResult:
     """Deploy Lustre to a VM.
 
-    1. rsync the build tree to /lustre/ in the VM
-    2. make install inside the VM
-    3. depmod + ldconfig
-    4. optionally mount via llmount.sh
+    1. Read VM metadata (target, kernel version)
+    2. Build Lustre if needed (auto_build=True)
+    3. Tar .staging/ to VM + depmod + ldconfig
+    4. Optionally mount via llmount.sh
     """
     build_path = str(Path(build_path).resolve())
 
-    # Get VM IP
+    # Get VM metadata
     res = vm_status(vm_name, json_output=True)
     if not res["ok"]:
         return res
     import json as _json
     status = _json.loads(res["output"])
     ip = status["ip"]
+    target = status.get("os_id", "rocky9")
 
-    # Tar the staging tree (make install output) to the VM and install.
-    # The staging tree was created by `make install DESTDIR=.staging`
-    # during ltvm build-lustre (inside the build container where the
-    # kernel tree is available).
+    # Build Lustre against the VM's target kernel.
+    # build-lustre uses podman rootless, so if we're running as root
+    # (via sudo), drop back to the real user for the build.
     staging = Path(build_path) / ".staging"
+    if auto_build:
+        import os as _os
+        import subprocess as _sp
+        build_cmd = [
+            "ltvm", "build-lustre", target,
+            "--lustre-tree", build_path, "--force",
+        ]
+        sudo_user = _os.environ.get("SUDO_USER")
+        if sudo_user and _os.geteuid() == 0:
+            build_cmd = ["sudo", "-u", sudo_user] + build_cmd
+        r = _sp.run(build_cmd, capture_output=False)
+        if r.returncode != 0:
+            return {
+                "ok": False,
+                "output": f"Lustre build failed (rc={r.returncode})",
+                "returncode": r.returncode,
+            }
+
     if not staging.is_dir():
         return {
             "ok": False,
