@@ -47,7 +47,6 @@ from ltvm_pkg.cli import (  # noqa: E402, I001
     _parse_vm_kwargs,
     _resolve_lustre_tree,
     cmd_status,
-    cmd_vm,
 )
 
 
@@ -106,10 +105,10 @@ class TestBuildParser:
         args = p.parse_args(["build-all", "rocky9", "--force"])
         assert args.force is True
 
-    def test_vm_action_parsed(self) -> None:
+    def test_list_subcommand_parsed(self) -> None:
         p = ltvm.build_parser()
-        args = p.parse_args(["vm", "list"])
-        assert args.action == "list"
+        args = p.parse_args(["list"])
+        assert args.command == "list"
 
     def test_deploy_subcommand(self) -> None:
         p = ltvm.build_parser()
@@ -453,39 +452,35 @@ class TestResolveLustreTree:
 
 
 # ---------------------------------------------------------------------------
-# vm subcommand: missing name for status/destroy/start/stop
+# VM top-level subcommands: basic parse and dispatch checks
 # ---------------------------------------------------------------------------
 
 
-class TestCmdVm:
-    def _make_args(self, action: str, vm_args: list[str]) -> Any:
+class TestVmSubcommands:
+    def test_destroy_parses_names(self) -> None:
         p = ltvm.build_parser()
-        return p.parse_args(["vm", action] + vm_args)
+        args = p.parse_args(["destroy", "co1-single", "co1-other"])
+        assert args.names == ["co1-single", "co1-other"]
 
-    def test_status_no_name_returns_error(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        args = self._make_args("status", [])
-        with patch("ltvm_pkg.cli._require_root", return_value=None):
-            rc = cmd_vm(args)
-        assert rc == EXIT_ERROR
-        assert "requires a VM name" in capsys.readouterr().err
+    def test_ensure_parses_name_and_vcpus(self) -> None:
+        p = ltvm.build_parser()
+        args = p.parse_args(["ensure", "co1-single", "--vcpus", "4"])
+        assert args.name == "co1-single"
+        assert args.vcpus == 4
 
-    def test_destroy_no_name_returns_error(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        args = self._make_args("destroy", [])
-        rc = cmd_vm(args)
-        assert rc == EXIT_ERROR
+    def test_crash_collect_mod_dir(self) -> None:
+        p = ltvm.build_parser()
+        args = p.parse_args(["crash-collect", "co1-single", "--mod-dir", "/path/to/build"])
+        assert args.name == "co1-single"
+        assert args.mod_dir == "/path/to/build"
 
-    def test_unknown_action_returns_error(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # Build args manually since "bogus" isn't in choices
-        import argparse
+    def test_doctor_fix_flag(self) -> None:
+        p = ltvm.build_parser()
+        args = p.parse_args(["doctor", "--fix"])
+        assert args.fix is True
 
-        args = argparse.Namespace(json=False, action="bogus", vm_args=[])
-        with patch("ltvm_pkg.cli._require_root", return_value=None):
-            rc = cmd_vm(args)
-        assert rc == EXIT_ERROR
-        assert "Unknown vm action" in capsys.readouterr().err
+    def test_vm_subcommand_not_present(self) -> None:
+        """'ltvm vm' no longer exists as a subcommand."""
+        p = ltvm.build_parser()
+        with pytest.raises(SystemExit):
+            p.parse_args(["vm", "list"])

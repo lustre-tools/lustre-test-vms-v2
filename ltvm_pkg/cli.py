@@ -1088,218 +1088,235 @@ def _os_family_for_vm(name: str) -> str:
     return TargetConfig(os_id).os_family
 
 
-def cmd_vm(args: argparse.Namespace) -> int:
-    use_json = args.json
-    action = args.action
-    vm_args = args.vm_args
+def _vm_call(fn, ns, use_json: bool) -> int:
+    """Call a vm_commands function, catching SystemExit and VMNotFound."""
+    from ltvm_pkg.vm_state import VMNotFound
+    try:
+        fn(ns)
+        return EXIT_OK
+    except SystemExit as e:
+        return int(e.code) if e.code is not None else EXIT_ERROR
+    except VMNotFound as e:
+        return _error(str(e), use_json)
 
+
+def _resolve_disk_size(val: str | None) -> int | None:
+    """Parse disk_size from argparse (string or None) to int bytes."""
+    if val is None:
+        return None
+    if isinstance(val, int):
+        return val
+    return _parse_size(val)
+
+
+def cmd_create(args: argparse.Namespace) -> int:
+    use_json = args.json
     err = _require_root(use_json)
     if err is not None:
         return err
-
-    from ltvm_pkg.vm_commands import (
-        cmd_create as _qcreate,
-        cmd_destroy as _qdestroy,
-        cmd_ensure as _qensure,
-        cmd_list as _qlist,
-        cmd_log as _qlog,
-        cmd_dmesg as _qdmesg,
-        cmd_lustre_log as _qlustre_log,
-        cmd_restart as _qrestart,
-        cmd_start as _qstart,
-        cmd_start_all as _qstart_all,
-        cmd_status as _qstatus,
-        cmd_stop as _qstop,
-        cmd_stop_all as _qstop_all,
-        cmd_ssh as _qssh,
-        cmd_cp_to as _qcp_to,
-        cmd_cp_from as _qcp_from,
-        cmd_crash_collect as _qcrash_collect,
-        cmd_snapshot as _qsnapshot,
-        cmd_restore as _qrestore,
-        cmd_doctor as _qdoctor,
+    from ltvm_pkg.vm_commands import cmd_create as _create
+    ns = _qemu_ns(
+        name=args.name,
+        vcpus=args.vcpus,
+        mem=args.mem,
+        ip=args.ip,
+        rootfs=args.rootfs or "",
+        image=args.image or "",
+        kernel=args.kernel or "",
+        mdt_disks=args.mdt_disks,
+        ost_disks=args.ost_disks,
+        disk_size=_resolve_disk_size(args.disk_size),
+        arch=args.arch or "x86_64",
+        os=args.os or "",
+        _quiet=False,
+        json=use_json,
     )
-    from ltvm_pkg.vm_state import VMNotFound
+    return _vm_call(_create, ns, use_json)
 
-    def _call(fn, ns):
-        """Call a qemu command function, catching SystemExit."""
-        try:
-            fn(ns)
-            return EXIT_OK
-        except SystemExit as e:
-            return int(e.code) if e.code is not None else EXIT_ERROR
-        except VMNotFound as e:
-            return _error(str(e), use_json)
 
-    if action == "list":
-        return _call(_qlist, _qemu_ns(json=use_json))
+def cmd_ensure(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_ensure as _ensure
+    ns = _qemu_ns(
+        name=args.name,
+        vcpus=args.vcpus,
+        mem=args.mem,
+        ip=args.ip,
+        rootfs=args.rootfs or "",
+        image=args.image or "",
+        kernel=args.kernel or "",
+        mdt_disks=args.mdt_disks,
+        ost_disks=args.ost_disks,
+        disk_size=_resolve_disk_size(args.disk_size),
+        arch=args.arch or "x86_64",
+        os=args.os or "",
+        _quiet=False,
+        json=use_json,
+    )
+    return _vm_call(_ensure, ns, use_json)
 
-    if action == "status":
-        if not vm_args:
-            return _error("vm status requires a VM name", use_json)
-        return _call(_qstatus, _qemu_ns(name=vm_args[0], json=use_json))
 
-    if action in ("create", "ensure"):
-        if not vm_args:
-            return _error(f"vm {action} requires a VM name", use_json)
-        name = vm_args[0]
-        mount_lustre = "--mount-lustre" in vm_args
-        remaining = [a for a in vm_args[1:] if a != "--mount-lustre"]
-        kw = _parse_vm_kwargs(remaining)
+def cmd_destroy(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_destroy as _destroy
+    return _vm_call(_destroy, _qemu_ns(names=args.names), use_json)
 
-        arch = kw.pop("arch", None) or getattr(args, "arch", None) or "x86_64"
-        os_target = kw.pop("target", None) or ""
 
-        ns = _qemu_ns(
-            name=name,
-            vcpus=kw.get("vcpus", 2),
-            mem=kw.get("mem", 4096),
-            ip=None,
-            rootfs="",
-            image=kw.get("image", ""),
-            kernel=kw.get("kernel", ""),
-            mdt_disks=kw.get("mdt_disks", 0),
-            ost_disks=kw.get("ost_disks", 0),
-            disk_size=kw.get("disk_size", None),
-            arch=arch,
-            os=os_target,
-            _quiet=False,
-            json=use_json,
-        )
-        rc = _call(_qcreate if action == "create" else _qensure, ns)
-        if rc != EXIT_OK:
-            return rc
-        if mount_lustre:
-            os_family = "rhel"
-            if os_target:
-                try:
-                    os_family = TargetConfig(os_target).os_family
-                except Exception:
-                    pass
-            return _lustre_mount_vm(name, os_family)
-        return EXIT_OK
+def cmd_vm_start(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_start as _start
+    return _vm_call(_start, _qemu_ns(names=args.names), use_json)
 
-    if action == "destroy":
-        if not vm_args:
-            return _error("vm destroy requires a VM name", use_json)
-        return _call(_qdestroy, _qemu_ns(names=[vm_args[0]]))
 
-    if action == "start":
-        if not vm_args:
-            return _error("vm start requires a VM name", use_json)
-        return _call(_qstart, _qemu_ns(names=[vm_args[0]]))
+def cmd_vm_stop(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_stop as _stop
+    return _vm_call(_stop, _qemu_ns(names=args.names), use_json)
 
-    if action == "stop":
-        if not vm_args:
-            return _error("vm stop requires a VM name", use_json)
-        return _call(_qstop, _qemu_ns(names=[vm_args[0]]))
 
-    if action == "restart":
-        if not vm_args:
-            return _error("vm restart requires a VM name", use_json)
-        return _call(_qrestart, _qemu_ns(names=[vm_args[0]]))
+def cmd_vm_restart(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_restart as _restart
+    return _vm_call(_restart, _qemu_ns(names=args.names), use_json)
 
-    if action == "mount-lustre":
-        if not vm_args:
-            return _error("vm mount-lustre requires a VM name", use_json)
-        from ltvm_pkg.vm_state import VMNotFound
-        try:
-            os_family = _os_family_for_vm(vm_args[0])
-        except VMNotFound:
-            return _error(f"VM '{vm_args[0]}' not found", use_json)
-        return _lustre_mount_vm(vm_args[0], os_family)
 
-    if action == "start-all":
-        return _call(_qstart_all, _qemu_ns())
+def cmd_start_all(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_start_all as _start_all
+    return _vm_call(_start_all, _qemu_ns(), use_json)
 
-    if action == "stop-all":
-        return _call(_qstop_all, _qemu_ns())
 
-    if action == "ssh":
-        if not vm_args:
-            return _error("vm ssh requires a VM name", use_json)
-        p = argparse.ArgumentParser()
-        p.add_argument("name")
-        p.add_argument("command", nargs=argparse.REMAINDER)
-        ns = p.parse_args(vm_args)
-        return _call(_qssh, ns)
+def cmd_stop_all(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_stop_all as _stop_all
+    return _vm_call(_stop_all, _qemu_ns(), use_json)
 
-    if action == "cp-to":
-        if len(vm_args) < 3:
-            return _error(
-                "vm cp-to requires a VM name, src, and dest", use_json,
-                hint="ltvm vm cp-to <name> <src> <dest>",
-            )
-        return _call(_qcp_to, _qemu_ns(name=vm_args[0], src=vm_args[1], dest=vm_args[2]))
 
-    if action == "cp-from":
-        if len(vm_args) < 3:
-            return _error(
-                "vm cp-from requires a VM name, src, and dest", use_json,
-                hint="ltvm vm cp-from <name> <src> <dest>",
-            )
-        return _call(_qcp_from, _qemu_ns(name=vm_args[0], src=vm_args[1], dest=vm_args[2]))
+def cmd_list(args: argparse.Namespace) -> int:
+    use_json = args.json
+    from ltvm_pkg.vm_commands import cmd_list as _list
+    return _vm_call(_list, _qemu_ns(json=use_json), use_json)
 
-    if action == "log":
-        if not vm_args:
-            return _error("vm log requires a VM name", use_json)
-        p = argparse.ArgumentParser()
-        p.add_argument("name")
-        p.add_argument("--lines", type=int, default=50)
-        ns = p.parse_args(vm_args)
-        return _call(_qlog, ns)
 
-    if action == "dmesg":
-        if not vm_args:
-            return _error("vm dmesg requires a VM name", use_json)
-        p = argparse.ArgumentParser()
-        p.add_argument("name")
-        p.add_argument("--tail", type=int, default=100)
-        ns = p.parse_args(vm_args)
-        return _call(_qdmesg, ns)
+def cmd_vm_ssh(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_ssh as _ssh
+    return _vm_call(_ssh, _qemu_ns(name=args.name, command=args.command), use_json)
 
-    if action == "lustre-log":
-        if not vm_args:
-            return _error("vm lustre-log requires a VM name", use_json)
-        return _call(_qlustre_log, _qemu_ns(name=vm_args[0]))
 
-    if action == "crash-collect":
-        if not vm_args:
-            return _error("vm crash-collect requires a VM name", use_json)
-        p = argparse.ArgumentParser()
-        p.add_argument("name")
-        p.add_argument("--outdir", default="/tmp/crashes")
-        p.add_argument("--trigger", action="store_true", default=False)
-        p.add_argument("--wait", type=int, default=120)
-        p.add_argument("--mod-dir", default=None)
-        ns = p.parse_args(vm_args)
-        return _call(_qcrash_collect, ns)
+def cmd_cp_to(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_cp_to as _cp_to
+    return _vm_call(_cp_to, _qemu_ns(name=args.name, src=args.src, dest=args.dest), use_json)
 
-    if action == "snapshot":
-        if not vm_args:
-            return _error("vm snapshot requires a VM name", use_json)
-        p = argparse.ArgumentParser()
-        p.add_argument("name")
-        p.add_argument("--tag", default=None)
-        ns = p.parse_args(vm_args)
-        return _call(_qsnapshot, ns)
 
-    if action == "restore":
-        if not vm_args:
-            return _error("vm restore requires a VM name", use_json)
-        p = argparse.ArgumentParser()
-        p.add_argument("name")
-        p.add_argument("--tag", default=None)
-        ns = p.parse_args(vm_args)
-        return _call(_qrestore, ns)
+def cmd_cp_from(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_cp_from as _cp_from
+    return _vm_call(_cp_from, _qemu_ns(name=args.name, src=args.src, dest=args.dest), use_json)
 
-    if action == "doctor":
-        p = argparse.ArgumentParser()
-        p.add_argument("--fix", action="store_true", default=False)
-        ns = p.parse_args(vm_args)
-        return _call(_qdoctor, ns)
 
-    return _error(f"Unknown vm action: {action}", use_json)
+def cmd_log(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_log as _log
+    return _vm_call(_log, _qemu_ns(name=args.name, lines=args.lines), use_json)
+
+
+def cmd_dmesg(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_dmesg as _dmesg
+    return _vm_call(_dmesg, _qemu_ns(name=args.name, tail=args.tail), use_json)
+
+
+def cmd_lustre_log(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_lustre_log as _lustre_log
+    return _vm_call(_lustre_log, _qemu_ns(name=args.name), use_json)
+
+
+def cmd_crash_collect(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_crash_collect as _crash_collect
+    return _vm_call(
+        _crash_collect,
+        _qemu_ns(
+            name=args.name,
+            outdir=args.outdir,
+            trigger=args.trigger,
+            wait=args.wait,
+            mod_dir=args.mod_dir,
+        ),
+        use_json,
+    )
+
+
+def cmd_snapshot(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_snapshot as _snapshot
+    return _vm_call(_snapshot, _qemu_ns(name=args.name, tag=args.tag), use_json)
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_restore as _restore
+    return _vm_call(_restore, _qemu_ns(name=args.name, tag=args.tag), use_json)
+
+
+def cmd_doctor(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_doctor as _doctor
+    return _vm_call(_doctor, _qemu_ns(fix=args.fix), use_json)
 
 
 def cmd_deploy(args: argparse.Namespace) -> int:

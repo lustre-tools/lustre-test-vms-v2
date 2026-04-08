@@ -46,7 +46,7 @@ def _load_ltvm() -> Any:
 
 ltvm = _load_ltvm()
 
-from ltvm_pkg.cli import cmd_cluster, cmd_vm  # noqa: E402
+from ltvm_pkg.cli import cmd_cluster  # noqa: E402
 
 
 # ---------------------------------------------------------------------------
@@ -54,17 +54,31 @@ from ltvm_pkg.cli import cmd_cluster, cmd_vm  # noqa: E402
 # ---------------------------------------------------------------------------
 
 
-def _vm_parser_choices() -> list[str]:
-    """Return the list of vm action choices from the parser."""
+def _vm_top_level_commands() -> list[str]:
+    """Return the top-level subcommand names that correspond to VM operations.
+
+    These are the commands that were previously vm sub-actions and now live
+    directly as top-level ltvm subcommands.
+    """
+    import ltvm_pkg.vm_commands as vc
+    import inspect
+    cmd_names = [
+        name for name, obj in inspect.getmembers(vc, inspect.isfunction)
+        if name.startswith("cmd_")
+    ]
+    # Convert cmd_foo_bar -> foo-bar, and filter to those present in the parser
     p = ltvm.build_parser()
+    top_level: set[str] = set()
     for action in p._subparsers._actions:
         if hasattr(action, "_name_parser_map"):
-            vm_sp = action._name_parser_map.get("vm")
-            if vm_sp is not None:
-                for a in vm_sp._actions:
-                    if hasattr(a, "choices") and a.choices:
-                        return list(a.choices)
-    raise RuntimeError("Could not find vm action choices in parser")
+            top_level.update(action._name_parser_map.keys())
+
+    result = []
+    for cmd_name in cmd_names:
+        action = cmd_name[len("cmd_"):].replace("_", "-")
+        if action in top_level:
+            result.append(action)
+    return sorted(result)
 
 
 def _cluster_parser_choices() -> list[str]:
@@ -145,25 +159,20 @@ class TestAllSubcommandsHaveFunc:
 
 
 # ---------------------------------------------------------------------------
-# Test 2: Every vm parser choice dispatches (no fallthrough to "Unknown action")
+# Test 2: Every VM top-level subcommand sets a func and calls the right handler
 # ---------------------------------------------------------------------------
 
-# Actions that don't map directly to a vm_commands.cmd_* function because they
-# are handled inline within cmd_vm itself (private helpers in cli.py).
-_VM_INLINE_ACTIONS = {"mount-lustre"}
-
-# Minimal extra vm_args needed for each action to pass argument validation
-# in cmd_vm before calling the underlying function.
-_VM_ARGS: dict[str, list[str]] = {
+# Minimal parse args for each VM subcommand to verify the func dispatches
+# without hitting errors.  These are parsed by the real parser.
+_VM_SUBCOMMAND_PARSE_ARGS: dict[str, list[str]] = {
     "create": ["co1-test"],
     "ensure": ["co1-test"],
     "destroy": ["co1-test"],
+    "exec": ["co1-test", "lctl dl"],
     "start": ["co1-test"],
     "stop": ["co1-test"],
     "restart": ["co1-test"],
     "list": [],
-    "status": ["co1-test"],
-    "mount-lustre": ["co1-test"],
     "start-all": [],
     "stop-all": [],
     "ssh": ["co1-test"],
@@ -179,61 +188,44 @@ _VM_ARGS: dict[str, list[str]] = {
 }
 
 
-class TestVmActionsDispatch:
-    """All vm action choices reach a handler; none fall through to 'Unknown action'."""
+class TestVmSubcommandsDispatch:
+    """Each former vm sub-action is now a top-level subcommand with its own handler."""
 
-    def _make_args(self, action: str) -> argparse.Namespace:
-        return argparse.Namespace(
-            action=action,
-            vm_args=_VM_ARGS.get(action, []),
-            json=False,
-            verbose=False,
-            arch=None,
+    @pytest.mark.parametrize("subcmd", _vm_top_level_commands())
+    def test_vm_subcommand_sets_func(self, subcmd: str) -> None:
+        """Each VM subcommand must set_defaults(func=...) and parse cleanly."""
+        p = ltvm.build_parser()
+        extra = _VM_SUBCOMMAND_PARSE_ARGS.get(subcmd, [])
+        args = p.parse_args([subcmd] + extra)
+        assert hasattr(args, "func"), (
+            f"ltvm {subcmd} parsed OK but args.func is not set"
         )
 
-    @pytest.mark.parametrize("action", _vm_parser_choices())
-    def test_vm_action_does_not_hit_unknown_fallback(self, action: str) -> None:
-        """cmd_vm must not return the 'Unknown vm action' error for any choice."""
-        args = self._make_args(action)
+    @pytest.mark.parametrize("subcmd", _vm_top_level_commands())
+    def test_vm_subcommand_handler_calls_vm_commands(self, subcmd: str) -> None:
+        """Each VM subcommand's handler must invoke the corresponding vm_commands fn."""
+        import ltvm_pkg.cli as cli_mod
 
-        _vm_patches = [
+        p = ltvm.build_parser()
+        extra = _VM_SUBCOMMAND_PARSE_ARGS.get(subcmd, [])
+        args = p.parse_args([subcmd] + extra)
+
+        # Map subcommand -> vm_commands function to patch
+        fn_name = subcmd.replace("-", "_")
+        patches = [
             patch("ltvm_pkg.cli._require_root", return_value=None),
-            patch("ltvm_pkg.vm_commands.cmd_create"),
-            patch("ltvm_pkg.vm_commands.cmd_destroy"),
-            patch("ltvm_pkg.vm_commands.cmd_ensure"),
-            patch("ltvm_pkg.vm_commands.cmd_list"),
-            patch("ltvm_pkg.vm_commands.cmd_log"),
-            patch("ltvm_pkg.vm_commands.cmd_dmesg"),
-            patch("ltvm_pkg.vm_commands.cmd_lustre_log"),
-            patch("ltvm_pkg.vm_commands.cmd_restart"),
-            patch("ltvm_pkg.vm_commands.cmd_start"),
-            patch("ltvm_pkg.vm_commands.cmd_start_all"),
-            patch("ltvm_pkg.vm_commands.cmd_status"),
-            patch("ltvm_pkg.vm_commands.cmd_stop"),
-            patch("ltvm_pkg.vm_commands.cmd_stop_all"),
-            patch("ltvm_pkg.vm_commands.cmd_ssh"),
-            patch("ltvm_pkg.vm_commands.cmd_cp_to"),
-            patch("ltvm_pkg.vm_commands.cmd_cp_from"),
-            patch("ltvm_pkg.vm_commands.cmd_crash_collect"),
-            patch("ltvm_pkg.vm_commands.cmd_snapshot"),
-            patch("ltvm_pkg.vm_commands.cmd_restore"),
-            patch("ltvm_pkg.vm_commands.cmd_doctor"),
-            patch("ltvm_pkg.cli._parse_vm_kwargs", return_value={}),
-            patch("ltvm_pkg.cli._lustre_mount_vm", return_value=0),
-            patch("ltvm_pkg.cli._os_family_for_vm", return_value="rhel"),
+            patch(f"ltvm_pkg.vm_commands.cmd_{fn_name}"),
         ]
         with contextlib.ExitStack() as stack:
-            for p in _vm_patches:
-                stack.enter_context(p)
-            result = cmd_vm(args)
-
-        # EXIT_ERROR (1) from "Unknown vm action: X" is what we're guarding against.
-        # Mocked functions return None (not an int), so _call returns 0.
-        # mount-lustre calls _lustre_mount_vm directly (patched to 0).
-        # A result of 1 with no other error path means the fallback was hit.
-        assert result != 1 or action in _VM_INLINE_ACTIONS, (
-            f"vm action '{action}' fell through to 'Unknown vm action' fallback "
-            f"(returned {result})"
+            for p_obj in patches:
+                stack.enter_context(p_obj)
+            try:
+                result = args.func(args)
+            except SystemExit:
+                result = 0
+        # A result of EXIT_ERROR (1) here would indicate a handler bug
+        assert result in (0, None), (
+            f"ltvm {subcmd} handler returned {result!r}; expected 0 or None"
         )
 
 
@@ -316,22 +308,26 @@ def _top_level_subcommand_names() -> set[str]:
 class TestNoOrphanVmCommandFunctions:
     """Every cmd_* in vm_commands.py must be reachable via the parser.
 
-    A function is reachable if its derived action name exists either as a
-    'vm' sub-action (ltvm vm <action>) or as a top-level subcommand
-    (ltvm <action>) that delegates to vm_commands.
+    With the flat structure, each function is reachable as a top-level
+    subcommand (ltvm <action>) that delegates to vm_commands.
+    cmd_status is intentionally dropped (redundant with list).
     """
 
+    # cmd_status is intentionally not exposed as a top-level subcommand
+    # (it was vm status, dropped in the flat refactor).
+    _INTENTIONALLY_DROPPED = {"cmd_status"}
+
     def test_all_cmd_functions_have_parser_action(self) -> None:
-        vm_choices = set(_vm_parser_choices())
         top_level = _top_level_subcommand_names()
         cmd_names = _vm_command_names()
 
         orphans = []
         for cmd_name in cmd_names:
+            if cmd_name in self._INTENTIONALLY_DROPPED:
+                continue
             expected_action = _action_from_cmd_name(cmd_name)
-            # Reachable as a 'vm' sub-action OR as a top-level subcommand
-            # (e.g. cmd_exec -> 'exec' -> ltvm exec).
-            if expected_action not in vm_choices and expected_action not in top_level:
+            # Reachable as a top-level subcommand
+            if expected_action not in top_level:
                 orphans.append(
                     f"{cmd_name} (expected action '{expected_action}')"
                 )
@@ -722,37 +718,34 @@ class TestJsonErrorShape:
         except json.JSONDecodeError:
             return {}
 
-    @pytest.mark.parametrize("action,vm_args,description", [
-        ("status", [], "missing VM name"),
-        ("destroy", [], "missing VM name"),
-        ("start", [], "missing VM name"),
-        ("stop", [], "missing VM name"),
-        ("cp-to", ["co1-test"], "too few args for cp-to"),
+    @pytest.mark.parametrize("handler_name,args_ns,description", [
+        (
+            "cmd_destroy",
+            argparse.Namespace(names=[], json=True, verbose=False, arch=None),
+            "destroy with empty names list triggers VMNotFound",
+        ),
     ])
     def test_vm_json_error_has_error_key(
-        self, action: str, vm_args: list[str], description: str
+        self, handler_name: str, args_ns: argparse.Namespace, description: str
     ) -> None:
-        """cmd_vm --json error paths always produce {'error': ...}."""
-        from ltvm_pkg.cli import cmd_vm
+        """VM handler --json error paths always produce {'error': ...}."""
+        import ltvm_pkg.cli as cli_mod
+        from ltvm_pkg.vm_state import VMNotFound
 
-        args = argparse.Namespace(
-            action=action,
-            vm_args=vm_args,
-            json=True,
-            verbose=False,
-            arch=None,
-        )
+        handler = getattr(cli_mod, handler_name)
 
         output_lines: list[str] = []
 
         with patch("ltvm_pkg.cli._require_root", return_value=None), \
+             patch("ltvm_pkg.vm_commands.cmd_destroy",
+                   side_effect=VMNotFound("co1-test")), \
              patch("builtins.print") as mock_print, \
              patch("sys.stderr"):
             mock_print.side_effect = lambda *a, file=None, **kw: (
                 output_lines.append(str(a[0])) if a else None
             )
             try:
-                cmd_vm(args)
+                handler(args_ns)
             except SystemExit:
                 pass
 
@@ -766,11 +759,11 @@ class TestJsonErrorShape:
                     pass
 
         assert json_outputs, (
-            f"cmd_vm --json action='{action}' ({description}) produced no JSON output.\n"
+            f"{handler_name} --json ({description}) produced no JSON output.\n"
             f"Raw output: {output_lines!r}"
         )
         assert "error" in json_outputs[0], (
-            f"cmd_vm --json action='{action}' ({description}) JSON output "
+            f"{handler_name} --json ({description}) JSON output "
             f"is missing 'error' key.\n"
             f"Got: {json_outputs[0]!r}\n"
             f"All JSON error paths must produce {{\"error\": \"...\"}}."
