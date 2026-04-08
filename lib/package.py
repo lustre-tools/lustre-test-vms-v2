@@ -234,7 +234,7 @@ def package_target(
         meta = json.loads(kernel_meta.read_text())
         version = meta.get("kernel_version", "unknown")
 
-    tarball = dest_dir / f"{target_name}-{kernel_name}-{version}.tar.zst"
+    tarball = dest_dir / f"{target_name}-{version}.tar.zst"
 
     print(f"  Packaging {target_name} (kernel={kernel_name}) -> {tarball.name}")
     print(f"    Kernel: {artifacts['vmlinux']}")
