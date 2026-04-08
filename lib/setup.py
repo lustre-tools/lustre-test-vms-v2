@@ -931,5 +931,5 @@ def run_setup(
         log.info("")
         log.info("Next:")
         log.info("  ltvm fetch rocky9")
-        log.info("  sudo vm.py create co1-test --vcpus 2 --mem 2048 --mdt-disks 1 --ost-disks 2")
+        log.info("  sudo ltvm vm create co1-test --vcpus 2 --mem 2048 --mdt-disks 1 --ost-disks 2")
         log.info("  sudo ltvm deploy co1-test --mount")

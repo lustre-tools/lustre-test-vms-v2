@@ -646,7 +646,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     if not use_json:
         print()
         print("Next:")
-        print(f"  sudo vm.py create co1-test --os {target} "
+        print(f"  sudo ltvm vm create co1-test --os {target} "
               f"--vcpus 2 --mem 2048 --mdt-disks 1 --ost-disks 2")
         print(f"  sudo ltvm deploy co1-test --mount")
 

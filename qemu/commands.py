@@ -150,7 +150,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     launch_qemu(vm)
     if not wait_for_ssh(vm.ip, SSH_TIMEOUT):
         die(f"VM '{name}' did not become reachable within {SSH_TIMEOUT}s"
-            f" -- check: sudo vm.py log {name} 50")
+            f" -- check: sudo ltvm vm log {name} 50")
     register_ssh_name(vm.name, vm.ip)
     deploy_ssh_key(vm.ip)
 
