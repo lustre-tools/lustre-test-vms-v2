@@ -370,7 +370,7 @@ def build_parser() -> argparse.ArgumentParser:
         ],
         help="VM action",
     )
-    sp.add_argument("vm_args", nargs="*")
+    sp.add_argument("vm_args", nargs=argparse.REMAINDER)
     sp.set_defaults(func=cmd_vm)
 
     # -- deploy --
