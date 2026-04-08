@@ -709,8 +709,8 @@ Host {subnet}.*
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
     LogLevel ERROR
-    ServerAliveInterval 1
-    ServerAliveCountMax 2
+    ServerAliveInterval 5
+    ServerAliveCountMax 3
     ConnectTimeout 5
     User root
 """

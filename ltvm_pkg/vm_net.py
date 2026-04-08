@@ -120,8 +120,8 @@ def register_ssh_name(name: str, ip: str) -> None:
             f"\tStrictHostKeyChecking no\n"
             f"\tUserKnownHostsFile /dev/null\n"
             f"\tLogLevel ERROR\n"
-            f"\tServerAliveInterval 1\n"
-            f"\tServerAliveCountMax 2\n"
+            f"\tServerAliveInterval 5\n"
+            f"\tServerAliveCountMax 3\n"
             f"\tConnectTimeout 5\n"
         )
         with open(ssh_cfg, "a") as f:
@@ -216,9 +216,9 @@ def run_ssh(
         "-o",
         "ConnectTimeout=5",
         "-o",
-        "ServerAliveInterval=1",
+        "ServerAliveInterval=10",
         "-o",
-        "ServerAliveCountMax=2",
+        "ServerAliveCountMax=3",
         "-o",
         "LogLevel=ERROR",
         f"root@{ip}",
