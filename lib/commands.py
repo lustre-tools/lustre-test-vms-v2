@@ -1012,6 +1012,25 @@ def cmd_vm(args: argparse.Namespace) -> int:
         res = fn(vm_args[0])
         return _runtime_result(res, use_json)
 
+    if action == "mount-lustre":
+        if not vm_args:
+            return _error("vm mount-lustre requires a VM name", use_json)
+        name = vm_args[0]
+        # Detect os_family from VM metadata
+        os_family = "rhel"
+        try:
+            res = vmctl.vm_status(name, json_output=True)
+            if res["ok"]:
+                import json as _json
+                status = _json.loads(res["output"])
+                os_id = status.get("os_id", "")
+                tc = TargetConfig(os_id)
+                os_family = tc.os_family
+        except Exception:
+            pass
+        res = vmctl.lustre_mount(name, os_family=os_family)
+        return _runtime_result(res, use_json)
+
     return _error(f"Unknown vm action: {action}", use_json)
 
 

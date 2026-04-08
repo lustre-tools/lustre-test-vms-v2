@@ -61,15 +61,78 @@ def _container_image_tag(target_config: TargetConfig) -> str:
     return f"ltvm-image-{target_config.name}"
 
 
+def _is_cross_build(target_config: TargetConfig) -> bool:
+    """True if the target arch differs from the host."""
+    import platform
+    return target_config.arch != platform.machine()
+
+
 def _podman_platform(target_config: TargetConfig) -> list[str]:
     """Return --platform flag for podman if cross-arch build needed."""
-    import platform
-    host_machine = platform.machine()
-    if target_config.arch == "aarch64" and host_machine != "aarch64":
-        return ["--platform", "linux/arm64"]
-    if target_config.arch == "x86_64" and host_machine != "x86_64":
-        return ["--platform", "linux/amd64"]
-    return []
+    if not _is_cross_build(target_config):
+        return []
+    _PLAT = {"aarch64": "linux/arm64", "x86_64": "linux/amd64"}
+    plat = _PLAT.get(target_config.arch)
+    return ["--platform", plat] if plat else []
+
+
+def _prebuild_tools_native(
+    target_config: TargetConfig,
+    output_dir: Path,
+) -> None:
+    """Cross-compile IOR, iozone, pjdfstest, e2fsprogs using the
+    host-native build container + cross-compiler.
+
+    This avoids compiling under QEMU user-mode emulation by running
+    the cross-compiler natively. The output goes to *output_dir* and
+    is injected into the emulated image build via COPY.
+    """
+    # Use the existing (native) build container for this target
+    build_tag = f"ltvm-build-{target_config.name}"
+    arch = target_config.arch
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Ensure the native build container exists (may need to build it
+    # if we're running as root but the container was built as a user)
+    r = subprocess.run(
+        ["podman", "image", "exists", build_tag], capture_output=True
+    )
+    if r.returncode != 0:
+        log.info("Building native container %s for cross-compile...", build_tag)
+        build_dockerfile = target_config.target_dir / "container.Dockerfile"
+        subprocess.run(
+            [
+                "podman", "build",
+                "-t", build_tag,
+                "--build-arg", f"BASE_IMAGE={target_config.container_image}",
+                "-f", str(build_dockerfile),
+                str(TARGETS_DIR),
+            ],
+            check=True,
+        )
+
+    log.info(
+        "Pre-building tools natively for %s (cross-compile in %s)...",
+        arch, build_tag,
+    )
+
+    script = (
+        f"export TARGET_ARCH={arch} DESTDIR=/output\n"
+        "bash /input/build-tools.sh\n"
+        "bash /input/build-e2fsprogs.sh\n"
+    )
+
+    common_dir = TARGETS_DIR / "common"
+    cmd = [
+        "podman", "run", "--rm",
+        "-v", f"{common_dir}:/input:ro,Z",
+        "-v", f"{output_dir}:/output:Z",
+        build_tag,
+        "-c", script,
+    ]
+    subprocess.run(cmd, check=True)
+    log.info("Pre-built tools at %s", output_dir)
 
 
 def build_image(target_config: TargetConfig, force: bool = False) -> Path:
@@ -107,38 +170,92 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
     t0 = time.monotonic()
 
     # ── Step 1: Build container image ──
-    log.info("Building container image %s ...", tag)
-    log.info("Running: podman build -t %s -f %s %s", tag, dockerfile, TARGETS_DIR)
+    cross = _is_cross_build(target_config)
     platform_args = _podman_platform(target_config)
+    effective_dockerfile = dockerfile
+    prebuilt_dir: Path | None = None
+
+    if cross:
+        # Cross-build: compile tools natively, then inject into the
+        # emulated image build (avoids slow compilation under QEMU).
+        prebuilt_dir = out_dir / "_prebuilt"
+        _prebuild_tools_native(target_config, prebuilt_dir)
+
+        # Patch the Dockerfile: replace the RUN build-tools.sh and
+        # build-e2fsprogs.sh steps with COPY from pre-built output.
+        original = dockerfile.read_text()
+        patched = original
+        patched = patched.replace(
+            "RUN bash /tmp/build-tools.sh",
+            "COPY _prebuilt/usr/local/ /usr/local/",
+        )
+        patched = patched.replace(
+            "RUN bash /tmp/build-e2fsprogs.sh v1.47.3-wc2",
+            "COPY _prebuilt/usr/ /usr/",
+        )
+        patched = patched.replace(
+            "RUN bash /tmp/build-e2fsprogs.sh",
+            "COPY _prebuilt/usr/ /usr/",
+        )
+
+        # Write patched Dockerfile next to the original
+        effective_dockerfile = out_dir / "image.Dockerfile.cross"
+        effective_dockerfile.write_text(patched)
+        log.info("Using patched Dockerfile for cross-build: %s", effective_dockerfile)
+
+        # Build context needs to include the prebuilt dir.
+        # We use out_dir as context and symlink targets/ content in.
+        build_context = out_dir
+        # Symlink the targets dirs into the build context
+        for name in ("common", target_config.name):
+            link = build_context / name
+            link.unlink(missing_ok=True)
+            try:
+                link.symlink_to(TARGETS_DIR / name)
+            except FileExistsError:
+                pass
+    else:
+        build_context = TARGETS_DIR
+
+    log.info("Building container image %s ...", tag)
     _run(
         [
             "podman", "build",
             *platform_args,
             "--build-arg", f"BASE_IMAGE={target_config.container_image}",
             "-t", tag,
-            "-f", str(dockerfile),
-            str(TARGETS_DIR),
+            "-f", str(effective_dockerfile),
+            str(build_context),
         ],
         capture_output=False,
     )
 
-    # Find kernel modules to bake into the image
+    # Find kernel modules and Lustre staging tree to bake into the image
     kernel_modules_dir = None
+    lustre_staging_dir = None
     try:
         kernel_name = target_config.resolve_kernel(None)
-        kdir = target_config.output_dir / "kernels" / kernel_name / "modules"
-        lib_mods = kdir / "lib" / "modules"
+        kdir = target_config.output_dir / "kernels" / kernel_name
+        lib_mods = kdir / "modules" / "lib" / "modules"
         if lib_mods.is_dir():
             kernel_modules_dir = lib_mods
-            log.info("Including kernel modules from %s", kdir)
+            log.info("Including kernel modules from %s", kdir / "modules")
         else:
             log.warning("No kernel modules found -- build kernel first for full image")
+        staging = kdir / "lustre" / ".staging"
+        if staging.is_dir():
+            lustre_staging_dir = staging
+            log.info("Including pre-built Lustre from %s", staging)
     except (ValueError, FileNotFoundError):
         log.warning("Could not resolve kernel -- image will not include kernel modules")
 
     # ── Step 2: Export to ext4 ──
     log.info("Exporting container to ext4 ...")
-    image_path = _export_to_ext4(tag, image_path, kernel_modules_dir=kernel_modules_dir)
+    image_path = _export_to_ext4(
+        tag, image_path,
+        kernel_modules_dir=kernel_modules_dir,
+        lustre_staging_dir=lustre_staging_dir,
+    )
 
     elapsed = time.monotonic() - t0
 
@@ -162,92 +279,99 @@ def _export_to_ext4(
     container_tag: str,
     image_path: Path,
     kernel_modules_dir: Path | None = None,
+    lustre_staging_dir: Path | None = None,
 ) -> Path:
     """Create a raw ext4 image from a container's filesystem.
 
-    Entirely rootless using mke2fs -d (populate from directory).
-
-    1. podman create + podman export | tar into temp directory
-    2. (optional) copy kernel modules into the temp directory
-    3. mke2fs -d <dir> to create populated ext4 image
+    1. podman create from the image tag
+    2. podman cp kernel modules + Lustre into the container
+    3. podman export | fakeroot mke2fs -d → ext4
+    4. resize2fs -M to shrink
     """
     tmpdir = None
     tmpfile = None
     container_id = None
 
     try:
-        # Export container filesystem to a temp directory
-        tmpdir = tempfile.mkdtemp(prefix="ltvm-rootfs-")
-
         result = _run(["podman", "create", container_tag])
         container_id = result.stdout.strip()
+        log.info("Container: %s", container_id[:12])
 
-        log.info(
-            "Extracting container %s and building ext4 under fakeroot ...",
-            container_id[:12],
-        )
+        # Inject kernel modules into the container
+        if kernel_modules_dir and kernel_modules_dir.is_dir():
+            for kver_dir in kernel_modules_dir.iterdir():
+                if kver_dir.is_dir():
+                    log.info("  Injecting modules: %s", kver_dir.name)
+                    # Remove dangling symlinks before copy
+                    for name in ("build", "source"):
+                        link = kver_dir / name
+                        if link.is_symlink():
+                            link.unlink()
+                    _run(["podman", "cp", str(kver_dir),
+                          f"{container_id}:/lib/modules/{kver_dir.name}"])
 
-        # Create ext4 image file (NamedTemporaryFile avoids mktemp TOCTOU)
+        # Inject Lustre staging tree into the container
+        # Only copy /usr/ and /lib/modules/ — not /sbin/ or /lib/
+        # (those are FHS symlinks on EL that would be clobbered)
+        if lustre_staging_dir and lustre_staging_dir.is_dir():
+            staging_usr = lustre_staging_dir / "usr"
+            staging_mods = lustre_staging_dir / "lib" / "modules"
+            if staging_usr.is_dir():
+                log.info("  Injecting Lustre userspace")
+                _run(["podman", "cp", str(staging_usr) + "/.",
+                      f"{container_id}:/usr/"])
+            if staging_mods.is_dir():
+                log.info("  Injecting Lustre kernel modules")
+                _run(["podman", "cp", str(staging_mods) + "/.",
+                      f"{container_id}:/lib/modules/"])
+            # Create mount.lustre_tgt symlink
+            subprocess.run(
+                ["podman", "start", container_id], capture_output=True
+            )
+            subprocess.run(
+                ["podman", "exec", container_id,
+                 "ln", "-sf", "mount.lustre", "/usr/sbin/mount.lustre_tgt"],
+                capture_output=True,
+            )
+            subprocess.run(
+                ["podman", "exec", container_id, "ldconfig"],
+                capture_output=True,
+            )
+            subprocess.run(
+                ["podman", "stop", container_id], capture_output=True
+            )
+
+        # Export container to ext4
+        tmpdir = tempfile.mkdtemp(prefix="ltvm-rootfs-")
         tmp_f = tempfile.NamedTemporaryFile(
             suffix=".ext4", prefix="ltvm-image-", delete=False
         )
         tmpfile = tmp_f.name
         tmp_f.close()
 
-        # Use fakeroot to preserve root ownership.
-        # Without it, extracted files would be owned by
-        # our uid, and mke2fs -d bakes that into the ext4.
-        # podman runs OUTSIDE fakeroot (it checks real uid),
-        # tar + mke2fs run INSIDE fakeroot.
         qcid = shlex.quote(container_id)
         qtmp = shlex.quote(tmpdir)
-        qimg = shlex.quote(tmpfile)
 
-        # Export container filesystem
+        log.info("Exporting to ext4...")
         _run(
             [
-                "bash",
-                "-c",
+                "bash", "-c",
                 f"podman export {qcid} "
                 f"| fakeroot bash -c '"
                 f"tar -C {qtmp} -xf - --exclude=dev/* "
-                f"&& mkdir -p {qtmp}/dev/pts {qtmp}/dev/shm "
-                f"{qtmp}/dev/mqueue "
-                f"&& find {qtmp} ! -readable -exec "
-                f"chmod u+r {{}} + 2>/dev/null; true'",
+                f"&& mkdir -p {qtmp}/dev/pts {qtmp}/dev/shm {qtmp}/dev/mqueue "
+                f"&& find {qtmp} ! -readable -exec chmod u+r {{}} + 2>/dev/null; "
+                f"depmod -a -b {qtmp} $(ls {qtmp}/lib/modules/ 2>/dev/null | head -1) 2>/dev/null; "
+                f"mke2fs -t ext4 -d {qtmp} -b 4096 "
+                f"-L rootfs {shlex.quote(tmpfile)} {_IMAGE_SIZE_MB}M'",
             ],
             capture_output=False,
         )
 
-        # Inject kernel modules into the rootfs
-        if kernel_modules_dir and kernel_modules_dir.is_dir():
-            dest = Path(tmpdir) / "lib" / "modules"
-            dest.mkdir(parents=True, exist_ok=True)
-            for kver_dir in kernel_modules_dir.iterdir():
-                if kver_dir.is_dir():
-                    log.info("  Copying modules: %s", kver_dir.name)
-                    subprocess.run(
-                        ["cp", "-a", str(kver_dir), str(dest / kver_dir.name)],
-                        check=True,
-                    )
-                    # Remove dangling build/source symlinks
-                    for name in ("build", "source"):
-                        link = dest / kver_dir.name / name
-                        if link.is_symlink():
-                            link.unlink()
-
-        # Create ext4 image
-        _run(
-            [
-                "fakeroot",
-                "mke2fs", "-t", "ext4",
-                "-d", tmpdir,
-                "-b", "4096",
-                "-L", "rootfs",
-                tmpfile, f"{_IMAGE_SIZE_MB}M",
-            ],
-            capture_output=False,
-        )
+        # Shrink to minimum. qcow2 overlay resizes to 8G at VM
+        # creation, rc.local auto-expands the ext4 on boot.
+        subprocess.run(["e2fsck", "-fy", tmpfile], capture_output=True)
+        _run(["resize2fs", "-M", tmpfile])
 
         # Remove the podman container
         subprocess.run(
@@ -255,9 +379,11 @@ def _export_to_ext4(
         )
         container_id = None
 
-        # The image is sized to fit all packages plus headroom for
-        # Lustre modules (~500 MiB unstripped) and runtime writes.
-        # No shrink -- the image is used directly at _IMAGE_SIZE_MB.
+        # Shrink to minimum + headroom. The qcow2 overlay is resized
+        # to 8G at VM creation, and rc.local auto-expands on boot.
+        # First shrink to minimum, then add headroom for first-boot writes.
+        subprocess.run(["e2fsck", "-fy", tmpfile], capture_output=True)
+        _run(["resize2fs", "-M", tmpfile])
 
         # Move to final location
         if image_path.exists():

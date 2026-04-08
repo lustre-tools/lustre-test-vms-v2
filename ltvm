@@ -367,6 +367,7 @@ def build_parser() -> argparse.ArgumentParser:
             "restart",
             "list",
             "status",
+            "mount-lustre",
         ],
         help="VM action",
     )
