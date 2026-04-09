@@ -1325,6 +1325,14 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         if r.returncode != 0:
             return _error(f"Lustre build failed (rc={r.returncode})", use_json)
 
+        # Verify staging was actually (re)created by the build we just ran.
+        # A pre-existing stale .staging/ would pass the is_dir() check below.
+        if not staging.is_dir() or not any(staging.rglob("*.ko")):
+            return _error(
+                f"Lustre build succeeded but no .staging/ with modules found in {build_path}",
+                use_json,
+            )
+
     if not staging.is_dir():
         return _error(
             f"No .staging/ in {build_path} -- run: ltvm build-lustre {target}",

@@ -294,16 +294,15 @@ class TestGetPackageManifest:
 
         assert packages == sorted(packages)
 
-    def test_returns_empty_list_on_called_process_error(self) -> None:
+    def test_raises_on_called_process_error(self) -> None:
         import ltvm_pkg.image_build as image
 
         with patch(
             "ltvm_pkg.image_build._run",
             side_effect=subprocess.CalledProcessError(1, "podman"),
         ):
-            packages = image._get_package_manifest("ltvm-image-rocky9")
-
-        assert packages == []
+            with pytest.raises(subprocess.CalledProcessError):
+                image._get_package_manifest("ltvm-image-rocky9")
 
     def test_strips_trailing_newline(self) -> None:
         import ltvm_pkg.image_build as image

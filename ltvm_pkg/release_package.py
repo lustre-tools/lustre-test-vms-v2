@@ -263,10 +263,17 @@ def package_target(
 
     # Read version from kernel meta
     kernel_meta = kernel_dir / "meta.json"
-    version = "unknown"
-    if kernel_meta.exists():
-        meta = json.loads(kernel_meta.read_text())
-        version = meta.get("kernel_version", "unknown")
+    if not kernel_meta.exists():
+        raise RuntimeError(
+            f"kernel meta.json not found at {kernel_meta} -- "
+            f"build the kernel before packaging"
+        )
+    meta = json.loads(kernel_meta.read_text())
+    version = meta.get("kernel_version")
+    if not version:
+        raise RuntimeError(
+            f"kernel_version missing from {kernel_meta}"
+        )
 
     arch_suffix = f"-{arch}" if arch != "x86_64" else ""
     base_name = f"{target_name}-{version}{arch_suffix}"

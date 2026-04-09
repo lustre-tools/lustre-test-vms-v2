@@ -422,6 +422,7 @@ class TestEnsureToCreateNamespaceContract:
             patch("ltvm_pkg.vm_commands.wait_for_ssh", return_value=True),
             patch("ltvm_pkg.vm_commands.register_ssh_name"),
             patch("ltvm_pkg.vm_commands.deploy_ssh_key"),
+            patch("ltvm_pkg.vm_commands._seed_kdump_boot"),
             patch("ltvm_pkg.vm_commands.run"),
         ]
         with contextlib.ExitStack() as stack:
@@ -540,6 +541,7 @@ class TestEnsureToCreateNamespaceContract:
             patch("ltvm_pkg.vm_commands.wait_for_ssh", return_value=True),
             patch("ltvm_pkg.vm_commands.register_ssh_name"),
             patch("ltvm_pkg.vm_commands.deploy_ssh_key"),
+            patch("ltvm_pkg.vm_commands._seed_kdump_boot"),
             patch("ltvm_pkg.vm_commands.run"),
         ]
         # Patch VMInfo.save so the create path completes without writing to disk

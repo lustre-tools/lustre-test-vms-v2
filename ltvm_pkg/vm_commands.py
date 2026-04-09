@@ -30,6 +30,7 @@ from .vm_state import (
     resolve_os_artifacts,
 )
 from .vm_net import (
+    _atomic_write,
     _real_user_ssh_dir,
     check_ip_collision,
     deploy_ssh_key,
@@ -929,7 +930,7 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                             for ln in hosts.read_text().splitlines()
                             if f"{MARKER}:{hname}" not in ln
                         ]
-                        hosts.write_text("\n".join(lines) + "\n")
+                        _atomic_write(hosts, "\n".join(lines) + "\n")
                         reload_dns()
                         print("  fixed: removed from /etc/hosts")
 

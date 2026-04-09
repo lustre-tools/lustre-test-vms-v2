@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -251,8 +252,8 @@ class VMInfo:
             f"ARCH={self.arch}\n"
         )
 
-    def _update_field(self, key: str, value: str | int) -> None:
-        """Update a single field in the info file (add if missing).
+    def _update_fields(self, fields: dict) -> None:
+        """Update multiple fields in the info file atomically (single write).
 
         Written atomically via rename to avoid corruption under concurrent
         updates (e.g. two cluster nodes deploying in parallel).
@@ -260,15 +261,32 @@ class VMInfo:
         if not self.info_path.exists():
             return
         text = self.info_path.read_text()
-        pattern = rf"^{key}=.*$"
-        replacement = f"{key}={value}"
-        if re.search(pattern, text, flags=re.MULTILINE):
-            text = re.sub(pattern, replacement, text, flags=re.MULTILINE)
-        else:
-            text = text.rstrip("\n") + f"\n{replacement}\n"
-        tmp = self.info_path.with_suffix(".tmp")
-        tmp.write_text(text)
-        tmp.rename(self.info_path)
+        for key, value in fields.items():
+            pattern = rf"^{key}=.*$"
+            replacement = f"{key}={value}"
+            if re.search(pattern, text, flags=re.MULTILINE):
+                text = re.sub(pattern, replacement, text, flags=re.MULTILINE)
+            else:
+                text = text.rstrip("\n") + f"\n{replacement}\n"
+        fd, tmp_str = tempfile.mkstemp(
+            dir=str(self.info_path.parent),
+            prefix=f".{self.info_path.name}.",
+        )
+        tmp = Path(tmp_str)
+        try:
+            with os.fdopen(fd, "w") as f:
+                f.write(text)
+            tmp.rename(self.info_path)
+        except BaseException:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+            raise
+
+    def _update_field(self, key: str, value: str | int) -> None:
+        """Update a single field in the info file (add if missing)."""
+        self._update_fields({key: value})
 
     def update_pid(self, pid: int) -> None:
         self.pid = pid
@@ -282,9 +300,9 @@ class VMInfo:
         self.last_deploy = epoch
         self.build_path = build_path
         self.kver = kver
-        self._update_field("LAST_DEPLOY", epoch)
-        self._update_field("BUILD_PATH", build_path)
-        self._update_field("KVER", kver)
+        self._update_fields(
+            {"LAST_DEPLOY": epoch, "BUILD_PATH": build_path, "KVER": kver}
+        )
 
     @staticmethod
     def load(name: str) -> VMInfo:

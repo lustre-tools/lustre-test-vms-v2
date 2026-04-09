@@ -384,13 +384,20 @@ def _export_to_ext4(
         # Shrink to minimum. The qcow2 overlay is resized to 8G at VM
         # creation, and rc.local runs resize2fs on first boot to expand
         # the ext4 to fill the overlay — no headroom needed here.
-        subprocess.run(["e2fsck", "-fy", tmpfile], capture_output=True)
+        r_fsck = subprocess.run(
+            ["e2fsck", "-fy", tmpfile], capture_output=True
+        )
+        # e2fsck exit codes: 0 = clean, 1 = errors corrected (both OK),
+        # 2+ = errors remain or operational failure.
+        if r_fsck.returncode > 1:
+            raise RuntimeError(
+                f"e2fsck failed (rc={r_fsck.returncode}): "
+                f"{r_fsck.stderr.decode(errors='replace').strip()}"
+            )
         _run(["resize2fs", "-M", tmpfile])
 
-        # Move to final location
-        if image_path.exists():
-            image_path.unlink()
-        shutil.move(tmpfile, str(image_path))
+        # Move to final location atomically
+        os.rename(tmpfile, str(image_path))
         tmpfile = None
 
         return image_path
@@ -440,8 +447,7 @@ def _get_package_manifest(
         packages = sorted(result.stdout.strip().splitlines())
         return packages
     except subprocess.CalledProcessError:
-        log.warning("Failed to extract package manifest")
-        return []
+        raise
 
 
 def image_status(

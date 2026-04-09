@@ -446,7 +446,7 @@ class TestPackageTarget:
 
         assert "5.99.1-custom" in tarball.name
 
-    def test_version_unknown_without_meta(self, tmp_path: Path) -> None:
+    def test_raises_without_meta(self, tmp_path: Path) -> None:
         output_dir = _setup_package_artifacts(tmp_path)
         dest_dir = tmp_path / "dest"
         dest_dir.mkdir()
@@ -460,14 +460,13 @@ class TestPackageTarget:
             return result
 
         with patch("subprocess.run", side_effect=mock_run):
-            tarball = package_target(
-                "my-target",
-                output_dir,
-                kernel="test-kernel",
-                dest_dir=dest_dir,
-            )
-
-        assert "unknown" in tarball.name
+            with pytest.raises(RuntimeError, match="meta.json not found"):
+                package_target(
+                    "my-target",
+                    output_dir,
+                    kernel="test-kernel",
+                    dest_dir=dest_dir,
+                )
 
     def test_manifest_written(self, tmp_path: Path) -> None:
         output_dir = _setup_package_artifacts(tmp_path, kernel_version="1.0")

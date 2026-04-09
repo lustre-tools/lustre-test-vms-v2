@@ -20,7 +20,10 @@ def _atomic_write(path: Path, content: str) -> None:
     try:
         with os.fdopen(fd, "w") as f:
             f.write(content)
-        os.chmod(tmp, path.stat().st_mode)
+        try:
+            os.chmod(tmp, path.stat().st_mode)
+        except FileNotFoundError:
+            pass  # target doesn't exist yet; keep mkstemp default mode
         os.rename(tmp, str(path))
     except BaseException:
         try:
@@ -98,42 +101,51 @@ def register_ssh_name(name: str, ip: str) -> None:
     hosts = Path("/etc/hosts")
     marker_line = f"{MARKER}:{name}"
 
-    # /etc/hosts
+    # /etc/hosts — always replace any existing entry for this name so the
+    # write is idempotent.  Reading the current content and writing a new
+    # version via _atomic_write is still a read-modify-write, but making it
+    # idempotent means a duplicate race at worst writes the same content
+    # twice; the final rename wins and /etc/hosts stays correct.
     hosts_text = hosts.read_text() if hosts.exists() else ""
-    if marker_line not in hosts_text:
-        with open(hosts, "a") as f:
-            f.write(f"{ip}\t{name} {marker_line}\n")
-        reload_dns()
+    new_entry = f"{ip}\t{name} {marker_line}\n"
+    # Strip any existing lines that reference this hostname marker.
+    filtered = [
+        ln
+        for ln in hosts_text.splitlines(keepends=True)
+        if marker_line not in ln
+    ]
+    _atomic_write(hosts, "".join(filtered) + new_entry)
+    reload_dns()
 
-    # ~/.ssh/config
+    # ~/.ssh/config — read existing content, strip any old block for this
+    # host, then append the (possibly updated) block atomically.
     real_user, ssh_dir = _real_user_ssh_dir()
     ssh_dir.mkdir(parents=True, exist_ok=True)
     ssh_cfg = ssh_dir / "config"
     cfg_text = ssh_cfg.read_text() if ssh_cfg.exists() else ""
 
     host_line = f"Host {name} {marker_line}"
+    block = (
+        f"\n{host_line}\n"
+        f"\tHostName {ip}\n"
+        f"\tUser root\n"
+        f"\tStrictHostKeyChecking no\n"
+        f"\tUserKnownHostsFile /dev/null\n"
+        f"\tLogLevel ERROR\n"
+        f"\tServerAliveInterval 5\n"
+        f"\tServerAliveCountMax 3\n"
+        f"\tConnectTimeout 5\n"
+    )
     if host_line not in cfg_text:
-        block = (
-            f"\n{host_line}\n"
-            f"\tHostName {ip}\n"
-            f"\tUser root\n"
-            f"\tStrictHostKeyChecking no\n"
-            f"\tUserKnownHostsFile /dev/null\n"
-            f"\tLogLevel ERROR\n"
-            f"\tServerAliveInterval 5\n"
-            f"\tServerAliveCountMax 3\n"
-            f"\tConnectTimeout 5\n"
-        )
-        with open(ssh_cfg, "a") as f:
-            f.write(block)
-        ssh_cfg.chmod(0o600)
-        import pwd
+        _atomic_write(ssh_cfg, cfg_text + block)
+    ssh_cfg.chmod(0o600)
+    import pwd
 
-        try:
-            pw = pwd.getpwnam(real_user)
-            os.chown(ssh_cfg, pw.pw_uid, pw.pw_gid)
-        except KeyError:
-            pass
+    try:
+        pw = pwd.getpwnam(real_user)
+        os.chown(ssh_cfg, pw.pw_uid, pw.pw_gid)
+    except KeyError:
+        pass
 
 
 def unregister_ssh_name(name: str) -> None:
@@ -192,10 +204,7 @@ def deploy_ssh_key(ip: str) -> None:
             timeout=10,
         )
     except subprocess.TimeoutExpired:
-        print(
-            f"warning: SSH key deployment timed out for {ip}",
-            file=__import__("sys").stderr,
-        )
+        die(f"SSH key deployment timed out for {ip}")
 
 
 def run_ssh(
@@ -227,18 +236,14 @@ def run_ssh(
     return run(ssh_cmd, timeout=timeout)
 
 
-def wait_for_ssh(ip: str, max_wait: int = 30) -> bool:
+def wait_for_ssh(ip: str, max_wait: int = 30) -> None:
     """Wait for SSH to become available on a VM."""
     for _ in range(max_wait):
         try:
             r = run_ssh(ip, "true", timeout=5)
             if r.returncode == 0:
-                return True
+                return
         except subprocess.TimeoutExpired:
             pass
         time.sleep(1)
-    print(
-        f"warning: SSH not ready after {max_wait}s",
-        file=__import__("sys").stderr,
-    )
-    return False
+    die(f"SSH not ready after {max_wait}s on {ip}")

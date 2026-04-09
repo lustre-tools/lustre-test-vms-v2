@@ -235,10 +235,16 @@ def cmd_cluster_create(args: argparse.Namespace) -> None:
         # Clean up any nodes that did start
         for node in node_specs:
             if node.name not in failed:
-                subprocess.run(
+                r = subprocess.run(
                     ["sudo", "ltvm", "vm", "destroy", node.name],
                     capture_output=True,
                 )
+                if r.returncode != 0:
+                    import sys
+                    print(
+                        f"warning: failed to destroy VM '{node.name}' during cleanup",
+                        file=sys.stderr,
+                    )
         die(f"vm create failed for: {', '.join(failed)}")
 
     # Load IPs now that all VMs are running

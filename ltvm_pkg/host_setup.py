@@ -275,7 +275,7 @@ def _qemu_installed_version(arch: str = "x86_64") -> str | None:
         r = _run_quiet([str(qemu), "--version"], check=False)
         m = re.search(r"version (\d+\.\d+\.\d+)", r.stdout)
         return m.group(1) if m else "unknown"
-    except Exception:
+    except OSError:
         return None
 
 
@@ -328,7 +328,7 @@ def _fetch_prebuilt_qemu(host: HostInfo) -> bool:
             check=False, quiet=True,
         )
         if r.returncode != 0:
-            log.info("Pre-built QEMU not available for this platform")
+            log.warning("Pre-built QEMU not available for this platform -- will build from source")
             return False
 
         _run(["tar", "xf", str(tmpdir / asset), "-C", str(tmpdir)], check=True)
@@ -347,8 +347,10 @@ def _fetch_prebuilt_qemu(host: HostInfo) -> bool:
         if qemu.exists():
             r = _run_quiet([str(qemu), "-machine", "help"], check=False)
             if "microvm" not in r.stdout:
-                log.warning("Pre-built QEMU lacks microvm -- will build from source")
-                return False
+                raise RuntimeError(
+                    "Downloaded pre-built QEMU lacks microvm machine type -- "
+                    "this should not happen; the GitHub release asset may be corrupt"
+                )
 
         log.info("Installed pre-built QEMU %s to %s", QEMU_VERSION, QEMU_PREFIX)
         return True
@@ -543,9 +545,9 @@ def install_qemu(host: HostInfo, force: bool = False) -> None:
     if qemu_arm.exists():
         r = _run_quiet([str(qemu_arm), "-machine", "help"])
         if "virt" not in r.stdout:
-            log.warning("QEMU aarch64 built but virt machine type not available")
+            raise RuntimeError("QEMU aarch64 built but virt machine type not available")
     else:
-        log.warning("qemu-system-aarch64 not found after build")
+        raise RuntimeError(f"qemu-system-aarch64 not found after build at {qemu_arm}")
 
     _install_qemu_path_profile()
 
@@ -639,8 +641,7 @@ def install_scripts(host: HostInfo) -> None:
     for script in ("deploy-lustre.sh",):
         src = PKG_DIR / script
         if not src.exists():
-            log.warning("%s not found at %s, skipping", script, src)
-            continue
+            raise RuntimeError(f"{script} not found at {src}")
         dst = VM_DIR / script
         shutil.copy2(str(src), str(dst))
         dst.chmod(0o755)
