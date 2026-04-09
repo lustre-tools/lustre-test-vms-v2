@@ -6,13 +6,14 @@ and error handling -- all without real build infra.
 
 from __future__ import annotations
 
+import argparse
 import importlib.machinery
 import importlib.util
 import json
 import sys
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -464,3 +465,160 @@ class TestVmSubcommands:
         p = ltvm.build_parser()
         with pytest.raises(SystemExit):
             p.parse_args(["vm", "list"])
+
+
+# ---------------------------------------------------------------------------
+# cmd_deploy: build gating
+# ---------------------------------------------------------------------------
+
+
+class TestCmdDeployBuildGating:
+    """cmd_deploy must abort when build-lustre fails or staging has no .ko files."""
+
+    def test_build_failure_returns_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When build-lustre returns non-zero, cmd_deploy returns EXIT_ERROR."""
+        from ltvm_pkg import cli as cli_mod
+        from ltvm_pkg.vm_state import VMInfo
+
+        sockets_dir = tmp_path / "sockets"
+        sockets_dir.mkdir()
+        build_path = tmp_path / "lustre-release"
+        build_path.mkdir()
+
+        with patch("ltvm_pkg.vm_state.SOCKETS", sockets_dir):
+            vm = VMInfo(
+                name="co1-deploy-test",
+                ip="192.168.100.50",
+                os_id="rocky9",
+            )
+            vm.save()
+
+            def _load_vm(name: str) -> VMInfo:
+                return VMInfo.load(name)
+
+            fail_result = MagicMock()
+            fail_result.returncode = 1
+
+            with (
+                patch("ltvm_pkg.cli._require_root", return_value=None),
+                patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
+                patch("ltvm_pkg.cli.TargetConfig") as mock_tc,
+                patch("subprocess.run", return_value=fail_result),
+            ):
+                mock_tc.return_value.os_family = "rhel"
+                mock_tc.return_value.resolve_kernel.return_value = "5.14-rhel9.7"
+
+                args = argparse.Namespace(
+                    vm="co1-deploy-test",
+                    build=str(build_path),
+                    mount=False,
+                    target=None,
+                    kernel=None,
+                    json=False,
+                )
+                rc = cli_mod.cmd_deploy(args)
+
+        assert rc == EXIT_ERROR
+
+    def test_build_success_no_ko_files_returns_error(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """When build succeeds but .staging/ has no .ko files, cmd_deploy errors."""
+        from ltvm_pkg import cli as cli_mod
+        from ltvm_pkg.vm_state import VMInfo
+
+        sockets_dir = tmp_path / "sockets"
+        sockets_dir.mkdir()
+        build_path = tmp_path / "lustre-release"
+        build_path.mkdir()
+
+        # Create .staging/ with NO .ko files
+        staging = build_path / ".staging"
+        staging.mkdir()
+        (staging / "some-file.txt").write_text("not a kernel module")
+
+        with patch("ltvm_pkg.vm_state.SOCKETS", sockets_dir):
+            vm = VMInfo(
+                name="co1-deploy-test",
+                ip="192.168.100.50",
+                os_id="rocky9",
+            )
+            vm.save()
+
+            ok_result = MagicMock()
+            ok_result.returncode = 0
+
+            with (
+                patch("ltvm_pkg.cli._require_root", return_value=None),
+                patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
+                patch("ltvm_pkg.cli.TargetConfig") as mock_tc,
+                patch("subprocess.run", return_value=ok_result),
+            ):
+                mock_tc.return_value.os_family = "rhel"
+                mock_tc.return_value.resolve_kernel.return_value = "5.14-rhel9.7"
+
+                args = argparse.Namespace(
+                    vm="co1-deploy-test",
+                    build=str(build_path),
+                    mount=False,
+                    target=None,
+                    kernel=None,
+                    json=False,
+                )
+                rc = cli_mod.cmd_deploy(args)
+
+        assert rc == EXIT_ERROR
+
+    def test_build_failure_does_not_reach_tar_ssh(
+        self, tmp_path: Path
+    ) -> None:
+        """When build fails, the tar/ssh deploy step is never executed."""
+        from ltvm_pkg import cli as cli_mod
+        from ltvm_pkg.vm_state import VMInfo
+
+        sockets_dir = tmp_path / "sockets"
+        sockets_dir.mkdir()
+        build_path = tmp_path / "lustre-release"
+        build_path.mkdir()
+
+        with patch("ltvm_pkg.vm_state.SOCKETS", sockets_dir):
+            vm = VMInfo(
+                name="co1-deploy-test",
+                ip="192.168.100.50",
+                os_id="rocky9",
+            )
+            vm.save()
+
+            fail_result = MagicMock()
+            fail_result.returncode = 1
+            subprocess_calls: list = []
+
+            def _track_run(cmd, *args, **kwargs):
+                subprocess_calls.append(cmd)
+                return fail_result
+
+            with (
+                patch("ltvm_pkg.cli._require_root", return_value=None),
+                patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
+                patch("ltvm_pkg.cli.TargetConfig") as mock_tc,
+                patch("subprocess.run", side_effect=_track_run),
+            ):
+                mock_tc.return_value.os_family = "rhel"
+                mock_tc.return_value.resolve_kernel.return_value = "5.14-rhel9.7"
+
+                args = argparse.Namespace(
+                    vm="co1-deploy-test",
+                    build=str(build_path),
+                    mount=False,
+                    target=None,
+                    kernel=None,
+                    json=False,
+                )
+                cli_mod.cmd_deploy(args)
+
+        # Only the build command should have been called (via subprocess.run).
+        # The tar/ssh deploy uses subprocess.run with ["bash", "-c", tar_cmd].
+        bash_calls = [c for c in subprocess_calls if isinstance(c, list) and c[:1] == ["bash"]]
+        assert bash_calls == [], "tar/ssh deploy must not be called after build failure"
