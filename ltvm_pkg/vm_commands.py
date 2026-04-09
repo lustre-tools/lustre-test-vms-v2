@@ -972,6 +972,11 @@ def cmd_restore(args: argparse.Namespace) -> None:
         die(f"restore failed: {r.stderr}")
     print(f"restored {vm.name} to '{args.tag}'")
 
+    print(f"restarting {vm.name}...")
+    launch_qemu(vm)
+    wait_for_ssh(vm.ip, SSH_TIMEOUT)
+    register_ssh_name(vm.name, vm.ip)
+
 
 # ── doctor ───────────────────────────────────────────────
 

@@ -54,10 +54,10 @@ Tests marked `(C)` are client-only targets only.
 | 5.6 | Sanity | No Lustre assertion failures | S | PASS | N/A | N/A | N/A |
 | 6.1 | Crash/kdump | NMI triggers panic + reboot | A | PASS | PASS | | |
 | 6.2 | Crash/kdump | vmcore present and > 1 MiB in `/var/crash/` | A | PASS | PASS | | |
-| 6.3 | Crash/kdump | `crash-tool` / `lustre_triage.py` parses vmcore | A | PASS | | | |
+| 6.3 | Crash/kdump | `crash-tool` / `lustre_triage.py` parses vmcore | A | PASS | PASS | | |
 | 6.4 | Crash/kdump | `kdump.service` active after reboot | A | PASS | PASS | | |
 | 6.5 | Crash/kdump | vmlinux build-id matches running kernel | A | PASS | PASS | | |
-| 6.6 | Crash/kdump | `crash-collect --trigger` (sysrq path) works | A | PASS | | | |
+| 6.6 | Crash/kdump | `crash-collect --trigger` (sysrq path) works | A | PASS | PASS | | |
 | 7.1 | Multi-node | Cluster create + deploy + mount | S | | N/A | N/A | N/A |
 | 7.2 | Multi-node | `lfs df` shows all OSTs across nodes | S | | N/A | N/A | N/A |
 | 7.3 | Multi-node | `local.sh` correct MGSNID/MDSDEV/OSTDEV per node | S | | N/A | N/A | N/A |
@@ -65,13 +65,13 @@ Tests marked `(C)` are client-only targets only.
 | 7.5 | Multi-node | `cluster status` correct per-node state | S | | N/A | N/A | N/A |
 | 7.6 | Multi-node | Sanity test 1 passes against multi-node cluster | S | | N/A | N/A | N/A |
 | 8.1 | Client Build | Build with `--disable-server` (no ldiskfs/obdfilter) | C | N/A | PASS | | |
-| 8.2 | Client Build | `lsmod` shows client modules, not server modules | C | N/A | | | |
-| 8.3 | Client Build | Client VM mounts a rocky9 server's Lustre over TCP | C | N/A | | | |
-| 8.4 | Client Build | `lfs df` on client shows server OSTs | C | N/A | | | |
-| 8.5 | Client Build | Write + read-back + checksum from client | C | N/A | | | |
+| 8.2 | Client Build | `lsmod` shows client modules, not server modules | C | N/A | PASS | | |
+| 8.3 | Client Build | Client VM mounts a rocky9 server's Lustre over TCP | C | N/A | PASS | | |
+| 8.4 | Client Build | `lfs df` on client shows server OSTs | C | N/A | PASS | | |
+| 8.5 | Client Build | Write + read-back + checksum from client | C | N/A | PASS | | |
 | 9.1 | Snapshot | Snapshot, corrupt state, restore, Lustre remounts | S | | N/A | N/A | N/A |
 | 9.2 | Snapshot | Restore to non-existent tag exits non-zero | A | | PASS | | |
-| 9.3 | Snapshot | Snapshot while running: VM stopped + restarted | A | | | | |
+| 9.3 | Snapshot | Snapshot while running: VM stopped + restarted | A | | PASS | | |
 | 10.1 | Correctness | Write file, read back, md5sum matches | S | | N/A | N/A | N/A |
 | 10.2 | Correctness | `lfs setstripe -c 2` uses 2 OSTs on 4-OST VM | S | | N/A | N/A | N/A |
 | 10.3 | Correctness | Extended attributes round-trip | S | | N/A | N/A | N/A |
@@ -88,7 +88,7 @@ Tests marked `(C)` are client-only targets only.
 Work one target at a time, completing all applicable tests before moving to the next.
 
 1. **rocky9** — server + client, all phases ✓ complete
-2. **rocky8** — server + client, all phases (needs `build-all rocky8`)
+2. **rocky8** — client-only, all applicable phases ✓ complete
 3. **rocky10** — client-only (phases 0–2, 6, 8–11; S=N/A)
 4. **ubuntu2404** — client-only, same as rocky10 (status: `experimental`)
 
