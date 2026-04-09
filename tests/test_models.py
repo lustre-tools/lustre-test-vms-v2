@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -131,3 +132,96 @@ class TestVMInfoLoadNotFound:
     def test_load_nonexistent(self, tmp_sockets: Path) -> None:
         with pytest.raises(VMNotFound):
             VMInfo.load("does-not-exist")
+
+
+class TestUpdateFieldsAtomic:
+    """_update_fields writes all fields in a single atomic operation."""
+
+    def test_all_fields_persisted(self, tmp_sockets: Path) -> None:
+        """Calling _update_fields with multiple keys persists every key."""
+        vm = VMInfo(name="atomic-test", ip="192.168.100.30")
+        vm.save()
+        vm._update_fields(
+            {"LAST_DEPLOY": 123, "BUILD_PATH": "/x", "KVER": "5.14"}
+        )
+        text = vm.info_path.read_text()
+        assert "LAST_DEPLOY=123" in text
+        assert "BUILD_PATH=/x" in text
+        assert "KVER=5.14" in text
+
+    def test_file_reloads_correctly(self, tmp_sockets: Path) -> None:
+        """Round-trip: fields written by _update_fields survive VMInfo.load."""
+        vm = VMInfo(name="roundtrip-test", ip="192.168.100.31")
+        vm.save()
+        vm._update_fields(
+            {"LAST_DEPLOY": 999, "BUILD_PATH": "/lustre", "KVER": "6.1"}
+        )
+        loaded = VMInfo.load("roundtrip-test")
+        assert loaded.last_deploy == 999
+        assert loaded.build_path == "/lustre"
+        assert loaded.kver == "6.1"
+
+    def test_no_partial_write_on_missing_file(self, tmp_sockets: Path) -> None:
+        """_update_fields on a VM with no info file is a no-op (no crash)."""
+        vm = VMInfo(name="no-file-test", ip="192.168.100.32")
+        # Do NOT call vm.save() -- info file does not exist
+        # Should return silently, not raise
+        vm._update_fields({"KVER": "5.14"})
+        assert not vm.info_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# vm_net: wait_for_ssh and deploy_ssh_key
+# ---------------------------------------------------------------------------
+
+
+class TestWaitForSsh:
+    """wait_for_ssh raises SystemExit (via die()) when SSH never becomes ready."""
+
+    def test_raises_on_timeout(self, tmp_sockets: Path) -> None:
+        """When run_ssh always fails, wait_for_ssh exhausts retries and dies."""
+        from ltvm_pkg.vm_net import wait_for_ssh
+
+        fail_result = MagicMock()
+        fail_result.returncode = 1
+
+        with patch(
+            "ltvm_pkg.vm_net.run_ssh", return_value=fail_result
+        ), patch("ltvm_pkg.vm_net.time.sleep"):
+            with pytest.raises(SystemExit):
+                wait_for_ssh("192.168.100.99", max_wait=3)
+
+    def test_returns_on_success(self, tmp_sockets: Path) -> None:
+        """wait_for_ssh returns normally when SSH succeeds on the first attempt."""
+        from ltvm_pkg.vm_net import wait_for_ssh
+
+        ok_result = MagicMock()
+        ok_result.returncode = 0
+
+        with patch("ltvm_pkg.vm_net.run_ssh", return_value=ok_result):
+            wait_for_ssh("192.168.100.50", max_wait=5)  # should not raise
+
+
+class TestDeploySshKey:
+    """deploy_ssh_key raises SystemExit (via die()) on SSH timeout."""
+
+    def test_raises_on_timeout_expired(self, tmp_path: Path) -> None:
+        """When run_ssh raises TimeoutExpired, deploy_ssh_key calls die()."""
+        from ltvm_pkg.vm_net import deploy_ssh_key
+
+        fake_ssh_dir = tmp_path / ".ssh"
+        fake_ssh_dir.mkdir()
+        (fake_ssh_dir / "id_rsa.pub").write_text("ssh-rsa AAAA fake-key user@host")
+
+        with (
+            patch(
+                "ltvm_pkg.vm_net._real_user_ssh_dir",
+                return_value=("testuser", fake_ssh_dir),
+            ),
+            patch(
+                "ltvm_pkg.vm_net.run_ssh",
+                side_effect=subprocess.TimeoutExpired(cmd="ssh", timeout=10),
+            ),
+        ):
+            with pytest.raises(SystemExit):
+                deploy_ssh_key("192.168.100.99")

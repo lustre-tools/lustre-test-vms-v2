@@ -982,7 +982,11 @@ def _configure_test_disks(
         f"{snippet}\\n"
         f"# --- END VM disk configuration ---\\n' >> {testdir}/cfg/local.sh"
     )
-    run_ssh(ip, script, timeout=30)
+    r = run_ssh(ip, script, timeout=30)
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"Failed to configure test disks in {testdir}/cfg/local.sh: {r.stderr.strip()}"
+        )
 
 
 def _lustre_mount_vm(name: str, os_family: str) -> int:
@@ -1341,6 +1345,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     # Stream staging tree into the VM, unpacking directly into /
     tar_cmd = (
+        f"set -o pipefail; "
         f"tar cf - -C {shlex.quote(str(staging))} . "
         f"| sshpass -p {shlex.quote(ROOT_PASSWORD)} ssh "
         f"-o StrictHostKeyChecking=no -o LogLevel=ERROR "
