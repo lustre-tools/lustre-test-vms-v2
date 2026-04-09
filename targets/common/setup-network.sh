@@ -29,3 +29,8 @@ cat > /etc/NetworkManager/conf.d/00-ltvm.conf <<'EOF'
 [main]
 no-auto-default=*
 EOF
+
+# Disable wait-online services — rc.local handles networking, so NM/systemd
+# never considers the interface "online" and these just block boot for minutes.
+systemctl disable NetworkManager-wait-online.service 2>/dev/null || true
+systemctl disable systemd-networkd-wait-online.service 2>/dev/null || true
