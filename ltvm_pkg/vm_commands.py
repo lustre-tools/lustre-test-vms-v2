@@ -33,9 +33,7 @@ from .vm_net import (
     _atomic_write,
     _real_user_ssh_dir,
     alloc_ip,
-    check_ip_collision,
     deploy_ssh_key,
-    ip_for_name,
     mac_for_name,
     register_ssh_name,
     reload_dns,
@@ -89,18 +87,60 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
     if r.returncode != 0:
         die(f"failed to copy vmlinuz into VM /boot: {r.stderr.strip()}")
 
-    print("generating kdump initramfs (dracut)...")
-    r = run_ssh(
-        vm.ip,
-        f"dracut --kver {kver} --force /boot/initramfs-{kver}.img {kver}",
-        timeout=120,
-    )
-    if r.returncode != 0:
-        die(f"dracut failed for kdump initramfs: {r.stderr.strip()}")
+    # Determine OS family from target config
+    os_family = "rhel"
+    if vm.os_id:
+        try:
+            from .target_config import TargetConfig
+            os_family = TargetConfig(vm.os_id).os_family
+        except Exception:
+            pass
 
-    r = run_ssh(vm.ip, "systemctl restart kdump", timeout=30)
-    if r.returncode != 0:
-        die(f"kdump service failed to start: {r.stderr.strip()}")
+    if os_family == "debian":
+        print("generating kdump initramfs (update-initramfs)...")
+        # Remove broken initramfs hooks (e.g. dhcpcd) that fail when the
+        # package isn't fully installed, then generate the initramfs.
+        # Ubuntu kdump-tools expects the crash initrd at /var/lib/kdump/.
+        # Copy the kernel config so kdump-tools can read it.
+        config_src = Path(vm.kernel).parent / "build-tree" / ".config"
+        if config_src.exists():
+            run(
+                [
+                    "sshpass", "-p", ROOT_PASSWORD, "scp",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null",
+                    "-o", "LogLevel=ERROR",
+                    str(config_src),
+                    f"root@{vm.ip}:/boot/config-{kver}",
+                ],
+                capture_output=True, timeout=10,
+            )
+        r = run_ssh(
+            vm.ip,
+            f"rm -f /usr/share/initramfs-tools/hooks/dhcpcd; "
+            f"update-initramfs -c -k {kver} 2>&1 | grep -v '^W:'; "
+            f"mkdir -p /var/lib/kdump; "
+            f"cp /boot/initrd.img-{kver} /var/lib/kdump/initrd.img-{kver}; "
+            f"ln -sf /boot/vmlinuz-{kver} /var/lib/kdump/vmlinuz",
+            timeout=120,
+        )
+        if r.returncode != 0:
+            die(f"update-initramfs failed: {r.stdout.strip()}")
+        r = run_ssh(vm.ip, "kdump-config load 2>/dev/null; systemctl restart kdump-tools", timeout=30)
+        if r.returncode != 0:
+            print("warning: kdump-tools restart failed (non-fatal)")
+    else:
+        print("generating kdump initramfs (dracut)...")
+        r = run_ssh(
+            vm.ip,
+            f"dracut --kver {kver} --force /boot/initramfs-{kver}.img {kver}",
+            timeout=120,
+        )
+        if r.returncode != 0:
+            die(f"dracut failed for kdump initramfs: {r.stderr.strip()}")
+        r = run_ssh(vm.ip, "systemctl restart kdump", timeout=30)
+        if r.returncode != 0:
+            die(f"kdump service failed to start: {r.stderr.strip()}")
 
 
 def _fmt_epoch(epoch: int) -> str:
@@ -297,7 +337,7 @@ def cmd_destroy(args: argparse.Namespace) -> None:
         overlay = OVERLAYS / f"{name}.qcow2"
         for f in [overlay] + list(OVERLAYS.glob(f"{name}-disk*.img")):
             f.unlink(missing_ok=True)
-        for ext in ("sock", "pid", "info", "log"):
+        for ext in ("qmp", "pid", "info", "log"):
             (SOCKETS / f"{name}.{ext}").unlink(missing_ok=True)
 
         unregister_ssh_name(name)
@@ -492,6 +532,8 @@ def cmd_ssh(args: argparse.Namespace) -> None:
         "-o",
         "StrictHostKeyChecking=no",
         "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
         "LogLevel=ERROR",
         f"root@{vm.ip}",
     ] + args.command
@@ -596,91 +638,6 @@ def cmd_list(args: argparse.Namespace) -> None:
             f"mem: {total_mem}M/{host_mem_mb}M"
         )
 
-
-def cmd_status(args: argparse.Namespace) -> None:
-    vm = VMInfo.load(args.name)
-    qemu_status = "running" if is_running(vm) else "dead"
-
-    ssh_status = "unreachable"
-    if qemu_status == "running":
-        try:
-            r = run_ssh(vm.ip, "true", timeout=5)
-            if r.returncode == 0:
-                ssh_status = "ok"
-        except subprocess.TimeoutExpired:
-            pass
-
-    lustre_status = "not loaded"
-    mount_status = "not mounted"
-    if ssh_status == "ok":
-        try:
-            r = run_ssh(
-                vm.ip,
-                "lsmod 2>/dev/null | grep -c lustre",
-                timeout=5,
-            )
-            if r.returncode == 0 and r.stdout.strip() not in ("", "0"):
-                lustre_status = "loaded"
-        except subprocess.TimeoutExpired:
-            pass
-        try:
-            r = run_ssh(
-                vm.ip,
-                "mount 2>/dev/null | grep -c lustre",
-                timeout=5,
-            )
-            if r.returncode == 0 and r.stdout.strip() not in ("", "0"):
-                mount_status = "mounted"
-        except subprocess.TimeoutExpired:
-            pass
-
-    if args.json:
-        print(
-            json.dumps(
-                {
-                    "name": vm.name,
-                    "ip": vm.ip,
-                    "qemu": qemu_status,
-                    "pid": vm.pid,
-                    "ssh": ssh_status,
-                    "lustre": lustre_status,
-                    "mount": mount_status,
-                    "vcpus": vm.vcpus,
-                    "mem": vm.mem,
-                    "mdt_disks": vm.mdt_disks,
-                    "ost_disks": vm.ost_disks,
-                    "created": vm.created,
-                    "last_boot": vm.last_boot,
-                    "last_deploy": vm.last_deploy,
-                    "build_path": vm.build_path,
-                    "kver": vm.kver,
-                    "base_image": vm.base_image,
-                    "os_id": vm.os_id,
-                }
-            )
-        )
-    else:
-        print(f"{'name:':<14} {vm.name}")
-        print(f"{'ip:':<14} {vm.ip}")
-        print(f"{'qemu:':<14} {qemu_status} (pid {vm.pid})")
-        print(f"{'ssh:':<14} {ssh_status}")
-        print(f"{'lustre:':<14} {lustre_status}")
-        print(f"{'mount:':<14} {mount_status}")
-        print(
-            f"{'resources:':<14} vcpus={vm.vcpus} mem={vm.mem} "
-            f"mdt={vm.mdt_disks} ost={vm.ost_disks}"
-        )
-        print(f"{'os:':<14} {vm.os_id or '-'} ({vm.base_image or '-'})")
-        print(f"{'created:':<14} {_fmt_epoch(vm.created)}")
-        print(
-            f"{'last boot:':<14} {_fmt_epoch(vm.last_boot)} ({_ago(vm.last_boot)})"
-        )
-        if vm.last_deploy:
-            print(
-                f"{'deployed:':<14} {_fmt_epoch(vm.last_deploy)} ({_ago(vm.last_deploy)})"
-            )
-            print(f"{'build:':<14} {vm.build_path}")
-            print(f"{'kver:':<14} {vm.kver}")
 
 
 def cmd_console_log(args: argparse.Namespace) -> None:
@@ -931,18 +888,18 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
         print(f"stopping {vm.name} for snapshot...")
         kill_qemu(vm)
 
-    r = run([QEMU_IMG, "snapshot", "-c", tag, str(vm.overlay_path)])
-    if r.returncode != 0:
-        die(f"snapshot failed: {r.stderr}")
-
-    print(f"snapshot '{tag}' created for {vm.name}")
-
-    if was_running:
-        print(f"restarting {vm.name}...")
-        launch_qemu(vm)
-        wait_for_ssh(vm.ip, SSH_TIMEOUT)
-        register_ssh_name(vm.name, vm.ip)
-        print(f"started {vm.name}")
+    try:
+        r = run([QEMU_IMG, "snapshot", "-c", tag, str(vm.overlay_path)])
+        if r.returncode != 0:
+            die(f"snapshot failed: {r.stderr}")
+        print(f"snapshot '{tag}' created for {vm.name}")
+    finally:
+        if was_running:
+            print(f"restarting {vm.name}...")
+            launch_qemu(vm)
+            wait_for_ssh(vm.ip, SSH_TIMEOUT)
+            register_ssh_name(vm.name, vm.ip)
+            print(f"started {vm.name}")
 
 
 def cmd_restore(args: argparse.Namespace) -> None:
@@ -961,7 +918,8 @@ def cmd_restore(args: argparse.Namespace) -> None:
     if args.tag not in (check.stdout or ""):
         die(f"restore failed: snapshot '{args.tag}' not found")
 
-    if is_running(vm):
+    was_running = is_running(vm)
+    if was_running:
         print(f"stopping {vm.name} before restore...")
         kill_qemu(vm)
 
@@ -972,10 +930,11 @@ def cmd_restore(args: argparse.Namespace) -> None:
         die(f"restore failed: {r.stderr}")
     print(f"restored {vm.name} to '{args.tag}'")
 
-    print(f"restarting {vm.name}...")
-    launch_qemu(vm)
-    wait_for_ssh(vm.ip, SSH_TIMEOUT)
-    register_ssh_name(vm.name, vm.ip)
+    if was_running:
+        print(f"restarting {vm.name}...")
+        launch_qemu(vm)
+        wait_for_ssh(vm.ip, SSH_TIMEOUT)
+        register_ssh_name(vm.name, vm.ip)
 
 
 # ── doctor ───────────────────────────────────────────────
@@ -985,7 +944,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
     issues = 0
 
     for name in VMInfo.all_names():
-        vm = VMInfo.load(name)
+        try:
+            vm = VMInfo.load(name)
+        except VMNotFound:
+            continue
         if vm.pid > 0 and not is_running(vm):
             print(f"stale PID: {name} (pid {vm.pid} dead)")
             issues += 1
@@ -1036,7 +998,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
             tap = m.group(1)
             found = False
             for name in VMInfo.all_names():
-                vm = VMInfo.load(name)
+                try:
+                    vm = VMInfo.load(name)
+                except VMNotFound:
+                    continue
                 if vm.tap == tap and is_running(vm):
                     found = True
                     break

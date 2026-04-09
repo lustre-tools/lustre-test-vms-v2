@@ -7,9 +7,6 @@ FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Copy package lists
-COPY ubuntu2404/packages-os.txt /tmp/packages-os.txt
-
 # Install Ubuntu packages.
 # The common package lists use RHEL names; translate to Ubuntu equivalents.
 RUN apt-get update \
@@ -20,7 +17,7 @@ RUN apt-get update \
         openssh-server openssh-client \
         vim-tiny vim \
         rsync e2fsprogs dmsetup \
-        kexec-tools crash kdump-tools \
+        kexec-tools crash kdump-tools initramfs-tools \
         python3 python3-pip python3-dev \
         jq lsof psmisc \
         openmpi-bin libopenmpi-dev \
