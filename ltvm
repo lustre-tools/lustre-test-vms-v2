@@ -341,8 +341,8 @@ def build_parser() -> argparse.ArgumentParser:
     _vm_create_args = argparse.ArgumentParser(add_help=False)
     _vm_create_args.add_argument("--vcpus", type=int, default=2,
                                  help="vCPU count (default: 2)")
-    _vm_create_args.add_argument("--mem", type=int, default=4096,
-                                 help="Memory in MB (default: 4096)")
+    _vm_create_args.add_argument("--mem", type=int, default=2048,
+                                 help="Memory in MB (default: 2048)")
     _vm_create_args.add_argument("--ip", default=None, help="Static IP address")
     _vm_create_args.add_argument("--rootfs", default=None,
                                  help="Explicit rootfs image path")
@@ -353,11 +353,11 @@ def build_parser() -> argparse.ArgumentParser:
     _vm_create_args.add_argument("--os", default=None,
                                  help="OS target (e.g. rocky9)")
     _vm_create_args.add_argument("--mdt-disks", dest="mdt_disks", type=int,
-                                 default=0, help="Number of MDT disks")
+                                 default=1, help="Number of MDT disks (default: 1)")
     _vm_create_args.add_argument("--ost-disks", dest="ost_disks", type=int,
-                                 default=0, help="Number of OST disks")
+                                 default=2, help="Number of OST disks (default: 2)")
     _vm_create_args.add_argument("--disk-size", dest="disk_size", default=None,
-                                 help="Disk size (e.g. 10G, 512M)")
+                                 help="Per-disk size with suffix M or G (e.g. 500M, 2G); default 500M, max 100G")
 
     sp = sub.add_parser(
         "create",
@@ -518,6 +518,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--mount", action="store_true", help="Mount filesystem after deploy"
     )
     sp.add_argument(
+        "--userspace-only", action="store_true",
+        help="Deploy only userspace (tools, tests) -- skip kernel modules and depmod",
+    )
+    sp.add_argument(
         "--target",
         default=None,
         help="Target OS for kernel modules (default: auto-detect from VM)",
@@ -549,7 +553,7 @@ def build_parser() -> argparse.ArgumentParser:
         choices=["create", "destroy", "deploy", "status", "exec", "list", "ssh"],
         help="Cluster action",
     )
-    sp.add_argument("cluster_args", nargs="*")
+    sp.add_argument("cluster_args", nargs=argparse.REMAINDER)
     sp.set_defaults(func=cmd_cluster)
 
     return p

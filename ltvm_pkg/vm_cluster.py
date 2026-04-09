@@ -153,6 +153,7 @@ def generate_local_sh(cluster: ClusterInfo, os_family: str = "rhel") -> str:
     lines.append('PDSH="pdsh -S -Rssh -w"')
     lines.append("LOAD_MODULES_REMOTE=true")
     lines.append("MOUNT=/mnt/lustre")
+    lines.append("MOUNT2=/mnt/lustre2")
     lines.append("")
 
     return "\n".join(lines) + "\n"
@@ -174,7 +175,6 @@ def _create_one_node(
     cmd = [
         "sudo",
         "ltvm",
-        "vm",
         "create",
         node.name,
         "--vcpus",
@@ -236,7 +236,7 @@ def cmd_cluster_create(args: argparse.Namespace) -> None:
         for node in node_specs:
             if node.name not in failed:
                 r = subprocess.run(
-                    ["sudo", "ltvm", "vm", "destroy", node.name],
+                    ["sudo", "ltvm", "destroy", node.name],
                     capture_output=True,
                 )
                 if r.returncode != 0:

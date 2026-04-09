@@ -244,6 +244,14 @@ make "${MAKE_ARCH_FLAGS[@]}" -j"$JOBS" $MAKE_TARGETS 2>&1
 
 echo "--- Build complete"
 
+# Save vmlinux and vmlinuz NOW, before 'make modules' which may re-link
+# vmlinux (e.g. via BTF/kallsyms passes) and change its build-id.
+# The vmlinuz (bzImage) is built from the vmlinux at this point; we must
+# save the matching vmlinux so crash/drgn analysis works correctly.
+echo "--- Installing outputs to /output/..."
+cp vmlinux /output/vmlinux
+cp "$KERNEL_IMAGE" /output/vmlinuz
+
 # Also build modules to populate build tree for Lustre
 echo "=== Building modules (j${JOBS}) ==="
 make "${MAKE_ARCH_FLAGS[@]}" -j"$JOBS" modules 2>&1
@@ -253,15 +261,6 @@ echo "--- Modules complete"
 # Prepare build tree for external module builds
 echo "--- Running modules_prepare..."
 make "${MAKE_ARCH_FLAGS[@]}" modules_prepare 2>&1 | tail -3
-
-# ------------------------------------------------------------------
-# 6. Install outputs
-# ------------------------------------------------------------------
-
-echo "--- Installing outputs to /output/..."
-
-cp vmlinux /output/vmlinux
-cp "$KERNEL_IMAGE" /output/vmlinuz
 
 # Kernel version
 KVER=$(make "${MAKE_ARCH_FLAGS[@]}" -s kernelrelease)

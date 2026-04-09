@@ -32,6 +32,7 @@ from .vm_state import (
 from .vm_net import (
     _atomic_write,
     _real_user_ssh_dir,
+    alloc_ip,
     check_ip_collision,
     deploy_ssh_key,
     ip_for_name,
@@ -123,6 +124,41 @@ def _ago(epoch: int) -> str:
     return f"{delta // 86400}d ago"
 
 
+_SIZE_SUFFIXES = {"M": 1 << 20, "G": 1 << 30}
+_MIN_DISK_BYTES = 64 * (1 << 20)    # 64 MiB
+_MAX_DISK_BYTES = 100 * (1 << 30)   # 100 GiB
+
+
+def _parse_disk_size(value: str | int | None) -> int:
+    """Parse a disk size string (e.g. '500M', '10G') to bytes.
+
+    Suffix must be M or G.  An already-parsed int is returned as-is.
+    Raises SystemExit on invalid input.
+    """
+    if not value:
+        return DISK_SIZE_BYTES
+    if isinstance(value, int):
+        return value if value >= _MIN_DISK_BYTES else DISK_SIZE_BYTES
+    s = value.strip().upper()
+    if not s:
+        return DISK_SIZE_BYTES
+    suffix = s[-1]
+    if suffix not in _SIZE_SUFFIXES:
+        die(f"Invalid --disk-size '{value}': suffix must be M or G (e.g. 500M, 2G)")
+    try:
+        n = int(s[:-1])
+    except ValueError:
+        die(f"Invalid --disk-size '{value}': not a number before the suffix")
+    if n <= 0:
+        die(f"Invalid --disk-size '{value}': size must be positive")
+    result = n * _SIZE_SUFFIXES[suffix]
+    if result < _MIN_DISK_BYTES:
+        die(f"--disk-size '{value}' is below the minimum of 64M")
+    if result > _MAX_DISK_BYTES:
+        die(f"--disk-size '{value}' exceeds the maximum of 100G")
+    return result
+
+
 # ── lifecycle ────────────────────────────────────────────
 
 
@@ -133,9 +169,6 @@ def cmd_create(args: argparse.Namespace) -> None:
 
     if (SOCKETS / f"{name}.info").exists():
         die(f"VM '{name}' already exists")
-
-    ip = args.ip or ip_for_name(name)
-    check_ip_collision(name, ip)
 
     tap = tap_for_name(name)
     mac = mac_for_name(name)
@@ -164,61 +197,66 @@ def cmd_create(args: argparse.Namespace) -> None:
     if kernel_meta.exists():
         kver = json.loads(kernel_meta.read_text()).get("kernel_version", "")
 
-    disk_size = getattr(args, "disk_size", None) or DISK_SIZE_BYTES
+    disk_size = _parse_disk_size(getattr(args, "disk_size", None))
 
-    vm = VMInfo(
-        name=name,
-        ip=ip,
-        tap=tap,
-        mac=mac,
-        vcpus=args.vcpus,
-        mem=args.mem,
-        mdt_disks=args.mdt_disks,
-        ost_disks=args.ost_disks,
-        disk_size=disk_size,
-        image=image,
-        kernel=kernel,
-        created=int(time.time()),
-        base_image=base_name,
-        os_id=os_id,
-        kver=kver,
-        arch=os_arts.arch,
-    )
+    # Allocate an IP under a file lock so that concurrent creates cannot
+    # race and claim the same address.  The lock is held until vm.save()
+    # commits the .info file, at which point the IP is visible to peers.
+    with alloc_ip(name, explicit_ip=getattr(args, "ip", None) or None) as ip:
+        vm = VMInfo(
+            name=name,
+            ip=ip,
+            tap=tap,
+            mac=mac,
+            vcpus=args.vcpus,
+            mem=args.mem,
+            mdt_disks=args.mdt_disks,
+            ost_disks=args.ost_disks,
+            disk_size=disk_size,
+            image=image,
+            kernel=kernel,
+            created=int(time.time()),
+            base_image=base_name,
+            os_id=os_id,
+            kver=kver,
+            arch=os_arts.arch,
+        )
 
-    # Create overlay
-    run(
-        [
-            QEMU_IMG,
-            "create",
-            "-f",
-            "qcow2",
-            "-b",
-            image,
-            "-F",
-            "raw",
-            str(vm.overlay_path),
-        ],
-        capture_output=True,
-        check=True,
-    )
-
-    # Grow the qcow2 virtual disk so the VM has room for Lustre modules,
-    # logs, etc.  The ext4 filesystem is resized on first boot (rc.local).
-    run(
-        [QEMU_IMG, "resize", str(vm.overlay_path), "8G"],
-        capture_output=True,
-        check=True,
-    )
-
-    # Create backing disks
-    total = vm.mdt_disks + vm.ost_disks
-    for n in range(1, total + 1):
+        # Create overlay
         run(
-            ["truncate", "-s", str(vm.disk_size), str(vm.disk_path(n))],
+            [
+                QEMU_IMG,
+                "create",
+                "-f",
+                "qcow2",
+                "-b",
+                image,
+                "-F",
+                "raw",
+                str(vm.overlay_path),
+            ],
+            capture_output=True,
             check=True,
         )
 
-    vm.save()
+        # Grow the qcow2 virtual disk so the VM has room for Lustre modules,
+        # logs, etc.  The ext4 filesystem is resized on first boot (rc.local).
+        run(
+            [QEMU_IMG, "resize", str(vm.overlay_path), "8G"],
+            capture_output=True,
+            check=True,
+        )
+
+        # Create backing disks
+        total = vm.mdt_disks + vm.ost_disks
+        for n in range(1, total + 1):
+            run(
+                ["truncate", "-s", str(vm.disk_size), str(vm.disk_path(n))],
+                check=True,
+            )
+
+        vm.save()
+    # Lock released; IP is now committed.
     launch_qemu(vm)
     wait_for_ssh(vm.ip, SSH_TIMEOUT)
     register_ssh_name(vm.name, vm.ip)
@@ -698,6 +736,19 @@ def cmd_nmi(args: argparse.Namespace) -> None:
     vm = VMInfo.load(args.name)
     if not is_running(vm):
         die(f"VM '{args.name}' not running", EXIT_UNREACHABLE)
+    # Ensure the injected NMI causes a panic.  QEMU microVM delivers
+    # inject-nmi as an ISA SERR NMI (PCI system error, reason 0xff), handled
+    # by mem_parity_error() which only panics when panic_on_unrecovered_nmi=1.
+    # Set all three NMI-panic knobs to cover every kernel version.
+    try:
+        run_ssh(
+            vm.ip,
+            "sysctl -w kernel.panic_on_unrecovered_nmi=1 "
+            "kernel.panic_on_io_nmi=1 kernel.unknown_nmi_panic=1",
+            timeout=10,
+        )
+    except Exception as e:
+        die(f"failed to set NMI panic sysctls on '{args.name}': {e}")
     try:
         _qmp_nmi(vm.socket_path)
     except Exception as e:
@@ -787,19 +838,49 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
     if r.returncode != 0:
         die("failed to copy vmcore")
 
+    # Make vmcore readable by non-root so triage tools (run as SUDO_USER)
+    # can open it.
+    local_vmcore.chmod(0o644)
+
     print(f"vmcore: {local_vmcore}")
 
-    # Use the VM's own kernel path when set (e.g. Ubuntu uses a
-    # target-specific vmlinux), otherwise fall back to the default.
-    vmlinux = Path(vm.kernel) if vm.kernel else KERNEL
+    # Resolve vmlinux: prefer the freshly-built vmlinux from output/, then
+    # look next to vm.kernel (which points to vmlinuz), then fall back to the
+    # static install-dir default.  We always prefer vmlinux over vmlinuz
+    # because drgn needs full debug symbols.
+    try:
+        arts = resolve_os_artifacts(vm.os_id or "rocky9", arch=vm.arch)
+        candidate = arts.kernel.parent / "vmlinux"
+        vmlinux = candidate if candidate.exists() else KERNEL
+    except Exception:
+        vmlinux = KERNEL
+    # If output/ has no vmlinux but vm.kernel points to a vmlinuz,
+    # look for vmlinux in the same directory.
+    if vmlinux == KERNEL and vm.kernel:
+        neighbor = Path(vm.kernel).parent / "vmlinux"
+        if neighbor.exists():
+            vmlinux = neighbor
 
     if args.mod_dir:
         print("running lustre triage...")
         triage_script = None
-        for candidate in (
-            Path.home() / "llm_code_and_review_tools/lustre-drgn-tools/lustre_triage.py",
-            Path(os.environ.get("LTVM_TRIAGE_SCRIPT", "")) if os.environ.get("LTVM_TRIAGE_SCRIPT") else None,
-        ):
+        # Build a list of candidate paths, including SUDO_USER's home so
+        # that "sudo ltvm crash-collect" finds tools installed under the
+        # invoking user's home directory.
+        _homes = [Path.home()]
+        sudo_user = os.environ.get("SUDO_USER")
+        if sudo_user:
+            import pwd
+            try:
+                _homes.append(Path(pwd.getpwnam(sudo_user).pw_dir))
+            except KeyError:
+                pass
+        candidates = [h / "llm_code_and_review_tools/lustre-drgn-tools/lustre_triage.py"
+                      for h in _homes]
+        env_script = os.environ.get("LTVM_TRIAGE_SCRIPT")
+        if env_script:
+            candidates.append(Path(env_script))
+        for candidate in candidates:
             if candidate and candidate.exists():
                 triage_script = candidate
                 break
@@ -807,9 +888,13 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
             print("triage script not found (set LTVM_TRIAGE_SCRIPT or install llm_code_and_review_tools)")
             print(f"vmcore dir: {local_dir}")
             return
+        # Run triage as SUDO_USER so user-installed packages (drgn) are
+        # on the Python path.  Fall back to plain python3 if not sudo.
+        python_cmd = ["python3"]
+        if sudo_user:
+            python_cmd = ["sudo", "-u", sudo_user, "python3"]
         run(
-            [
-                "python3",
+            python_cmd + [
                 str(triage_script),
                 "--vmcore",
                 str(local_vmcore),
@@ -870,6 +955,11 @@ def cmd_restore(args: argparse.Namespace) -> None:
             capture_output=False,
         )
         return
+
+    # Verify the tag exists before stopping the VM.
+    check = run([QEMU_IMG, "snapshot", "-l", "-U", str(vm.overlay_path)])
+    if args.tag not in (check.stdout or ""):
+        die(f"restore failed: snapshot '{args.tag}' not found")
 
     if is_running(vm):
         print(f"stopping {vm.name} before restore...")

@@ -105,6 +105,7 @@ def build_lustre(
     build_tree: str | Path,
     *,
     container_tag: str | None = None,
+    target: str = "rocky9",
     enable_server: bool = True,
     extra_configure: list[str] | None = None,
     jobs: int | None = None,
@@ -170,6 +171,7 @@ def build_lustre(
         jobs,
         force,
         arch=arch,
+        target=target,
     )
 
 
@@ -183,6 +185,7 @@ def _build_in_container(
     jobs: int,
     force: bool,
     arch: str = "x86_64",
+    target: str = "rocky9",
 ) -> BuildResult:
     """Build Lustre inside the build container.
 
@@ -301,8 +304,9 @@ fi""")
     script_parts.append(f"make{make_cross} -j{jobs}")
     # Create a staging tree so deploy-lustre.sh can rsync the
     # installed layout directly instead of tracking individual files.
-    script_parts.append("rm -rf /lustre/.staging")
-    script_parts.append(f"make{make_cross} install DESTDIR=/lustre/.staging -j{jobs}")
+    staging_dir = f".staging-{target}"
+    script_parts.append(f"rm -rf /lustre/{staging_dir}")
+    script_parts.append(f"make{make_cross} install DESTDIR=/lustre/{staging_dir} -j{jobs}")
     script = "\n".join(script_parts)
 
     # Use a persistent ccache volume so incremental container
@@ -323,6 +327,12 @@ fi""")
         "-c",
         script,
     ]
+
+    # Drop to SUDO_USER when running as root so that files created in the
+    # bind-mounted source tree are owned by the real user, not root.
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user and os.getuid() == 0:
+        cmd = ["sudo", "-u", sudo_user] + cmd
 
     print(f"--- Building in container (j{jobs})...")
     r = subprocess.run(cmd)

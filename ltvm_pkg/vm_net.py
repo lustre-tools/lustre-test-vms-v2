@@ -2,16 +2,32 @@
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import os
 import signal
 import subprocess
 import tempfile
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
-from .vm_state import MARKER, ROOT_PASSWORD, SUBNET, VMInfo, VMNotFound
+from .vm_state import MARKER, ROOT_PASSWORD, SUBNET, VM_DIR, VMInfo, VMNotFound
 from .qemu_run import die, run
+
+_IP_LOCK_PATH = VM_DIR / ".ip-alloc.lock"
+
+
+@contextmanager
+def _ip_alloc_lock():
+    """Exclusive file lock serialising IP allocation across concurrent creates."""
+    _IP_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
+    with open(_IP_LOCK_PATH, "w") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(fh, fcntl.LOCK_UN)
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -62,6 +78,48 @@ def check_ip_collision(name: str, ip: str) -> None:
                 die(f"IP {ip} already used by VM '{other_name}'")
         except VMNotFound:
             pass
+
+
+def _used_ips(exclude_name: str) -> set[str]:
+    used = set()
+    for n in VMInfo.all_names():
+        if n == exclude_name:
+            continue
+        try:
+            used.add(VMInfo.load(n).ip)
+        except VMNotFound:
+            pass
+    return used
+
+
+@contextmanager
+def alloc_ip(name: str, explicit_ip: str | None = None):
+    """Context manager that allocates a unique IP for *name* under an exclusive
+    lock held until the ``with`` block exits (i.e. until VMInfo.save() returns).
+
+    Usage::
+
+        with alloc_ip(name) as ip:
+            vm = VMInfo(..., ip=ip, ...)
+            vm.save()   # lock released after this block
+    """
+    with _ip_alloc_lock():
+        if explicit_ip:
+            used = _used_ips(name)
+            if explicit_ip in used:
+                die(f"IP {explicit_ip} already used by another VM")
+            yield explicit_ip
+            return
+
+        base_octet = (int(hashlib.md5(name.encode()).hexdigest()[:4], 16) % 244) + 10
+        used = _used_ips(name)
+        for delta in range(244):
+            octet = ((base_octet - 10 + delta) % 244) + 10
+            ip = f"{SUBNET}.{octet}"
+            if ip not in used:
+                yield ip
+                return
+        die(f"No free IP addresses available in {SUBNET}.0/24")
 
 
 def reload_dns() -> None:

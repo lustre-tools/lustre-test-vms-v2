@@ -48,6 +48,11 @@ Host *
 SSHCFG
 chmod 600 /root/.ssh/config
 
-# runas user (uid=500, gid=500) -- needed by Lustre test framework
+# Users required by the Lustre test framework
 groupadd -g 500 runas 2>/dev/null || true
 useradd -u 500 -g 500 -m -s /bin/bash runas 2>/dev/null || true
+useradd -m -s /bin/bash sanityusr  2>/dev/null || true
+useradd -m -s /bin/bash sanityusr1 2>/dev/null || true
+useradd -m -s /bin/bash quota_usr  2>/dev/null || true
+useradd -m -s /bin/bash quota_2usr 2>/dev/null || true
+useradd -m -s /bin/bash mpiuser    2>/dev/null || true

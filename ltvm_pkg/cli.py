@@ -318,6 +318,7 @@ def cmd_build_all(args: argparse.Namespace) -> int:
                 lustre_tree,
                 build_tree,
                 container_tag=container_tag,
+                target=args.target,
                 enable_server=tc.server,
                 force=args.force,
                 arch=tc.arch,
@@ -484,6 +485,7 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
             lustre_tree,
             build_tree,
             container_tag=container_tag,
+            target=args.target,
             enable_server=enable_server,
             extra_configure=extra,
             jobs=jobs,
@@ -1000,6 +1002,17 @@ def _lustre_mount_vm(name: str, os_family: str) -> int:
         return EXIT_NOT_FOUND
     libdir = "/usr/lib/lustre" if os_family == "debian" else "/usr/lib64/lustre"
     try:
+        # Clean up any existing Lustre state before formatting.  llmount.sh
+        # runs its own stopall internally, but does not call dmsetup remove_all
+        # afterward, so mke2fs refuses to reformat backing devices that are
+        # still "in use" by leftover dm targets on re-deploy.
+        # Run cleanup + module unload + dm removal before llmount.sh takes over.
+        run_ssh(
+            vm.ip,
+            f"cd {libdir}/tests && LUSTRE={libdir} bash llmountcleanup.sh 2>/dev/null; "
+            "lustre_rmmod 2>/dev/null; dmsetup remove_all 2>/dev/null; true",
+            timeout=60,
+        )
         r = run_ssh(
             vm.ip,
             f"cd {libdir}/tests && LUSTRE={libdir} bash llmount.sh",
@@ -1268,12 +1281,14 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if not build_path.is_dir():
         return _error(f"Build path not found: {build_path}", use_json)
 
-    # Auto-build Lustre unless .staging/ is already fresh.
-    # Fresh = .staging/ exists AND no source file is newer than the
+    userspace_only = getattr(args, "userspace_only", False)
+
+    # Auto-build Lustre unless .staging-<target>/ is already fresh.
+    # Fresh = staging dir exists AND no source file is newer than the
     # staging directory itself.  We use an exclude list (build artifacts,
     # generated files, VCS dirs) rather than an include list so that new
     # source languages (*.rs, *.py, etc.) are caught automatically.
-    staging = build_path / ".staging"
+    staging = build_path / f".staging-{target}"
 
     def _staging_is_fresh(staging: Path, src: Path) -> bool:
         if not staging.is_dir():
@@ -1287,6 +1302,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 "find", str(src),
                 # prune entire directories first (fast)
                 "-path", str(staging), "-prune", "-o",
+                "-path", "*/.staging-*", "-prune", "-o",
+                "-path", "*/.staging", "-prune", "-o",
                 "-path", "*/.git", "-prune", "-o",
                 "-path", "*/autom4te.cache", "-prune", "-o",
                 "-path", "*/_lpb", "-prune", "-o",
@@ -1315,41 +1332,55 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         )
         return r.stdout.strip() == ""  # no newer source files found
 
-    staging_fresh = _staging_is_fresh(staging, build_path)
-
-    if staging_fresh:
-        if not use_json:
-            print(f"  .staging/ is up to date, skipping build")
-    else:
-        build_cmd = ["ltvm", "build-lustre", target, "--lustre-tree", str(build_path)]
-        sudo_user = os.environ.get("SUDO_USER")
-        if sudo_user:
-            build_cmd = ["sudo", "-u", sudo_user] + build_cmd
-        r = subprocess.run(build_cmd, capture_output=False)
-        if r.returncode != 0:
-            return _error(f"Lustre build failed (rc={r.returncode})", use_json)
-
-        # Verify staging was actually (re)created by the build we just ran.
-        # A pre-existing stale .staging/ would pass the is_dir() check below.
-        if not staging.is_dir() or not any(staging.rglob("*.ko")):
+    if userspace_only:
+        # Userspace-only deploy: just need staging to exist; skip build and
+        # kernel module checks entirely.
+        if not staging.is_dir():
             return _error(
-                f"Lustre build succeeded but no .staging/ with modules found in {build_path}",
+                f"No .staging-{target}/ in {build_path} -- run: ltvm build-lustre {target}",
+                use_json,
+            )
+        if not use_json:
+            print(f"  Userspace-only deploy (skipping kernel modules)")
+    else:
+        staging_fresh = _staging_is_fresh(staging, build_path)
+
+        if staging_fresh:
+            if not use_json:
+                print(f"  .staging/ is up to date, skipping build")
+        else:
+            build_cmd = ["ltvm", "build-lustre", target, "--lustre-tree", str(build_path)]
+            sudo_user = os.environ.get("SUDO_USER")
+            if sudo_user:
+                build_cmd = ["sudo", "-u", sudo_user] + build_cmd
+            r = subprocess.run(build_cmd, capture_output=False)
+            if r.returncode != 0:
+                return _error(f"Lustre build failed (rc={r.returncode})", use_json)
+
+            # Verify staging was actually (re)created by the build we just ran.
+            # A pre-existing stale .staging/ would pass the is_dir() check below.
+            if not staging.is_dir() or not any(staging.rglob("*.ko")):
+                return _error(
+                    f"Lustre build succeeded but no .staging-{target}/ with modules found in {build_path}",
+                    use_json,
+                )
+
+        if not staging.is_dir():
+            return _error(
+                f"No .staging-{target}/ in {build_path} -- run: ltvm build-lustre {target}",
                 use_json,
             )
 
-    if not staging.is_dir():
-        return _error(
-            f"No .staging/ in {build_path} -- run: ltvm build-lustre {target}",
-            use_json,
-        )
-
-    # Stream staging tree into the VM, unpacking directly into /
+    # Stream staging tree into the VM, unpacking directly into /.
+    # --userspace-only: exclude lib/modules/ so kernel modules already in
+    # the VM are not overwritten (and depmod is skipped below).
+    exclude_modules = "--exclude=./lib/modules" if userspace_only else ""
     tar_cmd = (
         f"set -o pipefail; "
-        f"tar cf - -C {shlex.quote(str(staging))} . "
+        f"tar cf - -C {shlex.quote(str(staging))} {exclude_modules} . "
         f"| sshpass -p {shlex.quote(ROOT_PASSWORD)} ssh "
         f"-o StrictHostKeyChecking=no -o LogLevel=ERROR "
-        f"root@{shlex.quote(vm.ip)} 'tar xf - -C / --keep-directory-symlink'"
+        f"root@{shlex.quote(vm.ip)} 'tar xf - -C / --keep-directory-symlink --no-same-owner'"
     )
     r = subprocess.run(
         ["bash", "-c", tar_cmd], capture_output=True, text=True, timeout=120
@@ -1358,15 +1389,18 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         output = (r.stdout or "") + (r.stderr or "")
         return _error(f"Deploy failed: {output.strip()}", use_json)
 
-    # depmod + ldconfig to pick up new modules and libraries
+    # depmod + ldconfig to pick up new modules and libraries.
+    # Userspace-only: skip depmod since kernel modules weren't changed.
+    post_deploy_cmd = "ldconfig" if userspace_only else "depmod -a && ldconfig"
     try:
-        r = run_ssh(vm.ip, "depmod -a && ldconfig", timeout=60)
+        r = run_ssh(vm.ip, post_deploy_cmd, timeout=60)
         if r.returncode != 0:
             return _error(
-                f"depmod/ldconfig failed (rc={r.returncode}): {r.stderr}", use_json
+                f"post-deploy ({post_deploy_cmd}) failed (rc={r.returncode}): {r.stderr}",
+                use_json,
             )
     except Exception as e:
-        return _error(f"depmod/ldconfig failed: {e}", use_json)
+        return _error(f"post-deploy ({post_deploy_cmd}) failed: {e}", use_json)
 
     # Configure test framework's local.sh with VM disk topology
     if vm.mdt_disks or vm.ost_disks:
@@ -1374,6 +1408,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             vm.ip, vm.mdt_disks, vm.ost_disks, vm.disk_size,
             os_family=os_family,
         )
+
+    # Record successful deploy
+    import time as _time
+    kver = vm.kver  # already set on boot; keep existing value
+    vm.update_deploy(int(_time.time()), str(build_path), kver)
 
     if not use_json:
         print(f"  Deployed Lustre to {args.vm}")

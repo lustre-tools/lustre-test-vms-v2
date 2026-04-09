@@ -63,8 +63,9 @@ def launch_qemu(vm: VMInfo) -> None:
         f"fc_name={vm.name}"
     )
 
-    # Recreate TAP
+    # Recreate TAP and flush any stale ARP entry for this IP.
     run(["ip", "link", "del", vm.tap], capture_output=True)
+    run(["ip", "neigh", "flush", vm.ip, "dev", BRIDGE], capture_output=True)
     run(
         ["ip", "tuntap", "add", "dev", vm.tap, "mode", "tap"],
         check=True,
@@ -186,3 +187,6 @@ def kill_qemu(vm: VMInfo) -> None:
                 except OSError:
                     pass
     run(["ip", "link", "del", vm.tap], capture_output=True)
+    # Flush stale ARP entry so the bridge doesn't poison new VMs or
+    # re-creations of this VM that may get a different MAC.
+    run(["ip", "neigh", "flush", vm.ip, "dev", BRIDGE], capture_output=True)

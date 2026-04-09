@@ -1,4 +1,0 @@
-# packages-os.txt -- debian-specific packages
-# Add distro-specific packages here
-
-# TODO: Add debian-specific packages
