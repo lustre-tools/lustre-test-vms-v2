@@ -71,7 +71,7 @@ def tmp_targets(tmp_path: Path) -> Path:
     rocky9 = tmp_path / "targets" / "rocky9"
     rocky9.mkdir(parents=True)
 
-    # Use the real Dockerfiles as the reference for add-target tests.
+    # Populate rocky9 with real Dockerfiles for tests that read them.
     # Fall back to stubs if the real files aren't present (e.g. CI).
     _real_targets = Path(__file__).parent.parent / "targets"
     for df in ("container.Dockerfile", "image.Dockerfile"):

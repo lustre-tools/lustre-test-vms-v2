@@ -21,15 +21,12 @@ sys.path.insert(0, str(Path(__file__).parent))
 from ltvm_pkg.cli import (
     EXIT_ERROR,
     _error,
-    cmd_add_target,  # noqa: F401 (used via set_defaults)
     cmd_build_all,
     cmd_build_container,
     cmd_build_image,
     cmd_build_kernel,
     cmd_build_lustre,
     cmd_cluster,
-    cmd_cp_from,
-    cmd_cp_to,
     cmd_crash_collect,
     cmd_create,
     cmd_deploy,
@@ -40,19 +37,15 @@ from ltvm_pkg.cli import (
     cmd_exec,
     cmd_fetch,
     cmd_list,
-    cmd_log,
-    cmd_lustre_log,
+    cmd_nmi,
+    cmd_console_log,
     cmd_package,
     cmd_publish,
     cmd_restore,
     cmd_setup,
     cmd_shell,
     cmd_snapshot,
-    cmd_start_all,
     cmd_status,
-    cmd_stop_all,
-    cmd_update,
-    cmd_vm_restart,
     cmd_vm_ssh,
     cmd_vm_start,
     cmd_vm_stop,
@@ -64,6 +57,35 @@ log = logging.getLogger("ltvm")
 # ------------------------------------------------------------------
 # Argument parsing
 # ------------------------------------------------------------------
+
+
+class _HideSupressedSubcommands(argparse.HelpFormatter):
+    """Hide subcommands registered with help=argparse.SUPPRESS."""
+
+    def _format_action(self, action: argparse.Action) -> str:
+        if action.help == argparse.SUPPRESS:
+            return ""
+        return super()._format_action(action)
+
+    def _metavar_formatter(self, action: argparse.Action, default_metavar: str):
+        # For subparser actions, strip suppressed choices from the metavar.
+        if hasattr(action, "_name_parser_map"):
+            visible = [
+                name
+                for name, sp in action._name_parser_map.items()
+                if sp.description != argparse.SUPPRESS
+                and getattr(sp, "_defaults", {}).get("func") is not None
+                # Filter aliases: only keep if it's the canonical name
+                and name not in getattr(action, "_aliases_map", {})
+            ]
+
+            def fmt(tuple_size: int):
+                if tuple_size != 1:
+                    return (tuple(visible),)
+                return ("{%s}" % ",".join(visible),)
+
+            return fmt
+        return super()._metavar_formatter(action, default_metavar)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -98,6 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="ltvm",
         description="Lustre test VM infrastructure CLI",
         parents=[common],
+        formatter_class=_HideSupressedSubcommands,
     )
 
     sub = p.add_subparsers(dest="command")
@@ -139,35 +162,6 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bridge subnet (default: 192.168.100)",
     )
     sp.set_defaults(func=cmd_setup)
-
-    # -- add-target --
-    sp = sub.add_parser(
-        "add-target",
-        parents=[common],
-        help="Scaffold a new target (directory, Dockerfiles, YAML entry)",
-    )
-    sp.add_argument("name", help="Target name (e.g. rocky8, ubuntu2404)")
-    sp.add_argument(
-        "--image",
-        required=True,
-        help="Container base image (e.g. rockylinux:8.10, ubuntu:24.04)",
-    )
-    sp.add_argument(
-        "--kernel",
-        default=None,
-        help="Default Lustre kernel target name (e.g. 4.18-rhel8.10)",
-    )
-    sp.add_argument(
-        "--srpm-url",
-        default=None,
-        help="Base URL for kernel SRPM downloads",
-    )
-    sp.add_argument(
-        "--no-server",
-        action="store_true",
-        help="Mark target as client-only (no server builds)",
-    )
-    sp.set_defaults(func=cmd_add_target)
 
     # -- build-all --
     sp = sub.add_parser(
@@ -269,12 +263,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_build_lustre)
 
-    # -- package --
+    # -- package (hidden: maintainer use only) --
     sp = sub.add_parser(
         "package",
         parents=[common, kernel_arg],
-        help="Create a distributable tarball of target "
-        "artifacts (kernel + image + optional Lustre)",
+        help=argparse.SUPPRESS,
     )
     sp.add_argument("target")
     sp.add_argument(
@@ -304,11 +297,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Direct URL (skip GitHub lookup)")
     sp.set_defaults(func=cmd_fetch)
 
-    # -- publish --
+    # -- publish (hidden: maintainer use only) --
     sp = sub.add_parser(
         "publish",
         parents=[common, kernel_arg],
-        help="Upload a packaged tarball to a GitHub release",
+        help=argparse.SUPPRESS,
     )
     sp.add_argument("target")
     sp.add_argument(
@@ -323,9 +316,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_publish)
 
-    # -- shell --
+    # -- build-shell --
     sp = sub.add_parser(
-        "shell",
+        "build-shell",
         parents=[common],
         help="Enter build container with source mounted",
     )
@@ -338,27 +331,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_shell)
 
-    # -- status --
+    # -- build-status --
     sp = sub.add_parser(
-        "status", parents=[common], help="Show build status of all targets"
+        "build-status", parents=[common], help="Show build status of all targets"
     )
     sp.set_defaults(func=cmd_status)
-
-    # -- update --
-    sp = sub.add_parser(
-        "update", parents=[common], help="Rebuild stale artifacts for a target"
-    )
-    sp.add_argument(
-        "target",
-        nargs="?",
-        default=None,
-        help="Target to update (required unless --all)",
-    )
-    sp.add_argument("--all", action="store_true", help="Update all targets")
-    sp.add_argument(
-        "--lustre-tree", help="Lustre source tree (needed for kernel rebuilds)"
-    )
-    sp.set_defaults(func=cmd_update)
 
     # -- VM lifecycle: create --
     _vm_create_args = argparse.ArgumentParser(add_help=False)
@@ -426,30 +403,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("names", nargs="+", help="VM name(s)")
     sp.set_defaults(func=cmd_vm_stop)
 
-    # -- VM lifecycle: restart --
-    sp = sub.add_parser(
-        "restart",
-        parents=[common],
-        help="Restart one or more VMs",
-    )
-    sp.add_argument("names", nargs="+", help="VM name(s)")
-    sp.set_defaults(func=cmd_vm_restart)
-
-    # -- VM lifecycle: start-all --
-    sp = sub.add_parser(
-        "start-all",
-        parents=[common],
-        help="Start all stopped VMs",
-    )
-    sp.set_defaults(func=cmd_start_all)
-
-    # -- VM lifecycle: stop-all --
-    sp = sub.add_parser(
-        "stop-all",
-        parents=[common],
-        help="Stop all running VMs",
-    )
-    sp.set_defaults(func=cmd_stop_all)
 
     # -- VM info: list --
     sp = sub.add_parser(
@@ -470,38 +423,16 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Optional command to run")
     sp.set_defaults(func=cmd_vm_ssh)
 
-    # -- VM access: cp-to --
+    # -- VM observability: console-log --
     sp = sub.add_parser(
-        "cp-to",
-        parents=[common],
-        help="Copy files to a VM",
-    )
-    sp.add_argument("name", help="VM name")
-    sp.add_argument("src", help="Local source path")
-    sp.add_argument("dest", help="Remote destination path")
-    sp.set_defaults(func=cmd_cp_to)
-
-    # -- VM access: cp-from --
-    sp = sub.add_parser(
-        "cp-from",
-        parents=[common],
-        help="Copy files from a VM",
-    )
-    sp.add_argument("name", help="VM name")
-    sp.add_argument("src", help="Remote source path")
-    sp.add_argument("dest", help="Local destination path")
-    sp.set_defaults(func=cmd_cp_from)
-
-    # -- VM observability: log --
-    sp = sub.add_parser(
-        "log",
+        "console-log",
         parents=[common],
         help="Show QEMU console log for a VM",
     )
     sp.add_argument("name", help="VM name")
     sp.add_argument("--lines", type=int, default=50,
                     help="Number of lines to show (default: 50)")
-    sp.set_defaults(func=cmd_log)
+    sp.set_defaults(func=cmd_console_log)
 
     # -- VM observability: dmesg --
     sp = sub.add_parser(
@@ -513,15 +444,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--tail", type=int, default=100,
                     help="Number of lines to show (default: 100)")
     sp.set_defaults(func=cmd_dmesg)
-
-    # -- VM observability: lustre-log --
-    sp = sub.add_parser(
-        "lustre-log",
-        parents=[common],
-        help="Dump Lustre debug log from a VM",
-    )
-    sp.add_argument("name", help="VM name")
-    sp.set_defaults(func=cmd_lustre_log)
 
     # -- VM crash: crash-collect --
     sp = sub.add_parser(
@@ -539,6 +461,15 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("--mod-dir", dest="mod_dir", default=None,
                     help="Lustre build tree for triage (enables auto-triage)")
     sp.set_defaults(func=cmd_crash_collect)
+
+    # -- VM crash: nmi --
+    sp = sub.add_parser(
+        "nmi",
+        parents=[common],
+        help="Inject NMI into a VM (triggers kernel panic + kdump)",
+    )
+    sp.add_argument("name", help="VM name")
+    sp.set_defaults(func=cmd_nmi)
 
     # -- VM snapshot: snapshot --
     sp = sub.add_parser(
@@ -572,10 +503,11 @@ def build_parser() -> argparse.ArgumentParser:
                     help="Fix issues automatically")
     sp.set_defaults(func=cmd_doctor)
 
-    # -- deploy --
+    # -- deploy-lustre --
     sp = sub.add_parser(
-        "deploy",
+        "deploy-lustre",
         parents=[common, kernel_arg],
+        aliases=["deploy"],
         help="Deploy Lustre to a VM",
     )
     sp.add_argument("vm", help="VM name")
@@ -638,15 +570,6 @@ def main() -> int:
     if not args.command:
         parser.print_help()
         return EXIT_ERROR
-
-    # Validate update requires target or --all
-    if args.command == "update":
-        if not args.target and not args.all:
-            return _error(
-                "update requires a target or --all",
-                args.json,
-                hint="ltvm update <target> or ltvm update --all",
-            )
 
     result: int = args.func(args)
     return result

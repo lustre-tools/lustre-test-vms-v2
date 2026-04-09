@@ -921,6 +921,14 @@ def run_setup(
         link.symlink_to(ltvm_script)
         log.info("ltvm installed to %s", link)
 
+    # Install bash tab completion
+    comp_src = REPO_ROOT / "ltvm_pkg" / "ltvm-completion.bash"
+    comp_dir = Path("/etc/bash_completion.d")
+    if comp_src.exists() and comp_dir.is_dir():
+        comp_dest = comp_dir / "ltvm"
+        shutil.copy2(comp_src, comp_dest)
+        log.info("Tab completion installed to %s", comp_dest)
+
     if all_steps:
         log.info("")
         log.info("Install complete.")

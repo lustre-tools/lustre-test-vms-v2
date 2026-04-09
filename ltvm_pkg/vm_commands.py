@@ -59,7 +59,8 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
     if not kver:
         r = run_ssh(vm.ip, "uname -r", timeout=10)
         if r.returncode != 0:
-            die("could not determine kernel version for kdump boot seeding")
+            print("warning: could not determine kernel version; kdump boot seeding skipped")
+            return
         kver = r.stdout.strip()
 
     # Prefer the bzImage for kdump; fall back to vmlinux if that's all we have.
@@ -241,45 +242,11 @@ def cmd_start(args: argparse.Namespace) -> None:
         print(f"started {name}")
 
 
-def cmd_start_all(args: argparse.Namespace) -> None:
-    started = 0
-    for name in VMInfo.all_names():
-        vm = VMInfo.load(name)
-        if not is_running(vm):
-            launch_qemu(vm)
-            wait_for_ssh(vm.ip, SSH_TIMEOUT)
-            register_ssh_name(vm.name, vm.ip)
-            started += 1
-            print(f"started {name}")
-    print(f"started {started} VM(s)")
-
-
 def cmd_stop(args: argparse.Namespace) -> None:
     for name in args.names:
         vm = VMInfo.load(name)
         kill_qemu(vm)
         print(f"stopped {name}")
-
-
-def cmd_stop_all(args: argparse.Namespace) -> None:
-    stopped = 0
-    for name in VMInfo.all_names():
-        vm = VMInfo.load(name)
-        if is_running(vm):
-            kill_qemu(vm)
-            stopped += 1
-            print(f"stopped {name}")
-    print(f"stopped {stopped} VM(s)")
-
-
-def cmd_restart(args: argparse.Namespace) -> None:
-    for name in args.names:
-        vm = VMInfo.load(name)
-        kill_qemu(vm)
-        launch_qemu(vm)
-        wait_for_ssh(vm.ip, SSH_TIMEOUT)
-        register_ssh_name(vm.name, vm.ip)
-        print(f"restarted {name}")
 
 
 def cmd_destroy(args: argparse.Namespace) -> None:

@@ -74,24 +74,24 @@ class TestBuildParser:
 
     def test_json_flag_default_false(self) -> None:
         p = ltvm.build_parser()
-        args = p.parse_args(["status"])
+        args = p.parse_args(["build-status"])
         assert args.json is False
 
     def test_json_flag_true_when_passed(self) -> None:
         # --json is defined on each subparser (via parents=[common]),
         # so it must appear after the subcommand name.
         p = ltvm.build_parser()
-        args = p.parse_args(["status", "--json"])
+        args = p.parse_args(["build-status", "--json"])
         assert args.json is True
 
     def test_verbose_flag(self) -> None:
         p = ltvm.build_parser()
-        args = p.parse_args(["status", "-v"])
+        args = p.parse_args(["build-status", "-v"])
         assert args.verbose is True
 
     def test_status_subcommand_sets_func(self) -> None:
         p = ltvm.build_parser()
-        args = p.parse_args(["status"])
+        args = p.parse_args(["build-status"])
         assert args.func is cmd_status
 
     def test_build_all_target_positional(self) -> None:
@@ -132,7 +132,7 @@ class TestHelp:
     def test_subcommand_help_exits_zero(self) -> None:
         p = ltvm.build_parser()
         with pytest.raises(SystemExit) as exc_info:
-            p.parse_args(["status", "--help"])
+            p.parse_args(["build-status", "--help"])
         assert exc_info.value.code == 0
 
 
@@ -259,7 +259,7 @@ class TestCmdStatus:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         with patch("ltvm_pkg.cli.list_targets", return_value=[]):
-            rc = _run_main(["status"], capsys)
+            rc = _run_main(["build-status"], capsys)
         assert rc == EXIT_OK
         assert "No targets" in capsys.readouterr().out
 
@@ -268,7 +268,7 @@ class TestCmdStatus:
     ) -> None:
         # --json must follow the subcommand name
         with patch("ltvm_pkg.cli.list_targets", return_value=[]):
-            rc = _run_main(["status", "--json"], capsys)
+            rc = _run_main(["build-status", "--json"], capsys)
         assert rc == EXIT_OK
         payload = json.loads(capsys.readouterr().out)
         assert payload == {"targets": []}
@@ -298,7 +298,7 @@ class TestCmdStatus:
                 return_value={"built": False, "stale": True},
             ),
         ):
-            rc = _run_main(["status"], capsys)
+            rc = _run_main(["build-status"], capsys)
 
         assert rc == EXIT_OK
         out = capsys.readouterr().out
@@ -334,7 +334,7 @@ class TestCmdStatusJson:
                 return_value={"built": False, "stale": True},
             ),
         ):
-            rc = _run_main(["status", "--json"], capsys)
+            rc = _run_main(["build-status", "--json"], capsys)
 
         assert rc == EXIT_OK
         payload = json.loads(capsys.readouterr().out)
@@ -363,26 +363,6 @@ class TestArtifactLabel:
 # ---------------------------------------------------------------------------
 # update: missing target and --all
 # ---------------------------------------------------------------------------
-
-
-class TestCmdUpdate:
-    def test_update_no_target_no_all_returns_error(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        rc = _run_main(["update"], capsys)
-        assert rc == EXIT_ERROR
-        assert "update requires" in capsys.readouterr().err
-
-    def test_update_no_target_no_all_json_error(
-        self, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        # --json must follow the subcommand to be picked up by
-        # the subparser's copy of the flag.
-        rc = _run_main(["update", "--json"], capsys)
-        assert rc == EXIT_ERROR
-        err = capsys.readouterr().err
-        payload = json.loads(err)
-        assert "error" in payload
 
 
 # ---------------------------------------------------------------------------

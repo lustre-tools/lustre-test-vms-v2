@@ -17,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from ltvm_pkg import host_setup
-from ltvm_pkg.target_config import TargetConfig, add_target, list_targets
+from ltvm_pkg.target_config import TargetConfig, list_targets
 from ltvm_pkg.image_build import build_image, image_status
 from ltvm_pkg.kernel_build import build_kernel, kernel_status
 from ltvm_pkg.lustre_build import build_lustre
@@ -1186,33 +1186,6 @@ def cmd_vm_stop(args: argparse.Namespace) -> int:
     return _vm_call(_stop, _qemu_ns(names=args.names), use_json)
 
 
-def cmd_vm_restart(args: argparse.Namespace) -> int:
-    use_json = args.json
-    err = _require_root(use_json)
-    if err is not None:
-        return err
-    from ltvm_pkg.vm_commands import cmd_restart as _restart
-    return _vm_call(_restart, _qemu_ns(names=args.names), use_json)
-
-
-def cmd_start_all(args: argparse.Namespace) -> int:
-    use_json = args.json
-    err = _require_root(use_json)
-    if err is not None:
-        return err
-    from ltvm_pkg.vm_commands import cmd_start_all as _start_all
-    return _vm_call(_start_all, _qemu_ns(), use_json)
-
-
-def cmd_stop_all(args: argparse.Namespace) -> int:
-    use_json = args.json
-    err = _require_root(use_json)
-    if err is not None:
-        return err
-    from ltvm_pkg.vm_commands import cmd_stop_all as _stop_all
-    return _vm_call(_stop_all, _qemu_ns(), use_json)
-
-
 def cmd_list(args: argparse.Namespace) -> int:
     use_json = args.json
     from ltvm_pkg.vm_commands import cmd_list as _list
@@ -1228,30 +1201,12 @@ def cmd_vm_ssh(args: argparse.Namespace) -> int:
     return _vm_call(_ssh, _qemu_ns(name=args.name, command=args.command), use_json)
 
 
-def cmd_cp_to(args: argparse.Namespace) -> int:
+def cmd_console_log(args: argparse.Namespace) -> int:
     use_json = args.json
     err = _require_root(use_json)
     if err is not None:
         return err
-    from ltvm_pkg.vm_commands import cmd_cp_to as _cp_to
-    return _vm_call(_cp_to, _qemu_ns(name=args.name, src=args.src, dest=args.dest), use_json)
-
-
-def cmd_cp_from(args: argparse.Namespace) -> int:
-    use_json = args.json
-    err = _require_root(use_json)
-    if err is not None:
-        return err
-    from ltvm_pkg.vm_commands import cmd_cp_from as _cp_from
-    return _vm_call(_cp_from, _qemu_ns(name=args.name, src=args.src, dest=args.dest), use_json)
-
-
-def cmd_log(args: argparse.Namespace) -> int:
-    use_json = args.json
-    err = _require_root(use_json)
-    if err is not None:
-        return err
-    from ltvm_pkg.vm_commands import cmd_log as _log
+    from ltvm_pkg.vm_commands import cmd_console_log as _log
     return _vm_call(_log, _qemu_ns(name=args.name, lines=args.lines), use_json)
 
 
@@ -1262,15 +1217,6 @@ def cmd_dmesg(args: argparse.Namespace) -> int:
         return err
     from ltvm_pkg.vm_commands import cmd_dmesg as _dmesg
     return _vm_call(_dmesg, _qemu_ns(name=args.name, tail=args.tail), use_json)
-
-
-def cmd_lustre_log(args: argparse.Namespace) -> int:
-    use_json = args.json
-    err = _require_root(use_json)
-    if err is not None:
-        return err
-    from ltvm_pkg.vm_commands import cmd_lustre_log as _lustre_log
-    return _vm_call(_lustre_log, _qemu_ns(name=args.name), use_json)
 
 
 def cmd_crash_collect(args: argparse.Namespace) -> int:
@@ -1290,6 +1236,15 @@ def cmd_crash_collect(args: argparse.Namespace) -> int:
         ),
         use_json,
     )
+
+
+def cmd_nmi(args: argparse.Namespace) -> int:
+    use_json = args.json
+    err = _require_root(use_json)
+    if err is not None:
+        return err
+    from ltvm_pkg.vm_commands import cmd_nmi as _nmi
+    return _vm_call(_nmi, _qemu_ns(name=args.name), use_json)
 
 
 def cmd_snapshot(args: argparse.Namespace) -> int:
@@ -1681,48 +1636,3 @@ def cmd_setup(args: argparse.Namespace) -> int:
     return EXIT_OK
 
 
-# ------------------------------------------------------------------
-# Subcommand: add-target
-# ------------------------------------------------------------------
-
-
-def cmd_add_target(args: argparse.Namespace) -> int:
-    """Scaffold a new target: directory, Dockerfiles, YAML entry."""
-    use_json = args.json
-    name = args.name
-    image = args.image
-
-    kernel = getattr(args, "kernel", None)
-    srpm_url = getattr(args, "srpm_url", None)
-    server = None
-    if getattr(args, "no_server", False):
-        server = False
-
-    try:
-        result = add_target(
-            name,
-            image,
-            kernel=kernel,
-            srpm_url=srpm_url,
-            server=server,
-        )
-    except ValueError as e:
-        return _error(str(e), use_json)
-
-    if use_json:
-        _output(result, use_json)
-    else:
-        print(f"Created target {name!r}:")
-        print(f"  Directory: {result['target_dir']}")
-        for f in result["files_created"]:
-            print(f"  + {f}")
-        print()
-        print("Next steps:")
-        print(f"  1. Review and customize the Dockerfiles in targets/{name}/")
-        print("  2. Edit targets/targets.yaml to adjust settings")
-        if kernel:
-            print(f"  3. Run: ltvm build-all {name} --lustre-tree <path>")
-        else:
-            print(f"  3. Add a kernel entry, then: ltvm build-all {name}")
-
-    return EXIT_OK

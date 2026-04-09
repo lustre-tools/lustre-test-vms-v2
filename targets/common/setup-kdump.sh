@@ -10,6 +10,10 @@ set -euo pipefail
 
 mkdir -p /var/crash
 
+# Panic on unknown NMI so that an injected NMI triggers kdump.
+mkdir -p /etc/sysctl.d
+echo 'kernel.unknown_nmi_panic = 1' > /etc/sysctl.d/90-ltvm-nmi.conf
+
 if [[ -f /etc/os-release ]] && grep -qi 'debian\|ubuntu' /etc/os-release; then
 	# Debian/Ubuntu: kdump-tools
 	cat > /etc/default/kdump-tools <<'EOF'
