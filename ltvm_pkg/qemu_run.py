@@ -56,8 +56,9 @@ def launch_qemu(vm: VMInfo) -> None:
     # aarch64 virt uses PL011 UART (ttyAMA0); x86 uses 8250 (ttyS0)
     console = "ttyAMA0" if vm.arch == "aarch64" else "ttyS0"
 
+    crashkernel = "512M" if vm.mem >= 2048 else "256M"
     boot_args = (
-        f"console={console} reboot=k panic=1 crashkernel=512M "
+        f"console={console} reboot=k panic=1 crashkernel={crashkernel} "
         f"net.ifnames=0 biosdevname=0 "
         f"root=/dev/vda rw fc_ip={vm.ip} fc_gw={GATEWAY} "
         f"fc_name={vm.name}"
