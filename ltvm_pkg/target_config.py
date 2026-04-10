@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -32,6 +33,36 @@ _ARCH_TO_SRPM_CONFIG = {"x86_64": "x86_64", "aarch64": "aarch64"}
 def arch_srpm_config_name(arch: str) -> str:
     """Return the arch string used in SRPM kernel config filenames."""
     return _ARCH_TO_SRPM_CONFIG.get(arch, arch)
+
+
+_COPY_RE = re.compile(r"^\s*COPY\s+(\S+)", re.MULTILINE)
+
+
+def _dockerfile_referenced_files(dockerfile: Path) -> list[Path]:
+    """Return the files under TARGETS_DIR referenced by COPY lines in a
+    Dockerfile. Build context is TARGETS_DIR, so COPY sources like
+    'common/setup-ssh.sh' resolve relative to it.
+
+    Directories are walked recursively.  Files that don't exist are
+    silently skipped (they'd fail the build but shouldn't crash staleness).
+    """
+    if not dockerfile.exists():
+        return []
+    text = dockerfile.read_text()
+    result: list[Path] = []
+    for match in _COPY_RE.finditer(text):
+        src = match.group(1)
+        # Ignore --from=... (multi-stage) and absolute paths outside context
+        if src.startswith("--"):
+            continue
+        path = TARGETS_DIR / src
+        if path.is_file():
+            result.append(path)
+        elif path.is_dir():
+            for f in sorted(path.rglob("*")):
+                if f.is_file():
+                    result.append(f)
+    return sorted(set(result))
 
 
 def _load_registry() -> dict[str, Any]:
@@ -143,15 +174,10 @@ class TargetConfig:
         v = self._data.get("configure_args", [])
         return list(v)
 
-    @property
-    def root_password(self) -> str:
-        """Root password for VM SSH access."""
-        return str(self._data.get("root_password", "initial0"))
-
-    @property
-    def ssh_timeout(self) -> int:
-        """Seconds to wait for SSH after boot."""
-        return int(self._data.get("ssh_timeout", 30))
+    # ROOT_PASSWORD and SSH_TIMEOUT live in vm_state.py and are the
+    # single source of truth for these values at runtime.  The matching
+    # keys in targets.yaml (root_password, ssh_timeout) are no longer
+    # consumed by the runtime; targets.yaml documents the defaults.
 
     # ------------------------------------------------------------------
     # Kernel metadata
@@ -179,6 +205,20 @@ class TargetConfig:
     def kernel_config_overrides(self) -> dict[str, str]:
         """Kernel .config overrides from targets.yaml kernels.config."""
         return dict(self._kernels.get("config", {}))
+
+    def _short_kernel_name(self, name: str) -> str:
+        """Return the short kernel name (e.g. "5.14-rhel9.7") from either
+        a short or full ("5.14-rhel9.7-5.14.0-611.13.1.el9_7") form.
+
+        Matches against the declared short names in targets.yaml, so any
+        name already in short form passes through unchanged.
+        """
+        available = self._kernels.get("available", [])
+        for short in available:
+            if name == short or name.startswith(short + "-"):
+                return short
+        # Fallback: if no match, return as-is (new kernel or unknown form)
+        return name
 
     def resolve_kernel(self, kernel: str | None = None) -> str:
         """Resolve a kernel name (short or full) to the built dir name.
@@ -248,16 +288,22 @@ class TargetConfig:
             dockerfile = self.target_dir / "container.Dockerfile"
             if dockerfile.exists():
                 h.update(dockerfile.read_bytes())
-            h.update(self._hash_package_lists("dev").encode())
-            # Hash common/ files that get COPY'd into the container
-            common_dir = TARGETS_DIR / "common"
-            if common_dir.is_dir():
-                for f in sorted(common_dir.iterdir()):
+                # Only hash common/ files actually referenced by this
+                # Dockerfile's COPY lines -- otherwise unrelated changes
+                # (e.g. image-only setup scripts) invalidate the container.
+                for f in _dockerfile_referenced_files(dockerfile):
                     if f.is_file():
                         h.update(f.read_bytes())
+            h.update(self._hash_package_lists("dev").encode())
 
         elif artifact == "kernel":
-            h.update(self.resolve_kernel(kernel).encode())
+            # Always hash the short kernel name (e.g. "5.14-rhel9.7"), not
+            # the resolved full name ("5.14-rhel9.7-5.14.0-611.13.1.el9_7"),
+            # so the hash is stable across builds and callers that pass
+            # either form.
+            raw = kernel if kernel is not None else self.default_kernel
+            short_name = self._short_kernel_name(raw)
+            h.update(short_name.encode())
             for k, v in sorted(self.kernel_config_overrides.items()):
                 h.update(f"{k}={v}".encode())
             common_frag = TARGETS_DIR / "common" / "kernel-config.fragment"
@@ -268,16 +314,14 @@ class TargetConfig:
             dockerfile = self.target_dir / "image.Dockerfile"
             if dockerfile.exists():
                 h.update(dockerfile.read_bytes())
+                # Only hash common/ files actually referenced by this
+                # Dockerfile's COPY lines.
+                for f in _dockerfile_referenced_files(dockerfile):
+                    if f.is_file():
+                        h.update(f.read_bytes())
             h.update(self._hash_package_lists("base", "test", "debug").encode())
             if self.server:
                 h.update(self._hash_package_lists("server").encode())
-            # Hash all common/ files (scripts, rc.local, etc.) that
-            # get COPY'd into the image
-            common_dir = TARGETS_DIR / "common"
-            if common_dir.is_dir():
-                for f in sorted(common_dir.iterdir()):
-                    if f.is_file():
-                        h.update(f.read_bytes())
 
         return h.hexdigest()[:16]
 

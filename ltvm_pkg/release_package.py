@@ -56,7 +56,7 @@ def _resolve_kernel(output_dir: Path, kernel: str | None) -> tuple[str, Path]:
             f"Run 'ltvm build-kernel <target>' to build one."
         )
 
-    chosen = candidates[0]
+    chosen = candidates[-1]
     return chosen.name, chosen
 
 
@@ -121,7 +121,7 @@ def snapshot_lustre(
     """Copy the deployable subset of a built Lustre tree
     into output/<target>/kernels/<kernel>/lustre/.
 
-    Includes everything deploy-lustre.sh needs: .ko files,
+    Includes everything deploy needs: .ko files,
     libraries, binaries, test scripts, config.  Excludes
     .git, .o files, and kernel_patches (large, not needed
     for deploy).
@@ -157,7 +157,8 @@ def snapshot_lustre(
                 ["modinfo", "-F", "vermagic", str(sample)],
                 capture_output=True, text=True, check=False,
             )
-            actual_kver = r.stdout.split()[0] if r.returncode == 0 else ""
+            parts = r.stdout.split() if r.returncode == 0 else []
+            actual_kver = parts[0] if parts else ""
             if actual_kver and actual_kver != expected_kver:
                 raise ValueError(
                     f"Lustre modules built for {actual_kver} but target "
@@ -388,10 +389,14 @@ def fetch_target(
         size_mb = os.path.getsize(tmp_path) / (1024 * 1024)
         print(f"    Downloaded: {size_mb:.0f} MB")
 
-        # Extract -- auto-detects compression
+        # Extract -- auto-detects compression. --overwrite so a partial
+        # local tree can be replaced cleanly; --no-same-owner so files
+        # land owned by the running user instead of root from the tar.
         print(f"    Extracting to {output_base}/...")
         subprocess.run(
-            ["tar", "-xf", tmp_path, "-C", str(output_base)], check=True
+            ["tar", "-xf", tmp_path, "-C", str(output_base),
+             "--overwrite", "--no-same-owner"],
+            check=True,
         )
 
     finally:
