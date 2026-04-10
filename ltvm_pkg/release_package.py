@@ -381,9 +381,18 @@ def fetch_target(
         tmp_path = tmp.name
 
     try:
-        # Download with curl (shows progress)
+        # Download with curl (shows progress).  Timeouts bound the worst case:
+        #   --connect-timeout: fail fast if GitHub is unreachable
+        #   --max-time: overall ceiling; large tarballs on slow links still
+        #               need a generous value, so 10 minutes.
         r = subprocess.run(
-            ["curl", "-fSL", "--progress-bar", "-o", tmp_path, url], check=False
+            [
+                "curl", "-fSL", "--progress-bar",
+                "--connect-timeout", "15",
+                "--max-time", "600",
+                "-o", tmp_path, url,
+            ],
+            check=False,
         )
         if r.returncode != 0:
             raise RuntimeError(f"Download failed (rc={r.returncode}): {url}")
