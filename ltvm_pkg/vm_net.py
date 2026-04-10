@@ -277,7 +277,7 @@ def deploy_ssh_key(ip: str) -> None:
         return
     key_data = pubkey.read_text().strip().replace("'", "'\\''")
     try:
-        run_ssh(
+        r = run_ssh(
             ip,
             f"mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
             f"echo '{key_data}' >> ~/.ssh/authorized_keys && "
@@ -286,6 +286,12 @@ def deploy_ssh_key(ip: str) -> None:
         )
     except subprocess.TimeoutExpired:
         die(f"SSH key deployment timed out for {ip}")
+    # Check the rc instead of silently swallowing errors -- previously
+    # an authorized_keys write failure (full disk, RO remount, perms)
+    # left the VM looking provisioned but with no key.
+    if r.returncode != 0:
+        err = (r.stderr or r.stdout or "").strip()
+        die(f"SSH key deployment failed on {ip} (rc={r.returncode}): {err}")
 
 
 def run_ssh(

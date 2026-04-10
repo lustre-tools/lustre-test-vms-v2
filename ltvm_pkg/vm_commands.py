@@ -1163,11 +1163,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # Orphan data disks (overlay was removed but disks weren't, e.g.
     # crash between cmd_create's overlay create and disk truncate, or
     # the overlay was unlinked manually).
-    seen_disks: set[Path] = set()
     for disk in sorted(OVERLAYS.glob("*-disk*.img")):
         # Strip "-diskN.img" off the end to get the VM name
         stem = re.sub(r"-disk\d+$", "", disk.stem)
-        if not stem or disk in seen_disks:
+        if not stem:
             continue
         if (OVERLAYS / f"{stem}.qcow2").exists():
             continue

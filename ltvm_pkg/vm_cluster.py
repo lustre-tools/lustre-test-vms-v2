@@ -336,7 +336,8 @@ def _deploy_one_node(
 
     vm = VMInfo.load(node_name)
     target = vm.os_id or DEFAULT_TARGET
-    staging = _staging_path(target)
+    # Pass vm.arch so the staging dir matches what build-lustre wrote.
+    staging = _staging_path(target, arch=vm.arch or "x86_64")
     try:
         deploy_to_vm(vm, staging, os_family=os_family)
         return node_name, 0, "ok"
@@ -407,34 +408,46 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     if getattr(args, "server_only", False) and not getattr(args, "mount", False):
         die("--server-only requires --mount")
 
-    # Derive os_family and target+kernel from the first node's metadata
-    # (all nodes in a cluster share the same target).  We also pull the
-    # kernel name off the VM so build-lustre uses the right kernel
-    # tree -- not just the target's default kernel.
+    # Derive os_family and target+kernel+arch from the first node's
+    # metadata (all nodes in a cluster share the same target).  We also
+    # pull the kernel name and arch off the VM so build-lustre uses the
+    # right kernel tree and arch -- not just the target's defaults.
     os_family = "rhel"
     target = DEFAULT_TARGET
     kernel_name: str | None = None
+    arch: str = "x86_64"
     try:
         first_vm = VMInfo.load(nodes[0].name)
-        if first_vm.os_id:
-            from .target_config import TargetConfig
-            target = first_vm.os_id
-            os_family = TargetConfig(target).os_family
-        if first_vm.kernel:
-            # vm.kernel points at .../kernels/<name>/vmlinuz; extract <name>
-            kernel_name = Path(first_vm.kernel).parent.name
-    except (VMNotFound, ValueError, IndexError):
-        pass
+    except (VMNotFound, IndexError) as e:
+        die(f"cluster {cluster.name!r}: cannot load first node: {e}")
+    if first_vm.os_id:
+        from .target_config import TargetConfig
+        target = first_vm.os_id
+        # Let ValueError from TargetConfig propagate up with a clear
+        # error.  Previously a broad `except (..., ValueError, ...): pass`
+        # silently fell back to DEFAULT_TARGET, which deployed rocky9 .ko
+        # files onto whatever the cluster actually ran.
+        try:
+            os_family = TargetConfig(target, arch=first_vm.arch or None).os_family
+        except ValueError as e:
+            die(f"cluster {cluster.name!r}: target {target!r}: {e}")
+    if first_vm.kernel:
+        # vm.kernel points at .../kernels/<name>/vmlinuz; extract <name>
+        kernel_name = Path(first_vm.kernel).parent.name
+    if first_vm.arch:
+        arch = first_vm.arch
 
     print(f"=== Deploying to cluster '{cluster.name}' ===")
     print(f"    Build: {build}")
 
     # Build Lustre from source before deploying.  All nodes share the
-    # same target+kernel, so we run build-lustre once and every node
-    # rsyncs from the same staging dir.
+    # same target+kernel+arch, so we run build-lustre once and every
+    # node rsyncs from the same staging dir.
     build_cmd = ["ltvm", "build-lustre", target, "--lustre-tree", build]
     if kernel_name:
         build_cmd += ["--kernel", kernel_name]
+    if arch != "x86_64":
+        build_cmd += ["--arch", arch]
     sudo_user = os.environ.get("SUDO_USER")
     if sudo_user:
         build_cmd = ["sudo", "-u", sudo_user] + build_cmd
@@ -549,6 +562,13 @@ def cmd_cluster_destroy(args: argparse.Namespace) -> None:
     cluster = ClusterInfo.load(args.name)
     nodes = cluster.get_nodes()
 
+    # Use the same _destroy_vm_artifacts helper that single-node
+    # cmd_destroy uses, so we don't drift from its cleanup list.
+    # The previous inlined loop forgot to unlink the per-VM .info.lock
+    # file (added in round 15), causing `ltvm doctor` to report orphan
+    # info locks for every node after every cluster destroy.
+    from .vm_commands import _destroy_vm_artifacts
+
     print(f"=== Destroying cluster '{cluster.name}' ===")
     for node in nodes:
         try:
@@ -557,15 +577,7 @@ def cmd_cluster_destroy(args: argparse.Namespace) -> None:
         except VMNotFound:
             pass
 
-        overlay = OVERLAYS / f"{node.name}.qcow2"
-        for f in [overlay] + list(
-            OVERLAYS.glob(f"{node.name}-disk*.img"),
-        ):
-            f.unlink(missing_ok=True)
-        for ext in ("qmp", "pid", "info", "log"):
-            (SOCKETS / f"{node.name}.{ext}").unlink(
-                missing_ok=True,
-            )
+        _destroy_vm_artifacts(node.name)
         unregister_ssh_name(node.name)
         print(f"  destroyed {node.name}")
 

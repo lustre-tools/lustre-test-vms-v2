@@ -348,23 +348,16 @@ class TestKernelStatus:
         assert result["built"] is False
         assert result["stale"] is True
 
-    def test_matching_hash_returns_not_stale(self, tmp_targets: Path) -> None:
-        cfg = _make_config(tmp_targets)
-        input_hash = cfg.input_hash("kernel")
-        kernel_dir = cfg.kernel_output_dir()
-        kernel_dir.mkdir(parents=True, exist_ok=True)
-        meta = {
-            "input_hash": input_hash,
-            "kernel_version": "5.14.0-503.26.1.el9_7",
-            "srpm": "kernel-5.14.0-503.26.1.el9_7.src.rpm",
-        }
-        (kernel_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
-        result = kernel_status(cfg)
-        assert result["built"] is True
-        assert result["stale"] is False
-        assert result["kernel_version"] == "5.14.0-503.26.1.el9_7"
-
-    def test_stale_hash_returns_stale(self, tmp_targets: Path) -> None:
+    def test_meta_present_returns_not_stale_without_extra_hash(
+        self, tmp_targets: Path
+    ) -> None:
+        """Without an extra_hash from the caller, kernel_status trusts
+        meta.json existence and reports not stale.  ``cmd_status`` has no
+        Lustre tree on hand to recompute the Lustre-inputs portion of
+        the staleness hash, so it can't legitimately claim staleness;
+        defaulting to not-stale prevents the always-stale regression
+        introduced by the round 17 extra_hash plumbing.
+        """
         cfg = _make_config(tmp_targets)
         kernel_dir = cfg.kernel_output_dir()
         kernel_dir.mkdir(parents=True, exist_ok=True)
@@ -376,7 +369,45 @@ class TestKernelStatus:
         (kernel_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
         result = kernel_status(cfg)
         assert result["built"] is True
+        assert result["stale"] is False
+        assert result["kernel_version"] == "5.14.0-503.26.1.el9_7"
+
+    def test_stale_when_extra_hash_mismatches(
+        self, tmp_targets: Path
+    ) -> None:
+        """When the caller passes the live Lustre-inputs hash, staleness
+        IS computed and a meta with a stale hash is reported stale.
+        """
+        cfg = _make_config(tmp_targets)
+        kernel_dir = cfg.kernel_output_dir()
+        kernel_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "input_hash": "deadbeefdeadbeef",
+            "kernel_version": "5.14.0-503.26.1.el9_7",
+            "srpm": "kernel-5.14.0-503.26.1.el9_7.src.rpm",
+        }
+        (kernel_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+        result = kernel_status(cfg, extra_hash=b"any-non-empty")
+        assert result["built"] is True
         assert result["stale"] is True
+
+    def test_not_stale_when_extra_hash_matches(
+        self, tmp_targets: Path
+    ) -> None:
+        cfg = _make_config(tmp_targets)
+        live_extra = b"live-lustre-inputs"
+        input_hash = cfg.input_hash("kernel", extra=live_extra)
+        kernel_dir = cfg.kernel_output_dir()
+        kernel_dir.mkdir(parents=True, exist_ok=True)
+        meta = {
+            "input_hash": input_hash,
+            "kernel_version": "5.14.0-503.26.1.el9_7",
+            "srpm": "kernel-5.14.0-503.26.1.el9_7.src.rpm",
+        }
+        (kernel_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
+        result = kernel_status(cfg, extra_hash=live_extra)
+        assert result["built"] is True
+        assert result["stale"] is False
 
     def test_meta_fields_propagated(self, tmp_targets: Path) -> None:
         cfg = _make_config(tmp_targets)

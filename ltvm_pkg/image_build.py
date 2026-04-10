@@ -254,7 +254,7 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
         kver_file = kdir / "build-tree" / "include" / "config" / "kernel.release"
         kver = kver_file.read_text().strip() if kver_file.exists() else None
         from ltvm_pkg.lustre_build import staging_path as _staging_path
-        staging_dir = _staging_path(target_config.name)
+        staging_dir = _staging_path(target_config.name, arch=target_config.arch)
         has_modules = (modules_dir / "lib" / "modules").is_dir()
         # Staging dir may exist but be empty (pre-Lustre build).  Require
         # actual content (usr/ or lib/modules/) before trying to inject.

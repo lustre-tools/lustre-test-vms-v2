@@ -249,6 +249,21 @@ def download_srpm(srpm_name: str, cache_dir: str | Path, base_url: str) -> Path:
 # ------------------------------------------------------------------
 
 
+def _ccache_volume(target_config: TargetConfig) -> str:
+    """Return the ccache volume name, arch-qualified for non-default arch.
+
+    The kernel build mounts the volume so a same-target/different-arch
+    cross build (e.g. rocky9 x86_64 then rocky9 aarch64) doesn't share
+    object files with the native build.  lustre_build derives the
+    volume name from the (already arch-qualified) container tag, so
+    keep this consistent with that convention.
+    """
+    arch = target_config.arch
+    if arch and arch != "x86_64":
+        return f"ltvm-ccache-{target_config.name}-{arch}"
+    return f"ltvm-ccache-{target_config.name}"
+
+
 def _ensure_container_image(target_config: TargetConfig) -> str:
     """Build the container image if needed.
 
@@ -421,7 +436,7 @@ def _build_kernel_deb(
             "-v",
             f"{kernel_out}:/output:Z",
             "-v",
-            f"ltvm-ccache-{target_config.name}:/ccache:Z",
+            f"{_ccache_volume(target_config)}:/ccache:Z",
             "-e",
             f"JOBS={jobs}",
             "-e",
@@ -516,7 +531,9 @@ def _build_kernel_srpm(
         "kernel", kernel=lustre_target, extra_hash=extra_hash
     ):
         log.info("Kernel is up to date (use force=True to rebuild)")
-        return kernel_status(target_config, kernel=kernel)
+        return kernel_status(
+            target_config, kernel=kernel, extra_hash=extra_hash
+        )
 
     # Compute the full output directory name: <lustre_target>-<lnxmaj>-<lnxrel>
     # e.g. 5.14-rhel9.7-5.14.0-611.13.1.el9_7_lustre
@@ -591,7 +608,7 @@ def _build_kernel_srpm(
             "-v",
             f"{kernel_out}:/output:Z",
             "-v",
-            f"ltvm-ccache-{target_config.name}:/ccache:Z",
+            f"{_ccache_volume(target_config)}:/ccache:Z",
             "-e",
             f"JOBS={jobs}",
             "-e",
@@ -656,13 +673,23 @@ def _build_kernel_srpm(
 
 
 def kernel_status(
-    target_config: TargetConfig, kernel: str | None = None
+    target_config: TargetConfig,
+    kernel: str | None = None,
+    extra_hash: bytes = b"",
 ) -> dict[str, object]:
     """Return kernel build status for a target.
 
     Args:
         target_config: TargetConfig instance
         kernel: Lustre target name to query (defaults to target_config.lustre_target)
+        extra_hash: Lustre-inputs hash from kernel_build's caller, when
+            available.  ``cmd_status`` doesn't have a Lustre tree on hand
+            so it can't recompute the Lustre-inputs portion of the
+            staleness hash; in that case we omit the staleness check
+            entirely (meta.json existing == build was successful) rather
+            than always reporting stale, which would defeat the round 17
+            extra_hash plumbing the moment status is run on a non-stale
+            kernel.
 
     Returns dict with version, build date, staleness, etc.
     """
@@ -675,8 +702,19 @@ def kernel_status(
         }
 
     meta = json.loads(meta_file.read_text())
+    # When the caller has the Lustre-inputs hash, use it -- this is the
+    # accurate staleness check from kernel_build's early-return paths.
+    # Otherwise (cmd_status), trust meta.json: build success means the
+    # artifact is consistent with whatever Lustre tree it was built
+    # against, and we can't say more without that tree on hand.
+    if extra_hash:
+        stale = target_config.is_stale(
+            "kernel", kernel=resolved, extra_hash=extra_hash
+        )
+    else:
+        stale = False
     return {
         "built": True,
-        "stale": target_config.is_stale("kernel", kernel=resolved),
+        "stale": stale,
         **meta,
     }

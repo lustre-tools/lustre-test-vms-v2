@@ -403,18 +403,28 @@ class TestKillQemu:
         vm = _make_vm(tmp_vmdir)
         vm.pid = 555
         sent: list[int] = []
-        # First kill (SIGTERM) succeeds; probe kill(0) raises OSError
-        # on the first poll -> process considered gone.
+        # The kill_qemu flow:
+        #   1. is_running(): os.kill(pid, 0) succeeds + comm reads qemu
+        #   2. os.kill(pid, SIGTERM)
+        #   3. loop: os.kill(pid, 0) raises OSError -> process gone
+        # We simulate this by tracking how many kill(0) calls we've seen
+        # and only raising on the 2nd onward.
+        zero_calls = [0]
         def fake_kill(pid, sig):
             sent.append(sig)
             if sig == 0:
-                raise OSError("gone")
+                zero_calls[0] += 1
+                if zero_calls[0] >= 2:
+                    raise OSError("gone")
         with (
             patch("ltvm_pkg.qemu_run.run"),
             patch("ltvm_pkg.qemu_run.os.kill", side_effect=fake_kill),
             patch("ltvm_pkg.qemu_run.time.sleep"),
+            # is_running() reads /proc/<pid>/comm; pretend the PID is qemu.
+            patch("ltvm_pkg.qemu_run.Path") as mock_path,
             patch.object(VMInfo, "update_pid") as mock_update,
         ):
+            mock_path.return_value.read_text.return_value = "qemu-system-x86\n"
             qemu_run.kill_qemu(vm)
         assert _signal.SIGTERM in sent
         assert _signal.SIGKILL not in sent
@@ -434,8 +444,35 @@ class TestKillQemu:
             patch("ltvm_pkg.qemu_run.run"),
             patch("ltvm_pkg.qemu_run.os.kill", side_effect=fake_kill),
             patch("ltvm_pkg.qemu_run.time.sleep"),
+            patch("ltvm_pkg.qemu_run.Path") as mock_path,
             patch.object(VMInfo, "update_pid"),
         ):
+            mock_path.return_value.read_text.return_value = "qemu-system-x86\n"
             qemu_run.kill_qemu(vm)
         assert _signal.SIGTERM in sent
         assert _signal.SIGKILL in sent
+
+    def test_kill_qemu_skips_when_pid_is_not_qemu(
+        self, tmp_vmdir: Path,
+    ) -> None:
+        """PID reuse: vm.pid points at a non-qemu process; we don't signal it."""
+        import signal as _signal
+        vm = _make_vm(tmp_vmdir)
+        vm.pid = 555
+        sent: list[int] = []
+        def fake_kill(pid, sig):
+            sent.append(sig)
+        with (
+            patch("ltvm_pkg.qemu_run.run"),
+            patch("ltvm_pkg.qemu_run.os.kill", side_effect=fake_kill),
+            patch("ltvm_pkg.qemu_run.Path") as mock_path,
+            patch.object(VMInfo, "update_pid") as mock_update,
+        ):
+            # Live PID but the comm is "bash" -- not our qemu.
+            mock_path.return_value.read_text.return_value = "bash\n"
+            qemu_run.kill_qemu(vm)
+        # is_running's kill(0) probe gets recorded, but no SIGTERM/SIGKILL.
+        assert _signal.SIGTERM not in sent
+        assert _signal.SIGKILL not in sent
+        # PID still gets reset to 0 because we want to clear stale state
+        mock_update.assert_called_once_with(0)

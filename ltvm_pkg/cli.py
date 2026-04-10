@@ -552,7 +552,9 @@ def _find_release_url(
 
     for rel in releases:
         tag = rel.get("tag_name", "")
-        if not tag.startswith(target):
+        # Require exact match or a separator after the target name so
+        # `rocky9` doesn't match a hypothetical `rocky90-...` tag.
+        if tag != target and not tag.startswith(target + "-"):
             continue
         if filter_str and filter_str not in tag:
             continue
@@ -587,7 +589,7 @@ def _list_releases(target: str | None = None) -> list[dict]:
     result = []
     for rel in releases:
         tag = rel.get("tag_name", "")
-        if target and not tag.startswith(target):
+        if target and tag != target and not tag.startswith(target + "-"):
             continue
         assets = [a["name"] for a in rel.get("assets", [])
                   if a["name"].endswith((".tar.zst", ".tar.gz"))]
@@ -1102,7 +1104,6 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     use_json = args.json
     target = getattr(args, "target", None)
     kernel = getattr(args, "kernel", None)
-    ltvm_root = Path(__file__).parent.parent
 
     err = _require_root(use_json)
     if err is not None:
@@ -1128,12 +1129,15 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 use_json,
             )
 
-    # Resolve kernel name and target config.  We require a valid target
-    # here -- a missing entry in targets.yaml would silently fall back
-    # to RHEL paths and break debian/ubuntu deploys (wrong libdir, wrong
-    # tests dir).  Better to fail loudly with a clear error.
+    # Resolve kernel name and target config.  Pass vm.arch through so
+    # the target's output_dir is arch-qualified -- otherwise an aarch64
+    # VM looks for its kernel/staging under the x86_64 output paths and
+    # fails to find anything.  We require a valid target here so a
+    # missing entry in targets.yaml fails loudly instead of silently
+    # falling back to RHEL paths.
+    vm_arch = vm.arch or "x86_64"
     try:
-        tc = TargetConfig(target)
+        tc = TargetConfig(target, arch=vm_arch)
     except ValueError as e:
         return _error(
             f"Unknown target '{target}' for VM '{args.vm}': {e}",
@@ -1153,9 +1157,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if build_arg is not None:
         build_path = Path(build_arg).resolve()
     else:
-        packaged = (
-            ltvm_root / "output" / target / "kernels" / resolved_kernel / "lustre"
-        )
+        # Use tc.output_dir (arch-qualified) instead of a hand-built
+        # ltvm_root/output/<target>/ path so the bundled-snapshot lookup
+        # honors LTVM_ROOT and the /usr/local/bin/ltvm symlink resolution
+        # AND finds the correct arch-qualified subdirectory.
+        packaged = tc.output_dir / "kernels" / resolved_kernel / "lustre"
         # A bundled snapshot is identified by the .ltvm-snapshot.json marker
         # written by snapshot_lustre.  It already has DESTDIR layout
         # (usr/, lib/modules/), so we can deploy it directly without
@@ -1192,8 +1198,10 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     userspace_only = getattr(args, "userspace_only", False)
 
     # Staging lives in the ltvm output dir, not the source tree.
+    # Pass vm_arch so the staging path matches what build-lustre wrote
+    # for this VM's architecture.
     from ltvm_pkg.lustre_build import staging_path as _staging_path
-    staging = _staging_path(target)
+    staging = _staging_path(target, arch=vm_arch)
 
     # If we picked up a bundled snapshot and there's no local staging,
     # mirror the snapshot into the staging dir so deploy_to_vm can use
@@ -1285,6 +1293,10 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 kernel_name = Path(vm.kernel).parent.name
                 if kernel_name:
                     build_cmd += ["--kernel", kernel_name]
+            # Forward the VM's arch so cross-arch builds end up in the
+            # right staging dir and link against the right toolchain.
+            if vm_arch != "x86_64":
+                build_cmd += ["--arch", vm_arch]
             sudo_user = os.environ.get("SUDO_USER")
             if sudo_user:
                 build_cmd = ["sudo", "-u", sudo_user] + build_cmd

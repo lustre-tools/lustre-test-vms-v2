@@ -197,8 +197,15 @@ def launch_qemu(vm: VMInfo) -> None:
 
 
 def kill_qemu(vm: VMInfo) -> None:
-    """Kill the QEMU process and tear down the TAP device."""
-    if vm.pid > 0:
+    """Kill the QEMU process and tear down the TAP device.
+
+    Validates that vm.pid actually points at a qemu process before
+    sending any signals.  Without this guard, after a host reboot or
+    PID wraparound vm.pid can refer to an unrelated process (a shell,
+    editor, another VM's qemu) and a SIGTERM/SIGKILL would happily
+    take it down.  is_running() does the /proc/<pid>/comm check.
+    """
+    if vm.pid > 0 and is_running(vm):
         try:
             os.kill(vm.pid, signal.SIGTERM)
         except OSError:
@@ -212,11 +219,14 @@ def kill_qemu(vm: VMInfo) -> None:
                     break
                 time.sleep(0.1)
             else:
-                # Still alive after 5s, force kill
-                try:
-                    os.kill(vm.pid, signal.SIGKILL)
-                except OSError:
-                    pass
+                # Still alive after 5s, force kill.  Re-check is_running
+                # so we don't SIGKILL a PID that QEMU released to another
+                # process during the 5-second wait.
+                if is_running(vm):
+                    try:
+                        os.kill(vm.pid, signal.SIGKILL)
+                    except OSError:
+                        pass
     try:
         vm.update_pid(0)
     except VMNotFound:

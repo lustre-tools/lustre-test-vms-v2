@@ -17,6 +17,7 @@ podman after `ltvm build-container` or `ltvm build-all`.
 from __future__ import annotations
 
 import os
+import shlex
 import subprocess
 from pathlib import Path
 from typing import TypedDict
@@ -25,8 +26,18 @@ from .target_config import OUTPUT_DIR
 from .vm_state import DEFAULT_TARGET
 
 
-def staging_path(target: str) -> Path:
-    """Return the host-side staging directory for a target."""
+def staging_path(target: str, arch: str = "x86_64") -> Path:
+    """Return the host-side staging directory for a target.
+
+    The arch is folded into the path for non-default architectures so a
+    cross-arch build can't clobber the native staging dir (and vice
+    versa).  Without this, two parallel `ltvm build-lustre rocky9` runs
+    -- one default, one --arch aarch64 -- would fight over the same
+    `output/rocky9/lustre/staging`, silently producing a tarball with
+    one arch's `.ko` files atop the other's.
+    """
+    if arch and arch != "x86_64":
+        return OUTPUT_DIR / target / arch / "lustre" / "staging"
     return OUTPUT_DIR / target / "lustre" / "staging"
 
 
@@ -65,12 +76,27 @@ def _container_exists(tag: str) -> bool:
     return r.returncode == 0
 
 
+def _stamp_suffix(target: str, arch: str) -> str:
+    """Reconfigure-stamp suffix that captures both target and arch.
+
+    Stamps live in the (potentially shared) Lustre source tree, so they
+    MUST distinguish between two arch builds for the same target --
+    otherwise switching arches on the same source tree skips autogen +
+    configure and `make` runs against whatever `config.status` the
+    other arch left behind, producing corrupt cross-arch artifacts.
+    """
+    if arch and arch != "x86_64":
+        return f"{target}-{arch}"
+    return target
+
+
 def _needs_reconfigure(
     lustre_tree: Path,
     build_tree: Path,
     force: bool,
     target: str = DEFAULT_TARGET,
     enable_server: bool = True,
+    arch: str = "x86_64",
 ) -> bool:
     """Return True if configure needs to be re-run."""
     if force:
@@ -88,10 +114,11 @@ def _needs_reconfigure(
         return True
 
     # Check if previous configure used a different kernel or server
-    # flag.  Stamps are per-target so switching targets forces
-    # reconfigure even when the source tree is shared.
-    stamp = lustre_tree / f".ltvm-kernel-{target}"
-    stamp_server = lustre_tree / f".ltvm-server-{target}"
+    # flag.  Stamps are per-(target,arch) so switching targets OR
+    # arches forces reconfigure even when the source tree is shared.
+    suffix = _stamp_suffix(target, arch)
+    stamp = lustre_tree / f".ltvm-kernel-{suffix}"
+    stamp_server = lustre_tree / f".ltvm-server-{suffix}"
     if stamp.exists():
         prev = stamp.read_text().strip()
         cur = _kernel_release(build_tree)
@@ -211,7 +238,7 @@ def _build_in_container(
 
     need_reconf = _needs_reconfigure(
         lustre_tree, build_tree, force,
-        target=target, enable_server=enable_server,
+        target=target, enable_server=enable_server, arch=arch,
     )
 
     # Detect cross-compilation
@@ -291,7 +318,14 @@ def _build_in_container(
     else:
         cfg += " --disable-server"
     if extra_configure:
-        cfg += " " + " ".join(extra_configure)
+        # shlex.quote each arg so paths with spaces (e.g.
+        # --with-linux="/tmp/build dir/linux") and configure flags with
+        # shell metacharacters (e.g. CFLAGS='-O2 -g') survive
+        # interpolation into the bash heredoc fed to `podman run -c`.
+        # Plain space-join would split a quoted value into multiple
+        # configure args -- or worse, a metachar in the value would be
+        # re-interpreted by the container shell.
+        cfg += " " + " ".join(shlex.quote(a) for a in extra_configure)
 
     # Shell block: run autogen+configure when force-requested OR when the
     # container's libtool version differs from the last autogen stamp.
@@ -319,8 +353,10 @@ fi""")
     script_parts.append(f"make{make_cross} install DESTDIR=/staging -j{jobs}")
     script = "\n".join(script_parts)
 
-    # Ensure the staging directory exists on the host before mounting
-    host_staging = staging_path(target)
+    # Ensure the staging directory exists on the host before mounting.
+    # arch is folded into the path so cross-arch builds for the same
+    # target don't clobber each other's .ko files.
+    host_staging = staging_path(target, arch=arch)
     host_staging.mkdir(parents=True, exist_ok=True)
 
     # Use a persistent ccache volume so incremental container
@@ -355,9 +391,14 @@ fi""")
     if r.returncode != 0:
         raise RuntimeError(f"Container build failed (rc={r.returncode})")
 
-    # Record per-target stamps on the host filesystem
-    (lustre_tree / f".ltvm-kernel-{target}").write_text(kver + "\n")
-    (lustre_tree / f".ltvm-server-{target}").write_text(str(enable_server) + "\n")
+    # Record per-(target, arch) stamps on the host filesystem so a
+    # subsequent build for the OTHER arch sees them as missing and
+    # forces a fresh autogen+configure pass.
+    suffix = _stamp_suffix(target, arch)
+    (lustre_tree / f".ltvm-kernel-{suffix}").write_text(kver + "\n")
+    (lustre_tree / f".ltvm-server-{suffix}").write_text(
+        str(enable_server) + "\n"
+    )
     # Best-effort: clean up the legacy .ltvm-kernel-path-* stamp left
     # by older builds; the value was always "/kernel" so the check it
     # protected was a no-op.
@@ -381,14 +422,15 @@ fi""")
 def lustre_status(
     lustre_tree: str | Path, build_tree: str | Path,
     target: str = DEFAULT_TARGET,
+    arch: str = "x86_64",
 ) -> StatusResult:
     """Return a status dict for the Lustre build."""
     lustre_tree = Path(lustre_tree).resolve()
     build_tree = Path(build_tree).resolve()
 
-    stamp = lustre_tree / f".ltvm-kernel-{target}"
+    stamp = lustre_tree / f".ltvm-kernel-{_stamp_suffix(target, arch)}"
     config_status = lustre_tree / "config.status"
-    host_staging = staging_path(target)
+    host_staging = staging_path(target, arch=arch)
     ko_count = len(list(host_staging.rglob("*.ko"))) if host_staging.is_dir() else 0
 
     built_against = stamp.read_text().strip() if stamp.exists() else None
