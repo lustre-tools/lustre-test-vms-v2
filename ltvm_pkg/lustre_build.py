@@ -51,7 +51,7 @@ def _kernel_release(build_tree: str | Path) -> str:
     """Read the kernel version from the build-tree.
 
     Reads include/config/kernel.release, which is written by the
-    kernel build (kernel.py).  Returns "unknown" if not present.
+    kernel build (kernel_build.py).  Returns "unknown" if not present.
     """
     release_file = Path(build_tree) / "include" / "config" / "kernel.release"
     if release_file.exists():

@@ -9,11 +9,13 @@ RUN dnf -y install dnf-plugins-core epel-release \
     && dnf config-manager --set-enabled crb
 
 # Install build packages from the canonical shared list.
+# Match rocky8/rocky9 (no --skip-broken) so dependency resolution
+# failures fail loud instead of silently dropping packages.
 COPY common/packages-dev.txt /tmp/packages-dev.txt
 RUN cat /tmp/packages-dev.txt \
         | grep -v '^\s*#' | grep -v '^\s*$' \
         | sort -u \
-        | xargs dnf -y --allowerasing --skip-broken install \
+        | xargs dnf -y --allowerasing install \
     && dnf clean all && rm -f /tmp/packages-dev.txt
 
 # Whamcloud-patched e2fsprogs (required for server builds).

@@ -8,13 +8,30 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
 from pathlib import Path
 from typing import Any, TypedDict
 
 import yaml
 
-REPO_ROOT = Path(__file__).parent.parent
+def _find_repo_root() -> Path:
+    """Resolve the ltvm repo root.
+
+    LTVM_ROOT env var > /usr/local/bin/ltvm symlink target's parent >
+    this file's grandparent.  Must agree with vm_state._find_ltvm_root
+    so that build outputs land where the runtime later reads them.
+    """
+    env = os.environ.get("LTVM_ROOT")
+    if env:
+        return Path(env)
+    ltvm_link = Path("/usr/local/bin/ltvm")
+    if ltvm_link.is_symlink():
+        return ltvm_link.resolve().parent
+    return Path(__file__).resolve().parent.parent
+
+
+REPO_ROOT = _find_repo_root()
 TARGETS_DIR = REPO_ROOT / "targets"
 OUTPUT_DIR = REPO_ROOT / "output"
 TARGETS_YAML = TARGETS_DIR / "targets.yaml"
@@ -313,17 +330,18 @@ class TargetConfig:
             )
             if arch_frag.exists():
                 h.update(arch_frag.read_bytes())
-            # The build container runs kernel-build-inner.sh (rhel) or
-            # kernel-build-inner-deb.sh (debian).  Editing either should
-            # invalidate every cached kernel for this target.
+            # Hash only the inner build script that THIS target's
+            # os_family actually invokes -- editing the deb script
+            # shouldn't invalidate every RHEL kernel and vice versa.
             ltvm_pkg_dir = Path(__file__).parent
-            for inner in (
-                "kernel-build-inner.sh",
-                "kernel-build-inner-deb.sh",
-            ):
-                p = ltvm_pkg_dir / inner
-                if p.exists():
-                    h.update(p.read_bytes())
+            inner_name = (
+                "kernel-build-inner-deb.sh"
+                if self.os_family == "debian"
+                else "kernel-build-inner.sh"
+            )
+            inner_path = ltvm_pkg_dir / inner_name
+            if inner_path.exists():
+                h.update(inner_path.read_bytes())
 
         elif artifact == "image":
             dockerfile = self.target_dir / "image.Dockerfile"

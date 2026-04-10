@@ -123,9 +123,12 @@ def generate_local_sh(cluster: ClusterInfo, os_family: str = "rhel") -> str:
             if oss_node.is_mgs and not oss_node.is_mds:
                 disk_offset = 2
             if oss_node.is_mds:
+                # If this OSS node is also the MDS, OST disks come
+                # after the MDT disks.  Note: an OSS+MDS+MGS node has
+                # `combined=True` (mgs.is_mds is True for it), so the
+                # extra-MGS-disk offset only applies in the standalone
+                # MGS case which lives on a different node entirely.
                 disk_offset = 1 + oss_node.mdt_disks
-                if oss_node.is_mgs and not combined:
-                    disk_offset += 1
 
             for d in range(oss_node.ost_disks):
                 letter = chr(ord("a") + disk_offset + d)
@@ -168,6 +171,7 @@ def _create_one_node(
     mem: int,
     os_target: str | None = None,
     arch: str | None = None,
+    disk_size: str | None = None,
 ) -> tuple[str, int, str]:
     """Create a single cluster VM via ltvm subprocess.
 
@@ -190,6 +194,8 @@ def _create_one_node(
         cmd += ["--os", os_target]
     if arch:
         cmd += ["--arch", arch]
+    if disk_size:
+        cmd += ["--disk-size", disk_size]
     if node.mdt_disks + mgs_disk:
         cmd += ["--mdt-disks", str(node.mdt_disks + mgs_disk)]
     if node.ost_disks:
@@ -225,6 +231,7 @@ def cmd_cluster_create(args: argparse.Namespace) -> None:
     mem = args.mem
     os_target = getattr(args, "os", None)
     arch = getattr(args, "arch", None)
+    disk_size = getattr(args, "disk_size", None)
 
     print(f"=== Creating cluster '{cluster_name}' ===")
     if os_target:
@@ -235,7 +242,8 @@ def cmd_cluster_create(args: argparse.Namespace) -> None:
     with ThreadPoolExecutor(max_workers=len(node_specs)) as executor:
         futures = {
             executor.submit(
-                _create_one_node, node, vcpus, mem, os_target, arch,
+                _create_one_node, node, vcpus, mem,
+                os_target, arch, disk_size,
             ): node
             for node in node_specs
         }
@@ -368,6 +376,12 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     src = Path(args.lustre_source).expanduser().resolve()
     _validate_lustre_source(src)
     build = str(src)
+
+    # --server-only only affects the llmount.sh invocation, which only
+    # runs when --mount is set.  Reject the combination instead of
+    # silently dropping the flag.
+    if getattr(args, "server_only", False) and not getattr(args, "mount", False):
+        die("--server-only requires --mount")
 
     # Derive os_family and target+kernel from the first node's metadata
     # (all nodes in a cluster share the same target).  We also pull the

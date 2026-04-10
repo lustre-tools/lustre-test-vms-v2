@@ -150,6 +150,8 @@ def lustre_mount_vm(name: str, os_family: str) -> int:
         )
         if r.stdout:
             print(r.stdout, end="")
+        if r.stderr:
+            print(r.stderr, end="", file=sys.stderr)
         return r.returncode
     except Exception as e:
         print(f"error: Lustre mount failed: {e}", file=sys.stderr)

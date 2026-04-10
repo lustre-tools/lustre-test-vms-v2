@@ -1225,6 +1225,14 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             )
         if not use_json:
             print(f"  Userspace-only deploy (skipping kernel modules)")
+    elif bundled_snapshot is not None:
+        # Bundled snapshot: staging was either just mirrored or already
+        # populated.  Don't run _staging_is_fresh -- build_path here is
+        # the snapshot's DESTDIR layout, NOT a Lustre source tree, so
+        # falling through to `ltvm build-lustre --lustre-tree <snapshot>`
+        # would error out with "not a Lustre source tree".
+        if not use_json:
+            print(f"  Using bundled staging, skipping source build")
     else:
         staging_fresh = _staging_is_fresh(staging, build_path)
 
@@ -1339,6 +1347,7 @@ def cmd_cluster(args: argparse.Namespace) -> int:
         mem = 4096
         os_target: str | None = None
         arch: str | None = None
+        disk_size: str | None = None
         positional: list[str] = []
         i = 0
         while i < len(cargs):
@@ -1353,6 +1362,9 @@ def cmd_cluster(args: argparse.Namespace) -> int:
                 i += 2
             elif cargs[i] == "--arch" and i + 1 < len(cargs):
                 arch = cargs[i + 1]
+                i += 2
+            elif cargs[i] == "--disk-size" and i + 1 < len(cargs):
+                disk_size = cargs[i + 1]
                 i += 2
             else:
                 positional.append(cargs[i])
@@ -1373,6 +1385,7 @@ def cmd_cluster(args: argparse.Namespace) -> int:
                 mem=mem,
                 os=os_target,
                 arch=arch,
+                disk_size=disk_size,
             ),
         )
 

@@ -5,8 +5,10 @@
 # microvm config fragment, and builds vmlinux + bzImage.
 #
 # Expected environment:
-#   JOBS     -- parallel make jobs (default: nproc)
-#   LNXMAJ  -- kernel major version (e.g., 5.14.0)
+#   JOBS         -- parallel make jobs (default: nproc)
+#   LNXMAJ       -- kernel major version (e.g. 5.14.0) -- required
+#   LNXREL       -- kernel release suffix (e.g. 503.el9_5) -- required
+#   TARGET_ARCH  -- x86_64 or aarch64 (default: x86_64)
 #
 # Expected bind mounts:
 #   /input/kernel.src.rpm    -- the kernel SRPM

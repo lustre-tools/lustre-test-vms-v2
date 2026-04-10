@@ -946,6 +946,9 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
             launch_qemu(vm)
             wait_for_ssh(vm.ip, SSH_TIMEOUT)
             register_ssh_name(vm.name, vm.ip)
+            # Match cmd_start: idempotent post-boot init.
+            deploy_ssh_key(vm.ip)
+            _seed_kdump_boot(vm)
             print(f"started {vm.name}")
 
 
@@ -982,6 +985,11 @@ def cmd_restore(args: argparse.Namespace) -> None:
         launch_qemu(vm)
         wait_for_ssh(vm.ip, SSH_TIMEOUT)
         register_ssh_name(vm.name, vm.ip)
+        # Match cmd_start: re-deploy the user's SSH key and re-seed
+        # /boot for kdump.  Both are idempotent and necessary if the
+        # restored snapshot predates the most recent setup.
+        deploy_ssh_key(vm.ip)
+        _seed_kdump_boot(vm)
 
 
 # ── doctor ───────────────────────────────────────────────
