@@ -918,11 +918,15 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def _vm_call(fn, ns, use_json: bool) -> int:
-    """Call a vm_commands function, catching SystemExit and VMNotFound."""
+    """Call a vm_commands function, catching SystemExit and VMNotFound.
+
+    Honors the return code of the wrapped function so handlers like
+    cmd_doctor can signal "issues found" via a non-zero exit.
+    """
     from ltvm_pkg.vm_state import VMNotFound
     try:
-        fn(ns)
-        return EXIT_OK
+        rc = fn(ns)
+        return rc if isinstance(rc, int) else EXIT_OK
     except SystemExit as e:
         return int(e.code) if e.code is not None else EXIT_ERROR
     except VMNotFound as e:

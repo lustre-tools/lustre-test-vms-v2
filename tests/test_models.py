@@ -161,12 +161,20 @@ class TestUpdateFieldsAtomic:
         assert loaded.build_path == "/lustre"
         assert loaded.kver == "6.1"
 
-    def test_no_partial_write_on_missing_file(self, tmp_sockets: Path) -> None:
-        """_update_fields on a VM with no info file is a no-op (no crash)."""
+    def test_raises_vmnotfound_on_missing_file(
+        self, tmp_sockets: Path
+    ) -> None:
+        """_update_fields raises when the .info file is gone.
+
+        The previous silent no-op caused in-memory VMInfo state to
+        diverge from disk with no signal -- a concurrent destroy or
+        partially rolled-back create would silently lose updates.
+        """
+        from ltvm_pkg.vm_state import VMNotFound
         vm = VMInfo(name="no-file-test", ip="192.168.100.32")
         # Do NOT call vm.save() -- info file does not exist
-        # Should return silently, not raise
-        vm._update_fields({"KVER": "5.14"})
+        with pytest.raises(VMNotFound):
+            vm._update_fields({"KVER": "5.14"})
         assert not vm.info_path.exists()
 
 

@@ -17,6 +17,7 @@ from .vm_state import (
     DISK_SIZE_BYTES,
     EXIT_ERROR,
     EXIT_NOT_FOUND,
+    EXIT_OK,
     EXIT_TIMEOUT,
     EXIT_UNREACHABLE,
     MARKER,
@@ -85,14 +86,23 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
     if r.returncode != 0:
         die(f"failed to copy vmlinuz into VM /boot: {r.stderr.strip()}")
 
-    # Determine OS family from target config
+    # Determine OS family from target config.  Catch only the narrow
+    # cases where the target config is genuinely missing/broken
+    # (ValueError: unknown target / bad schema, FileNotFoundError:
+    # targets.yaml gone).  A blanket `except Exception: pass` would
+    # silently fall back to "rhel" for a Debian VM and run dracut
+    # against an apt-based system.
     os_family = "rhel"
     if vm.os_id:
         try:
             from .target_config import TargetConfig
             os_family = TargetConfig(vm.os_id).os_family
-        except Exception:
-            pass
+        except (ValueError, FileNotFoundError) as e:
+            print(
+                f"warning: cannot resolve target {vm.os_id!r}, "
+                f"defaulting to rhel kdump path: {e}",
+                file=sys.stderr,
+            )
 
     if os_family == "debian":
         print("generating kdump initramfs (update-initramfs)...")
@@ -453,6 +463,7 @@ def _destroy_vm_artifacts(name: str) -> None:
 
 def cmd_destroy(args: argparse.Namespace) -> None:
     for name in args.names:
+        existed = (SOCKETS / f"{name}.info").exists()
         try:
             vm = VMInfo.load(name)
             kill_qemu(vm)
@@ -461,7 +472,12 @@ def cmd_destroy(args: argparse.Namespace) -> None:
 
         _destroy_vm_artifacts(name)
         unregister_ssh_name(name)
-        print(f"destroyed {name}")
+        # Match cmd_stop's "{name} not found" wording so a typo like
+        # `ltvm destroy co1-signle` doesn't silently claim success.
+        if existed:
+            print(f"destroyed {name}")
+        else:
+            print(f"destroy: {name} not found")
 
 
 def cmd_ensure(args: argparse.Namespace) -> None:
@@ -1117,7 +1133,7 @@ def cmd_restore(args: argparse.Namespace) -> None:
 # ── doctor ───────────────────────────────────────────────
 
 
-def cmd_doctor(args: argparse.Namespace) -> None:
+def cmd_doctor(args: argparse.Namespace) -> int:
     issues = 0
 
     for name in VMInfo.all_names():
@@ -1143,6 +1159,74 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                 for disk in OVERLAYS.glob(f"{oname}-disk*.img"):
                     disk.unlink()
                 print("  fixed: removed")
+
+    # Orphan data disks (overlay was removed but disks weren't, e.g.
+    # crash between cmd_create's overlay create and disk truncate, or
+    # the overlay was unlinked manually).
+    seen_disks: set[Path] = set()
+    for disk in sorted(OVERLAYS.glob("*-disk*.img")):
+        # Strip "-diskN.img" off the end to get the VM name
+        stem = re.sub(r"-disk\d+$", "", disk.stem)
+        if not stem or disk in seen_disks:
+            continue
+        if (OVERLAYS / f"{stem}.qcow2").exists():
+            continue
+        if (SOCKETS / f"{stem}.info").exists():
+            continue
+        size = disk.stat().st_size // 1048576
+        print(f"orphan disk: {disk.name} ({size}M)")
+        issues += 1
+        if args.fix:
+            disk.unlink()
+            print("  fixed: removed")
+
+    # Orphan socket-side files (.pid, .log, .qmp, .info.lock) whose
+    # matching .info file is gone.  These accumulate when cmd_destroy
+    # races with a crash, or when the user removes a .info by hand.
+    for ext in ("pid", "log", "qmp"):
+        for f in sorted(SOCKETS.glob(f"*.{ext}")):
+            if not (SOCKETS / f"{f.stem}.info").exists():
+                print(f"orphan {ext}: {f.name}")
+                issues += 1
+                if args.fix:
+                    f.unlink(missing_ok=True)
+                    print("  fixed: removed")
+    for f in sorted(SOCKETS.glob(".*.info.lock")):
+        # Strip leading "." and trailing ".info.lock"
+        bare = f.name[1:-len(".info.lock")]
+        if not (SOCKETS / f"{bare}.info").exists():
+            print(f"orphan info lock: {f.name}")
+            issues += 1
+            if args.fix:
+                f.unlink(missing_ok=True)
+                print("  fixed: removed")
+
+    # Cluster files referencing dead nodes.  A user can `ltvm destroy
+    # node` individually after a `cluster create`, leaving the .cluster
+    # file pointing at VMs that no longer exist.
+    from .vm_state import ClusterInfo, ClusterNotFound
+    for cname in ClusterInfo.all_names():
+        try:
+            cluster = ClusterInfo.load(cname)
+        except ClusterNotFound:
+            continue
+        missing_nodes = [
+            n for n in cluster.get_nodes()
+            if not (SOCKETS / f"{n.name}.info").exists()
+        ]
+        if missing_nodes and len(missing_nodes) == len(cluster.get_nodes()):
+            # Every node gone -- the cluster file is meaningless.
+            print(f"orphan cluster: {cname} (all nodes destroyed)")
+            issues += 1
+            if args.fix:
+                cluster.path.unlink(missing_ok=True)
+                print("  fixed: removed")
+        elif missing_nodes:
+            names = ", ".join(n.name for n in missing_nodes)
+            print(f"degraded cluster: {cname} (missing nodes: {names})")
+            issues += 1
+            # No --fix for partial degradation: the user may want to
+            # recreate the missing nodes manually.
 
     hosts = Path("/etc/hosts")
     if hosts.exists():
@@ -1205,10 +1289,14 @@ def cmd_doctor(args: argparse.Namespace) -> None:
 
     if issues == 0:
         print("no issues found")
-    else:
-        print("---")
-        if args.fix:
-            print(f"{issues} issue(s) found and fixed")
-        else:
-            print(f"{issues} issue(s) found")
-            print("run with --fix to clean up")
+        return EXIT_OK
+    print("---")
+    if args.fix:
+        print(f"{issues} issue(s) found and fixed")
+        return EXIT_OK
+    print(f"{issues} issue(s) found")
+    print("run with --fix to clean up")
+    # Non-zero exit so CI scripts running `ltvm doctor` can detect
+    # orphans without parsing stdout.  --fix path still returns 0
+    # because the issues were resolved.
+    return EXIT_ERROR

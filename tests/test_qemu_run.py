@@ -72,11 +72,25 @@ class TestIsRunning:
         vm = VMInfo(name="x", ip="1.2.3.4", pid=-1)
         assert qemu_run.is_running(vm) is False
 
-    def test_live_pid_is_running(self) -> None:
-        """A PID that kill(0) accepts is considered running."""
+    def test_live_qemu_pid_is_running(self) -> None:
+        """A live PID whose /proc/<pid>/comm starts with qemu-system is running."""
         vm = VMInfo(name="x", ip="1.2.3.4", pid=42)
-        with patch("ltvm_pkg.qemu_run.os.kill", return_value=None):
+        with (
+            patch("ltvm_pkg.qemu_run.os.kill", return_value=None),
+            patch("ltvm_pkg.qemu_run.Path") as mock_path,
+        ):
+            mock_path.return_value.read_text.return_value = "qemu-system-x86\n"
             assert qemu_run.is_running(vm) is True
+
+    def test_live_pid_but_not_qemu_is_not_running(self) -> None:
+        """PID reuse: kill(0) succeeds but the process isn't qemu."""
+        vm = VMInfo(name="x", ip="1.2.3.4", pid=42)
+        with (
+            patch("ltvm_pkg.qemu_run.os.kill", return_value=None),
+            patch("ltvm_pkg.qemu_run.Path") as mock_path,
+        ):
+            mock_path.return_value.read_text.return_value = "bash\n"
+            assert qemu_run.is_running(vm) is False
 
     def test_dead_pid_is_not_running(self) -> None:
         """ProcessLookupError from kill(0) means the process is gone."""
@@ -94,6 +108,16 @@ class TestIsRunning:
             "ltvm_pkg.qemu_run.os.kill",
             side_effect=OSError("eperm"),
         ):
+            assert qemu_run.is_running(vm) is False
+
+    def test_proc_comm_unreadable_is_not_running(self) -> None:
+        """If /proc/<pid>/comm can't be read, treat as not running."""
+        vm = VMInfo(name="x", ip="1.2.3.4", pid=42)
+        with (
+            patch("ltvm_pkg.qemu_run.os.kill", return_value=None),
+            patch("ltvm_pkg.qemu_run.Path") as mock_path,
+        ):
+            mock_path.return_value.read_text.side_effect = FileNotFoundError
             assert qemu_run.is_running(vm) is False
 
 

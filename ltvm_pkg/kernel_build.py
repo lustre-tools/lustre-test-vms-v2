@@ -7,6 +7,7 @@ a full build tree (for Lustre module builds), and meta.json.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import os
@@ -142,6 +143,54 @@ def resolve_lustre_files(
         "series_file": series_file,
         "patches": patches,
     }
+
+
+def lustre_inputs_hash(
+    lustre_tree: str | Path,
+    lustre_target: str,
+    lustre_files: "LustreFiles",
+) -> bytes:
+    """Hash the Lustre-side inputs that affect a kernel build.
+
+    target_config.input_hash() doesn't have access to the Lustre tree,
+    so it can't fold these in itself.  Instead, callers compute this
+    digest and pass it through ``input_hash(extra=...)`` /
+    ``is_stale(extra_hash=...)`` / ``write_meta(extra_hash=...)``.
+
+    Inputs hashed:
+      - the .target file (lnxmaj/lnxrel/series/SRPM URL)
+      - the series file
+      - every patch in the series, in series order
+      - the Lustre kernel config (when one exists for this target/arch)
+
+    Editing any of these in place must invalidate the cached vmlinux,
+    or `is_stale` returns False and the rebuild the user is iterating
+    on gets silently skipped -- exactly the workflow this tool exists
+    for.
+    """
+    h = hashlib.sha256()
+
+    targets_dir = Path(lustre_tree) / "lustre/kernel_patches/targets"
+    for name in (f"{lustre_target}.target", f"{lustre_target}.target.in"):
+        tf = targets_dir / name
+        if tf.exists():
+            h.update(tf.read_bytes())
+            break
+
+    series_file = lustre_files["series_file"]
+    if series_file.exists():
+        h.update(series_file.read_bytes())
+
+    # Patches are already in series order from resolve_lustre_files
+    for patch in lustre_files["patches"]:
+        if patch.is_file():
+            h.update(patch.read_bytes())
+
+    config = lustre_files["config"]
+    if config is not None and config.is_file():
+        h.update(config.read_bytes())
+
+    return h.digest()
 
 
 # ------------------------------------------------------------------
@@ -440,16 +489,14 @@ def _build_kernel_srpm(
     lustre_tree = Path(lustre_tree)
     lustre_target = kernel or target_config.lustre_target
 
-    # Staleness check
-    if not force and not target_config.is_stale("kernel", kernel=lustre_target):
-        log.info("Kernel is up to date (use force=True to rebuild)")
-        return kernel_status(target_config, kernel=kernel)
-
-    # Parse Lustre target file
+    # Resolve Lustre patches/config FIRST so we can fold them into the
+    # staleness check.  Without this, editing a patch in place doesn't
+    # invalidate the cached vmlinuz and `is_stale` returns False --
+    # silently skipping the rebuild the user is iterating on (the
+    # primary use case this tool exists for).
     target_info = parse_lustre_target(lustre_tree, lustre_target)
     log.info("Kernel SRPM: %s", target_info["srpm"])
 
-    # Resolve Lustre kernel config and patches
     lustre_files = resolve_lustre_files(
         lustre_tree, lustre_target, target_info, arch=target_config.arch
     )
@@ -461,6 +508,15 @@ def _build_kernel_srpm(
     else:
         log.info("No Lustre kernel config -- will extract from SRPM")
     log.info("Patches to apply: %d", len(lustre_patches))
+
+    extra_hash = lustre_inputs_hash(lustre_tree, lustre_target, lustre_files)
+
+    # Staleness check (now folds in the resolved Lustre inputs)
+    if not force and not target_config.is_stale(
+        "kernel", kernel=lustre_target, extra_hash=extra_hash
+    ):
+        log.info("Kernel is up to date (use force=True to rebuild)")
+        return kernel_status(target_config, kernel=kernel)
 
     # Compute the full output directory name: <lustre_target>-<lnxmaj>-<lnxrel>
     # e.g. 5.14-rhel9.7-5.14.0-611.13.1.el9_7_lustre
@@ -572,7 +628,9 @@ def _build_kernel_srpm(
     log.info("vmlinuz: %.1f MB", vmlinuz_size / 1e6)
     log.info("Kernel version: %s", krelease)
 
-    # Write metadata
+    # Write metadata.  extra_hash MUST match what was used in the
+    # is_stale check above, otherwise the persisted hash and the
+    # next-run input_hash diverge and rebuild loops forever.
     meta: dict[str, object] = {
         "kernel_version": krelease,
         "srpm": target_info["srpm"],
@@ -584,7 +642,9 @@ def _build_kernel_srpm(
         "vmlinuz_bytes": vmlinuz_size,
         "built_at": datetime.now(timezone.utc).isoformat(),
     }
-    target_config.write_meta("kernel", kernel=full_name, **meta)
+    target_config.write_meta(
+        "kernel", kernel=full_name, extra_hash=extra_hash, **meta
+    )
 
     log.info("Kernel build complete")
     return meta

@@ -307,8 +307,25 @@ class TargetConfig:
     # Staleness and metadata
     # ------------------------------------------------------------------
 
-    def input_hash(self, artifact: str, kernel: str | None = None) -> str:
-        """Hash inputs for an artifact to detect staleness."""
+    def input_hash(
+        self,
+        artifact: str,
+        kernel: str | None = None,
+        extra: bytes = b"",
+    ) -> str:
+        """Hash inputs for an artifact to detect staleness.
+
+        ``extra`` lets a caller fold additional input bytes into the hash
+        without target_config needing to know about them.  In particular,
+        kernel_build uses this to mix in the contents of Lustre kernel
+        patches, the series file, the .target file, and the
+        Lustre-provided kernel config -- target_config has no awareness
+        of those files but they absolutely affect the built kernel.
+        Without this, editing a patch in place doesn't invalidate the
+        cached vmlinuz/vmlinux and `is_stale` returns False, silently
+        skipping the rebuild that the user is iterating on -- the
+        primary workflow this tool exists for.
+        """
         h = hashlib.sha256()
 
         # Always fold in this target's slice of targets.yaml so changes
@@ -380,6 +397,9 @@ class TargetConfig:
             # affects Lustre build (--enable-server) but every image
             # currently installs server packages unconditionally.
 
+        if extra:
+            h.update(extra)
+
         return h.hexdigest()[:16]
 
     def _kernel_meta_file(self, kernel: str | None) -> Path:
@@ -390,8 +410,17 @@ class TargetConfig:
             / "meta.json"
         )
 
-    def is_stale(self, artifact: str, kernel: str | None = None) -> bool:
-        """Check if an artifact needs rebuilding."""
+    def is_stale(
+        self,
+        artifact: str,
+        kernel: str | None = None,
+        extra_hash: bytes = b"",
+    ) -> bool:
+        """Check if an artifact needs rebuilding.
+
+        ``extra_hash`` is forwarded to ``input_hash`` so callers can fold
+        in inputs target_config doesn't know about (see ``input_hash``).
+        """
         if artifact == "kernel":
             meta_file = self._kernel_meta_file(kernel)
         else:
@@ -400,13 +429,24 @@ class TargetConfig:
             return True
         meta = json.loads(meta_file.read_text())
         return bool(
-            meta.get("input_hash") != self.input_hash(artifact, kernel=kernel)
+            meta.get("input_hash")
+            != self.input_hash(artifact, kernel=kernel, extra=extra_hash)
         )
 
     def write_meta(
-        self, artifact: str, kernel: str | None = None, **extra: object
+        self,
+        artifact: str,
+        kernel: str | None = None,
+        extra_hash: bytes = b"",
+        **extra: object,
     ) -> None:
-        """Write build metadata after a successful build."""
+        """Write build metadata after a successful build.
+
+        ``extra_hash`` is forwarded to ``input_hash`` so the persisted
+        ``input_hash`` matches the one ``is_stale`` will compute on the
+        next run.  ``extra`` keyword args are written into meta.json
+        verbatim (kernel_version, build_date, etc.).
+        """
         if artifact == "kernel":
             out_dir = self._kernel_meta_file(kernel).parent
         else:
@@ -414,7 +454,9 @@ class TargetConfig:
         out_dir.mkdir(parents=True, exist_ok=True)
         meta = {
             "target": self.name,
-            "input_hash": self.input_hash(artifact, kernel=kernel),
+            "input_hash": self.input_hash(
+                artifact, kernel=kernel, extra=extra_hash
+            ),
             **extra,
         }
         (out_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")

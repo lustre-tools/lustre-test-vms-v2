@@ -15,6 +15,7 @@ from .vm_state import (
     EXIT_ERROR,
     GATEWAY,
     VMInfo,
+    VMNotFound,
     qemu_binary_for_arch,
     qemu_machine_for_arch,
 )
@@ -35,13 +36,29 @@ def die(msg: str, code: int = EXIT_ERROR) -> NoReturn:
 
 
 def is_running(vm: VMInfo) -> bool:
+    """True iff vm.pid is alive AND points at a qemu process for this VM.
+
+    A bare `os.kill(pid, 0)` check is unsafe across host reboots: PIDs
+    get reused, and a long-stopped VM's PID might now be a shell, an
+    editor, or another VM.  Without this validation, cmd_doctor sees
+    the alien process as "still running", refuses to clean up, and
+    cmd_ensure takes the "already running" branch instead of relaunching.
+    Read /proc/<pid>/comm to confirm it's a qemu binary.
+    """
     if vm.pid <= 0:
         return False
     try:
         os.kill(vm.pid, 0)
-        return True
     except (OSError, ProcessLookupError):
         return False
+    try:
+        comm = Path(f"/proc/{vm.pid}/comm").read_text().strip()
+    except (OSError, FileNotFoundError):
+        return False
+    # qemu reports as "qemu-system-x86" / "qemu-system-aarch64" / etc.
+    # The Linux comm field is truncated to 15 chars (TASK_COMM_LEN-1),
+    # so we substring-match rather than equality-test.
+    return comm.startswith("qemu-system")
 
 
 def launch_qemu(vm: VMInfo) -> None:
@@ -200,7 +217,13 @@ def kill_qemu(vm: VMInfo) -> None:
                     os.kill(vm.pid, signal.SIGKILL)
                 except OSError:
                     pass
-    vm.update_pid(0)
+    try:
+        vm.update_pid(0)
+    except VMNotFound:
+        # Race with cmd_destroy: the .info file was removed between
+        # VMInfo.load and now.  We're tearing the VM down anyway, so
+        # this is benign.
+        pass
     run(["ip", "link", "del", vm.tap], capture_output=True)
     # Flush stale ARP entry so the bridge doesn't poison new VMs or
     # re-creations of this VM that may get a different MAC.

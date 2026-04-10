@@ -340,10 +340,14 @@ class VMInfo:
         """Update multiple fields in the info file atomically (single write).
 
         Held under a per-VM flock so concurrent updaters can't lose writes.
+        Raises VMNotFound if the .info file is gone (e.g. concurrent
+        destroy or partially rolled-back create) -- the previous silent
+        no-op left in-memory VMInfo state diverged from disk with no
+        signal to the caller.
         """
         with self._info_lock():
             if not self.info_path.exists():
-                return
+                raise VMNotFound(self.name)
             text = self.info_path.read_text()
             for key, value in fields.items():
                 pattern = rf"^{key}=.*$"
