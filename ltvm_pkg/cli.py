@@ -18,6 +18,7 @@ from typing import Any
 
 from ltvm_pkg import host_setup
 from ltvm_pkg.target_config import TargetConfig, list_targets
+from ltvm_pkg.deploy import deploy_to_vm, lustre_mount_vm
 from ltvm_pkg.image_build import build_image, image_status
 from ltvm_pkg.kernel_build import build_kernel, kernel_status
 from ltvm_pkg.lustre_build import build_lustre
@@ -168,17 +169,6 @@ def _qemu_ns(**kwargs: Any) -> argparse.Namespace:
     return argparse.Namespace(**kwargs)
 
 
-def _parse_size(s: str) -> int:
-    """Parse a human-readable size like '1G', '512M', '2048' to bytes."""
-    s = s.strip().upper()
-    if s.endswith("G"):
-        return int(s[:-1]) * 1024 * 1024 * 1024
-    if s.endswith("M"):
-        return int(s[:-1]) * 1024 * 1024
-    return int(s)
-
-
-
 # ------------------------------------------------------------------
 # Subcommand: build-all
 # ------------------------------------------------------------------
@@ -200,8 +190,17 @@ def _do_build_container(target_config: TargetConfig) -> str:
     _arch_to_platform = {"x86_64": "linux/amd64", "aarch64": "linux/arm64"}
     platform = _arch_to_platform.get(target_config.arch, "linux/amd64")
 
+    build_args = [
+        "--build-arg", f"BASE_IMAGE={target_config.container_image}",
+    ]
+    if target_config.kernel_deb_source:
+        build_args += [
+            "--build-arg",
+            f"KERNEL_DEB_SOURCE={target_config.kernel_deb_source}",
+        ]
     subprocess.run(
         ["podman", "build", "--platform", platform,
+         *build_args,
          "-t", tag, "-f", str(dockerfile), str(TARGETS_DIR)],
         check=True,
     )
@@ -222,8 +221,10 @@ def cmd_build_all(args: argparse.Namespace) -> int:
         return err
     assert tc is not None
 
-    lustre_tree_arg = getattr(args, "lustre_tree_pos", None) or args.lustre_tree
-    lustre_tree, err_msg = _resolve_lustre_tree(lustre_tree_arg)
+    # build-all always requires a Lustre tree -- even for deb targets
+    # where the kernel build itself doesn't need one, the surrounding
+    # workflow (image inject, optional --lustre-build, packaging) does.
+    lustre_tree, err_msg = _resolve_lustre_tree(args.lustre_tree)
     if err_msg:
         return _error(
             err_msg,
@@ -526,7 +527,8 @@ def _gh_api(endpoint: str) -> dict:
     """Call GitHub API and return parsed JSON."""
     api = f"https://api.github.com/repos/{GITHUB_REPO}/{endpoint}"
     r = subprocess.run(
-        ["curl", "-fsSL", api], capture_output=True, text=True,
+        ["curl", "-fsSL", "--max-time", "30", api],
+        capture_output=True, text=True, timeout=35,
     )
     if r.returncode != 0:
         raise RuntimeError(
@@ -678,7 +680,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         print()
         print("Next:")
         arch_flag = f" --arch {arch}" if arch != "x86_64" else ""
-        print(f"  sudo ltvm vm create co1-test --os {target}{arch_flag} "
+        print(f"  sudo ltvm create co1-test --os {target}{arch_flag} "
               f"--vcpus 2 --mem 2048 --mdt-disks 1 --ost-disks 2")
         print(f"  sudo ltvm deploy co1-test --mount")
 
@@ -783,6 +785,14 @@ def cmd_publish(args: argparse.Namespace) -> int:
     url = f"https://github.com/{GITHUB_REPO}/releases/tag/{tag}"
     if not use_json:
         print(f"  Published: {url}")
+
+    # Record the release tag locally so subsequent `ltvm fetch` knows
+    # the artifacts already on disk match this release.
+    arch = getattr(args, "arch", None) or "x86_64"
+    arch_suffix = f"-{arch}" if arch != "x86_64" else ""
+    tag_file = tc.output_dir / f".ltvm-release-tag{arch_suffix}"
+    tag_file.parent.mkdir(parents=True, exist_ok=True)
+    tag_file.write_text(tag + "\n")
 
     result = {
         "target": args.target,
@@ -899,11 +909,6 @@ def cmd_status(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------
 
 
-
-# Deploy helpers live in ltvm_pkg.deploy; import for use by cmd_deploy.
-from ltvm_pkg.deploy import deploy_to_vm, lustre_mount_vm
-
-
 def _vm_call(fn, ns, use_json: bool) -> int:
     """Call a vm_commands function, catching SystemExit and VMNotFound."""
     from ltvm_pkg.vm_state import VMNotFound
@@ -914,15 +919,6 @@ def _vm_call(fn, ns, use_json: bool) -> int:
         return int(e.code) if e.code is not None else EXIT_ERROR
     except VMNotFound as e:
         return _error(str(e), use_json)
-
-
-def _resolve_disk_size(val: str | None) -> int | None:
-    """Parse disk_size from argparse (string or None) to int bytes."""
-    if val is None:
-        return None
-    if isinstance(val, int):
-        return val
-    return _parse_size(val)
 
 
 def cmd_create(args: argparse.Namespace) -> int:
@@ -941,7 +937,7 @@ def cmd_create(args: argparse.Namespace) -> int:
         kernel=args.kernel or "",
         mdt_disks=args.mdt_disks,
         ost_disks=args.ost_disks,
-        disk_size=_resolve_disk_size(args.disk_size),
+        disk_size=args.disk_size,
         arch=args.arch or "x86_64",
         os=args.os or "",
         _quiet=False,
@@ -966,7 +962,7 @@ def cmd_ensure(args: argparse.Namespace) -> int:
         kernel=args.kernel or "",
         mdt_disks=args.mdt_disks,
         ost_disks=args.ost_disks,
-        disk_size=_resolve_disk_size(args.disk_size),
+        disk_size=args.disk_size,
         arch=args.arch or "x86_64",
         os=args.os or "",
         _quiet=False,
@@ -1130,9 +1126,14 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     os_family = tc.os_family if tc else "rhel"
 
-    # Resolve build path: explicit --build, packaged Lustre, or cwd
-    build_arg = getattr(args, "build", ".")
-    if build_arg == ".":
+    # Resolve build path:
+    #   1. Explicit --build PATH wins (including --build .)
+    #   2. Otherwise, prefer the bundled Lustre snapshot from `ltvm fetch`
+    #   3. Otherwise, fall back to cwd
+    build_arg = getattr(args, "build", None)
+    if build_arg is not None:
+        build_path = Path(build_arg).resolve()
+    else:
         packaged = (
             ltvm_root / "output" / target / "kernels" / resolved_kernel / "lustre"
         )
@@ -1142,8 +1143,6 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 print(f"  Using bundled Lustre (from ltvm fetch)")
         else:
             build_path = Path(".").resolve()
-    else:
-        build_path = Path(build_arg).resolve()
 
     if not build_path.is_dir():
         return _error(f"Build path not found: {build_path}", use_json)
@@ -1219,12 +1218,6 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                     f"Lustre build succeeded but no staging with modules for {target}",
                     use_json,
                 )
-
-        if not staging.is_dir():
-            return _error(
-                f"No staging for {target} -- run: ltvm build-lustre {target}",
-                use_json,
-            )
 
     try:
         deploy_to_vm(
@@ -1310,11 +1303,40 @@ def cmd_cluster(args: argparse.Namespace) -> int:
             return _error(
                 "cluster create requires a name and at least one node spec",
                 use_json,
-                hint="ltvm cluster create <name> <role:vm[:disks]> ...",
+                hint="ltvm cluster create <name> [--vcpus N] [--mem MB] "
+                "<role:vm[:disks]> ...",
+            )
+        # Parse optional --vcpus / --mem flags out of cargs; remaining
+        # positionals are name + node specs.
+        vcpus = 2
+        mem = 4096
+        positional: list[str] = []
+        i = 0
+        while i < len(cargs):
+            if cargs[i] == "--vcpus" and i + 1 < len(cargs):
+                vcpus = int(cargs[i + 1])
+                i += 2
+            elif cargs[i] == "--mem" and i + 1 < len(cargs):
+                mem = int(cargs[i + 1])
+                i += 2
+            else:
+                positional.append(cargs[i])
+                i += 1
+        if len(positional) < 2:
+            return _error(
+                "cluster create requires a name and at least one node spec",
+                use_json,
+                hint="ltvm cluster create <name> [--vcpus N] [--mem MB] "
+                "<role:vm[:disks]> ...",
             )
         return _call(
             _qc_create,
-            _qemu_ns(name=cargs[0], nodes=cargs[1:], vcpus=2, mem=4096),
+            _qemu_ns(
+                name=positional[0],
+                nodes=positional[1:],
+                vcpus=vcpus,
+                mem=mem,
+            ),
         )
 
     if action == "destroy":
@@ -1341,7 +1363,11 @@ def cmd_cluster(args: argparse.Namespace) -> int:
                 server_only = True
                 i += 1
             else:
-                i += 1
+                return _error(
+                    f"cluster deploy: unknown argument '{cargs[i]}'",
+                    use_json,
+                    hint="valid: --build PATH, --mount, --server-only",
+                )
         return _call(
             _qc_deploy,
             _qemu_ns(
@@ -1391,11 +1417,6 @@ def cmd_cluster(args: argparse.Namespace) -> int:
         )
 
     return _error(f"Unknown cluster action: {action}", use_json)
-
-
-# ------------------------------------------------------------------
-# Subcommand: validate
-# ------------------------------------------------------------------
 
 
 # ------------------------------------------------------------------

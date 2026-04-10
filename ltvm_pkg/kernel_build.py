@@ -150,11 +150,6 @@ def resolve_lustre_files(
 # ------------------------------------------------------------------
 
 
-def _find_srpm_url(srpm_name: str, base_url: str) -> str:
-    """Construct the download URL for a kernel SRPM."""
-    return f"{base_url}/{srpm_name}"
-
-
 def download_srpm(srpm_name: str, cache_dir: str | Path, base_url: str) -> Path:
     """Download a kernel SRPM if not already cached.
 
@@ -169,7 +164,7 @@ def download_srpm(srpm_name: str, cache_dir: str | Path, base_url: str) -> Path:
         log.info("Using cached SRPM: %s", cached)
         return cached
 
-    url = _find_srpm_url(srpm_name, base_url)
+    url = f"{base_url}/{srpm_name}"
     log.info("Downloading SRPM: %s", url)
 
     subprocess.run(
@@ -199,15 +194,28 @@ def _ensure_container_image(target_config: TargetConfig) -> str:
     dockerfile = target_config.target_dir / "container.Dockerfile"
 
     log.info("Building container image: %s", tag)
+    # Map target arch to podman platform string so cross-arch builds
+    # pull the correct base image (e.g. arm64 instead of amd64).
+    _arch_to_platform = {"x86_64": "linux/amd64", "aarch64": "linux/arm64"}
+    platform = _arch_to_platform.get(arch, "linux/amd64")
     # Build context must be targets/ (parent of target_dir) so that
     # COPY common/... directives in the Dockerfile resolve correctly.
     cmd = [
         "podman",
         "build",
+        "--platform",
+        platform,
         "-t",
         tag,
         "--build-arg",
         f"BASE_IMAGE={target_config.container_image}",
+    ]
+    if target_config.kernel_deb_source:
+        cmd += [
+            "--build-arg",
+            f"KERNEL_DEB_SOURCE={target_config.kernel_deb_source}",
+        ]
+    cmd += [
         "-f",
         str(dockerfile),
         str(TARGETS_DIR),

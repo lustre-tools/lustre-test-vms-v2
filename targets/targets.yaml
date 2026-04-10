@@ -1,9 +1,7 @@
 defaults:
   arch: x86_64
   os_family: rhel
-  root_password: initial0
   server: true
-  ssh_timeout: 30
 targets:
   rocky10:
     container_image: quay.io/rockylinux/rockylinux:10.1

@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -185,18 +186,23 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
         # build-e2fsprogs.sh steps with COPY from pre-built output.
         original = dockerfile.read_text()
         patched = original
-        patched = patched.replace(
-            "RUN bash /tmp/build-tools.sh",
-            "COPY _prebuilt/usr/local/ /usr/local/",
-        )
-        patched = patched.replace(
-            "RUN bash /tmp/build-e2fsprogs.sh v1.47.3-wc2",
-            "COPY _prebuilt/usr/ /usr/",
-        )
-        patched = patched.replace(
-            "RUN bash /tmp/build-e2fsprogs.sh",
-            "COPY _prebuilt/usr/ /usr/",
-        )
+        replacements = {
+            "RUN bash /tmp/build-tools.sh":
+                "COPY _prebuilt/usr/local/ /usr/local/",
+            "RUN bash /tmp/build-e2fsprogs.sh":
+                "COPY _prebuilt/usr/ /usr/",
+        }
+        for old, new in replacements.items():
+            # Match any line starting with the key (ignoring trailing args
+            # like version strings) so version bumps don't silently skip.
+            pattern = re.compile(re.escape(old) + r".*", re.MULTILINE)
+            patched, n = pattern.subn(new, patched)
+            if n == 0:
+                raise RuntimeError(
+                    f"Cross-build Dockerfile patching failed: "
+                    f"could not find '{old}' in {dockerfile}. "
+                    f"Has the Dockerfile changed?"
+                )
 
         # Write patched Dockerfile next to the original
         effective_dockerfile = out_dir / "image.Dockerfile.cross"
@@ -240,10 +246,20 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
     if kernel_name is not None:
         kdir = target_config.output_dir / "kernels" / kernel_name
         modules_dir = kdir / "modules"
+        # Read the exact kernel release string the modules were built for
+        # so the injected `depmod -a <kver>` is deterministic instead of
+        # globbing /lib/modules.
+        kver_file = kdir / "build-tree" / "include" / "config" / "kernel.release"
+        kver = kver_file.read_text().strip() if kver_file.exists() else None
         from ltvm_pkg.lustre_build import staging_path as _staging_path
         staging_dir = _staging_path(target_config.name)
         has_modules = (modules_dir / "lib" / "modules").is_dir()
-        has_lustre = staging_dir.is_dir()
+        # Staging dir may exist but be empty (pre-Lustre build).  Require
+        # actual content (usr/ or lib/modules/) before trying to inject.
+        has_lustre = (
+            (staging_dir / "usr").is_dir()
+            or (staging_dir / "lib" / "modules").is_dir()
+        )
 
         if has_modules or has_lustre:
             # Build a context dir with the files to inject
@@ -293,7 +309,15 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
                     )
                     lines.append("# Lustre modules already merged into modules/")
                 lines.append("COPY usr/ /usr/")
-            lines.append("RUN ldconfig && depmod -a $(ls /lib/modules/ | head -1)")
+            if kver:
+                lines.append(f"RUN ldconfig && depmod -a {kver}")
+            else:
+                # No kernel.release file available; fall back to whatever
+                # /lib/modules contains.  Sorted -V picks the highest.
+                lines.append(
+                    "RUN ldconfig && depmod -a "
+                    "$(ls /lib/modules/ | sort -V | tail -1)"
+                )
             lines.append(
                 "RUN ln -sf mount.lustre /usr/sbin/mount.lustre_tgt 2>/dev/null || true"
             )
@@ -418,37 +442,34 @@ def _get_package_manifest(
     container_tag: str, os_family: str = "rhel"
 ) -> list[str]:
     """Get installed package list from the container image."""
-    try:
-        if os_family == "debian":
-            result = _run(
-                [
-                    "podman",
-                    "run",
-                    "--rm",
-                    container_tag,
-                    "dpkg-query",
-                    "-W",
-                    "-f",
-                    "${Package} ${Version} ${Architecture}\n",
-                ]
-            )
-        else:
-            result = _run(
-                [
-                    "podman",
-                    "run",
-                    "--rm",
-                    container_tag,
-                    "rpm",
-                    "-qa",
-                    "--queryformat",
-                    "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\\n",
-                ]
-            )
-        packages = sorted(result.stdout.strip().splitlines())
-        return packages
-    except subprocess.CalledProcessError:
-        raise
+    if os_family == "debian":
+        result = _run(
+            [
+                "podman",
+                "run",
+                "--rm",
+                container_tag,
+                "dpkg-query",
+                "-W",
+                "-f",
+                "${Package} ${Version} ${Architecture}\n",
+            ]
+        )
+    else:
+        result = _run(
+            [
+                "podman",
+                "run",
+                "--rm",
+                container_tag,
+                "rpm",
+                "-qa",
+                "--queryformat",
+                "%{NAME}-%{VERSION}-%{RELEASE}.%{ARCH}\\n",
+            ]
+        )
+    packages = sorted(result.stdout.strip().splitlines())
+    return packages
 
 
 def image_status(

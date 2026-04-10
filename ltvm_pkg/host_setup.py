@@ -1,7 +1,7 @@
 """Host setup for Lustre QEMU test VMs.
 
 Prepares a Linux host: installs QEMU, configures the network
-bridge, installs the ltvm entry point and deploy-lustre.sh,
+bridge, installs the ltvm entry point,
 and sets up SSH.
 """
 
@@ -137,14 +137,29 @@ def _run_quiet(
 
 
 def _pkg_install(host: HostInfo, *pkgs: str) -> None:
-    """Install packages using the host's package manager."""
+    """Install packages using the host's package manager.
+
+    Failures are logged with the package list so the user can see what
+    actually went wrong, instead of being silently swallowed and causing
+    confusing downstream errors.
+    """
     translated = _translate_pkgs(pkgs, host)
     if host.pkg_mgr == "dnf":
-        _run(["dnf", "install", "-y", *translated], check=False)
+        r = _run(["dnf", "install", "-y", *translated], check=False)
     elif host.pkg_mgr == "apt":
         env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
-        subprocess.run(
-            ["apt-get", "install", "-y", *translated], env=env, check=False
+        r = subprocess.run(
+            ["apt-get", "install", "-y", *translated],
+            env=env, check=False, capture_output=True, text=True,
+        )
+    else:
+        return
+    if r.returncode != 0:
+        log.warning(
+            "package install failed (rc=%s) for: %s\n%s",
+            r.returncode,
+            " ".join(translated),
+            (r.stderr or "").strip(),
         )
 
 
@@ -358,36 +373,36 @@ def _fetch_prebuilt_qemu(host: HostInfo) -> bool:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _system_qemu_has_microvm() -> str | None:
-    """Check if the system-packaged QEMU has microvm support.
+def _system_qemu_has_machine(
+    binaries: tuple[str, ...], machine: str,
+) -> str | None:
+    """Return the first qemu binary in `binaries` that supports `machine`.
 
-    Returns the qemu binary path if microvm is available, else None.
+    Used to detect whether the system QEMU has microvm (x86_64) or
+    virt (aarch64) machine support before falling back to a source build.
     """
-    for binary in ("qemu-system-x86_64", "qemu-kvm", "/usr/libexec/qemu-kvm"):
+    for binary in binaries:
         path = shutil.which(binary) or binary
         try:
             r = _run_quiet([path, "-machine", "help"], check=False)
-            if r.returncode == 0 and "microvm" in r.stdout:
+            if r.returncode == 0 and machine in r.stdout:
                 return path
         except (FileNotFoundError, OSError):
             continue
     return None
+
+
+def _system_qemu_has_microvm() -> str | None:
+    """Check if the system-packaged QEMU x86_64 has microvm support."""
+    return _system_qemu_has_machine(
+        ("qemu-system-x86_64", "qemu-kvm", "/usr/libexec/qemu-kvm"),
+        "microvm",
+    )
 
 
 def _system_qemu_has_virt() -> str | None:
-    """Check if the system-packaged QEMU aarch64 has virt machine support.
-
-    Returns the qemu binary path if virt is available, else None.
-    """
-    for binary in ("qemu-system-aarch64",):
-        path = shutil.which(binary) or binary
-        try:
-            r = _run_quiet([path, "-machine", "help"], check=False)
-            if r.returncode == 0 and "virt" in r.stdout:
-                return path
-        except (FileNotFoundError, OSError):
-            continue
-    return None
+    """Check if the system-packaged QEMU aarch64 has virt machine support."""
+    return _system_qemu_has_machine(("qemu-system-aarch64",), "virt")
 
 
 def install_qemu(host: HostInfo, force: bool = False) -> None:
@@ -631,23 +646,11 @@ def setup_network(host: HostInfo, subnet: str = DEFAULT_SUBNET) -> None:
 
 
 def install_scripts(host: HostInfo) -> None:
-    """Install deploy-lustre.sh, dk-filter, and VM dirs."""
+    """Install dk-filter and VM dirs."""
     log.info("Installing scripts and VM directories")
 
-    for d in ("overlays", "sockets", "kernel", "images"):
+    for d in ("overlays", "sockets"):
         (VM_DIR / d).mkdir(parents=True, exist_ok=True)
-
-    # deploy-lustre.sh (standalone shell helper, still used)
-    for script in ("deploy-lustre.sh",):
-        src = PKG_DIR / script
-        if not src.exists():
-            raise RuntimeError(f"{script} not found at {src}")
-        dst = VM_DIR / script
-        shutil.copy2(str(src), str(dst))
-        dst.chmod(0o755)
-        link = Path("/usr/local/bin") / script
-        link.unlink(missing_ok=True)
-        link.symlink_to(dst)
 
     # dk-filter
     dk = PKG_DIR / "dk-filter"
@@ -669,7 +672,7 @@ def install_scripts(host: HostInfo) -> None:
 # SSH config
 # ------------------------------------------------------------------
 
-MARKER = "# lustre-test-vms"
+SSH_BLOCK_MARKER = "# lustre-test-vms"
 
 
 def setup_ssh(subnet: str = DEFAULT_SUBNET) -> None:
@@ -682,7 +685,7 @@ def setup_ssh(subnet: str = DEFAULT_SUBNET) -> None:
 
     if config.exists():
         text = config.read_text()
-        if MARKER in text:
+        if SSH_BLOCK_MARKER in text:
             if f"Host {subnet}." in text:
                 log.info("SSH config already current")
                 return
@@ -692,7 +695,7 @@ def setup_ssh(subnet: str = DEFAULT_SUBNET) -> None:
             out = []
             skip = False
             for line in lines:
-                if MARKER in line:
+                if SSH_BLOCK_MARKER in line:
                     skip = True
                     continue
                 if skip and line.strip() == "":
@@ -705,7 +708,7 @@ def setup_ssh(subnet: str = DEFAULT_SUBNET) -> None:
             config.write_text(text)
 
     block = f"""
-{MARKER}
+{SSH_BLOCK_MARKER}
 Host {subnet}.*
     StrictHostKeyChecking no
     UserKnownHostsFile /dev/null
@@ -767,11 +770,10 @@ def verify(subnet: str = DEFAULT_SUBNET) -> dict[str, Any]:
     }
 
     # Scripts
-    for script in ("ltvm", "deploy-lustre.sh"):
-        results[script] = {
-            "installed": shutil.which(script) is not None,
-            "path": shutil.which(script),
-        }
+    results["ltvm"] = {
+        "installed": shutil.which("ltvm") is not None,
+        "path": shutil.which("ltvm"),
+    }
 
     # podman
     pv = None
@@ -788,7 +790,7 @@ def verify(subnet: str = DEFAULT_SUBNET) -> dict[str, Any]:
     ssh_config = Path("/root/.ssh/config")
     results["ssh"] = {
         "configured": (
-            ssh_config.exists() and MARKER in ssh_config.read_text()
+            ssh_config.exists() and SSH_BLOCK_MARKER in ssh_config.read_text()
         ),
     }
 
@@ -800,7 +802,6 @@ def verify(subnet: str = DEFAULT_SUBNET) -> dict[str, Any]:
             results["bridge"]["up"],
             results["dnsmasq"]["running"],
             results["ltvm"]["installed"],
-            results["deploy-lustre.sh"]["installed"],
             results["podman"]["installed"],
             results["ssh"]["configured"],
         ]
@@ -846,12 +847,11 @@ def print_verify(results: dict[str, Any]) -> None:
     else:
         fail("dnsmasq: not running")
 
-    for script in ("ltvm", "deploy-lustre.sh"):
-        s = results[script]
-        if s["installed"]:
-            ok(f"{script}: {s['path']}")
-        else:
-            fail(f"{script}: not in PATH")
+    s = results["ltvm"]
+    if s["installed"]:
+        ok(f"ltvm: {s['path']}")
+    else:
+        fail("ltvm: not in PATH")
 
     p = results["podman"]
     if p["installed"]:

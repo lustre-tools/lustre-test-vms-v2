@@ -1,41 +1,70 @@
-# packages-dev.txt -- build container / development packages
-# Compilers, build tools, kernel build deps
+# packages-dev.txt -- build container packages
+#
+# This is the canonical list of packages installed in every build
+# container.  Names use RHEL conventions; the ubuntu2404 container
+# translates them via targets/ubuntu2404/package-map.txt.
 
-# Compilers
+# --- Compilers and build tools ---
 gcc
 gcc-c++
-gcc-gfortran
 make
-
-# Autotools
+patch
 autoconf
 automake
 libtool
 
-# Debugging symbols / build tools
+# --- Kernel build dependencies ---
+rpm-build
+bc
+bison
+flex
 elfutils-devel
 elfutils-libelf-devel
+openssl-devel
+perl-interpreter
+perl-Carp
+perl-devel
+perl-generators
+ncurses-devel
+dwarves
+kmod
+cpio
 
-# Kernel module build
-kernel-devel
-fuse-libs
-
-# Library build deps for Lustre
+# --- Lustre userspace build dependencies ---
 libmount-devel
 libyaml-devel
+libnl3-devel
 libaio-devel
+libselinux-devel
+zlib-devel
 json-c-devel
+keyutils-libs-devel
+fuse-devel
+texinfo
+pkgconf-pkg-config
+kernel-rpm-macros
 
-# Parser generators (needed by some test tools)
-flex
-bison
+# --- Optional build tools (best-effort: nasm) ---
+nasm
 
-# VCS
-git
+# --- System utilities the build scripts assume present ---
+net-tools
+hostname
+diffutils
+findutils
+rsync
+tar
+gzip
+xz
+bzip2
 
-# Debuggers
-gdb
-lldb
-
-# Python build deps
+# --- Python ---
+python3
 python3-devel
+
+# --- VCS / debuggers ---
+git
+gdb
+
+# --- Build accelerator ---
+ccache

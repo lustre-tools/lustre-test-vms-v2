@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import TypedDict
 
 from .target_config import OUTPUT_DIR
+from .vm_state import DEFAULT_TARGET
 
 
 def staging_path(target: str) -> Path:
@@ -68,7 +69,7 @@ def _needs_reconfigure(
     build_tree: Path,
     force: bool,
     container_path: Path,
-    target: str = "rocky9",
+    target: str = DEFAULT_TARGET,
     enable_server: bool = True,
 ) -> bool:
     """Return True if configure needs to be re-run.
@@ -109,6 +110,8 @@ def _needs_reconfigure(
         if prev_path != str(container_path):
             print("  Kernel path changed, reconfiguring")
             return True
+    else:
+        return True  # no path stamp = never built for this target
     if stamp_server.exists():
         prev_server = stamp_server.read_text().strip()
         if prev_server != str(enable_server):
@@ -123,7 +126,7 @@ def build_lustre(
     build_tree: str | Path,
     *,
     container_tag: str | None = None,
-    target: str = "rocky9",
+    target: str = DEFAULT_TARGET,
     enable_server: bool = True,
     extra_configure: list[str] | None = None,
     jobs: int | None = None,
@@ -203,7 +206,7 @@ def _build_in_container(
     jobs: int,
     force: bool,
     arch: str = "x86_64",
-    target: str = "rocky9",
+    target: str = DEFAULT_TARGET,
 ) -> BuildResult:
     """Build Lustre inside the build container.
 
@@ -214,7 +217,7 @@ def _build_in_container(
     print(f"  Container: {container_tag}")
     print(f"  Lustre:    {lustre_tree}")
     print(f"  Kernel:    {build_tree}")
-    print(f"  Kernel:    {kver}")
+    print(f"  Version:   {kver}")
 
     container_kernel = Path("/kernel")
     need_reconf = _needs_reconfigure(
@@ -383,7 +386,7 @@ fi""")
 
 def lustre_status(
     lustre_tree: str | Path, build_tree: str | Path,
-    target: str = "rocky9",
+    target: str = DEFAULT_TARGET,
 ) -> StatusResult:
     """Return a status dict for the Lustre build."""
     lustre_tree = Path(lustre_tree).resolve()

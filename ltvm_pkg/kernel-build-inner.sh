@@ -24,8 +24,8 @@
 set -euo pipefail
 
 JOBS="${JOBS:-$(nproc)}"
-LNXMAJ="${LNXMAJ:-}"
-LNXREL="${LNXREL:-}"
+: "${LNXMAJ:?LNXMAJ must be set by the caller (ltvm kernel_build.py)}"
+: "${LNXREL:?LNXREL must be set by the caller (ltvm kernel_build.py)}"
 TARGET_ARCH="${TARGET_ARCH:-x86_64}"
 BUILD=/build/kernel-src
 
@@ -81,8 +81,8 @@ cd "$SRPM_DIR"
 rpm2cpio /input/kernel.src.rpm | cpio -idm 2>/dev/null
 
 # Find the kernel source tarball
-SRC_TAR=$(find "$SRPM_DIR" -name "linux-*.tar.xz" \
-	-o -name "linux-*.tar.gz" | head -1)
+SRC_TAR=$(find "$SRPM_DIR" \( -name "linux-*.tar.xz" \
+	-o -name "linux-*.tar.gz" \) | head -1)
 if [[ -z "$SRC_TAR" ]]; then
 	echo "ERROR: No linux source tarball in SRPM" >&2
 	exit 1

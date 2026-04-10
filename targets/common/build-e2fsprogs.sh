@@ -2,16 +2,21 @@
 # Build and install Whamcloud-patched e2fsprogs from source.
 #
 # Used in both build containers and VM images.
-# Build containers: pass TAG to pin to a specific version.
-# VM images: omit TAG to auto-discover the latest v*-wc* release.
+#
+# The default tag is pinned at the top of this script -- bump it
+# in one place to update all targets.  Callers may override by
+# passing a tag as $1, or pass the literal string "latest" to
+# auto-discover the most recent v*-wc* tag.
 #
 # Cross-compilation support:
 #   Set TARGET_ARCH to cross-compile (e.g. TARGET_ARCH=aarch64).
 #   Set DESTDIR to redirect installation (e.g. DESTDIR=/output).
 #
-# Usage: build-e2fsprogs.sh [TAG]
-#   TAG  Git tag to build (e.g. v1.47.3-wc2). Defaults to latest v*-wc*.
+# Usage: build-e2fsprogs.sh [TAG|latest]
 set -euo pipefail
+
+# Single source of truth for the e2fsprogs version across all targets.
+DEFAULT_E2FS_TAG="v1.47.3-wc2"
 
 TARGET_ARCH="${TARGET_ARCH:-$(uname -m)}"
 HOST_ARCH="$(uname -m)"
@@ -19,15 +24,18 @@ DESTDIR="${DESTDIR:-}"
 
 E2FS_REPO=https://review.whamcloud.com/tools/e2fsprogs
 
-if [[ -n "${1:-}" ]]; then
-    TAG="$1"
-else
+ARG_TAG="${1:-}"
+if [[ -z "$ARG_TAG" ]]; then
+    TAG="$DEFAULT_E2FS_TAG"
+elif [[ "$ARG_TAG" == "latest" ]]; then
     TAG=$(git ls-remote --tags "$E2FS_REPO" 'refs/tags/v*wc*' \
         | grep -v '\^{}' \
         | awk '{print $2}' \
         | sed 's|refs/tags/||' \
         | sort -V \
         | tail -1)
+else
+    TAG="$ARG_TAG"
 fi
 
 # Cross-compilation setup

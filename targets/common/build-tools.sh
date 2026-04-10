@@ -16,6 +16,10 @@
 #   Set DESTDIR to redirect (e.g. DESTDIR=/output for staged builds).
 set -euo pipefail
 
+# Pinned versions of source-built tools.  Bump in one place.
+IOR_VERSION="${IOR_VERSION:-4.0.0}"
+IOZONE_VERSION="${IOZONE_VERSION:-3_506}"
+
 TARGET_ARCH="${TARGET_ARCH:-$(uname -m)}"
 HOST_ARCH="$(uname -m)"
 DESTDIR="${DESTDIR:-}"
@@ -62,14 +66,14 @@ if [[ -d /usr/lib64/openmpi/bin ]]; then
 	export PATH=/usr/lib64/openmpi/bin:$PATH
 	export LD_LIBRARY_PATH="/usr/lib64/openmpi/lib:${LD_LIBRARY_PATH:-}"
 fi
-curl -sL https://github.com/hpc/ior/releases/download/4.0.0/ior-4.0.0.tar.gz | tar xz
-cd ior-4.0.0 && ./configure $CONFIGURE_HOST && make -j"$(nproc)"
+curl -fsSL "https://github.com/hpc/ior/releases/download/${IOR_VERSION}/ior-${IOR_VERSION}.tar.gz" | tar xz
+cd "ior-${IOR_VERSION}" && ./configure ${CONFIGURE_HOST:+"$CONFIGURE_HOST"} && make -j"$(nproc)"
 cp src/ior src/mdtest "$PREFIX/bin/"
-cd /tmp && rm -rf ior-4.0.0
+cd /tmp && rm -rf "ior-${IOR_VERSION}"
 
 # iozone (needs -Wno-error=implicit-* for GCC 14+)
-curl -sL http://www.iozone.org/src/current/iozone3_506.tar | tar xf -
-cd iozone3_506/src/current
+curl -fsSL "http://www.iozone.org/src/current/iozone${IOZONE_VERSION}.tar" | tar xf -
+cd "iozone${IOZONE_VERSION}/src/current"
 EXTRA_CFLAGS="-Wno-error=implicit-int -Wno-error=implicit-function-declaration"
 # iozone uses arch-specific make targets
 case "$TARGET_ARCH" in
@@ -81,11 +85,11 @@ make -j"$(nproc)" "$IOZONE_TARGET" \
 	CFLAGS="-O3 $EXTRA_CFLAGS" \
 	C_OPT="-O3 $EXTRA_CFLAGS"
 cp iozone "$PREFIX/bin/"
-cd /tmp && rm -rf iozone3_506
+cd /tmp && rm -rf "iozone${IOZONE_VERSION}"
 
 # pjdfstest
 git clone https://github.com/pjd/pjdfstest.git
-cd pjdfstest && autoreconf -ifs && ./configure $CONFIGURE_HOST && make -j"$(nproc)"
+cd pjdfstest && autoreconf -ifs && ./configure ${CONFIGURE_HOST:+"$CONFIGURE_HOST"} && make -j"$(nproc)"
 cp pjdfstest "$PREFIX/bin/"
 cd /tmp && rm -rf pjdfstest
 

@@ -16,7 +16,7 @@ format:
 
 # Type check
 typecheck:
-	uv run mypy ltvm lib/
+	uv run mypy ltvm ltvm_pkg/
 
 # Run tests (with coverage summary in terminal)
 test:

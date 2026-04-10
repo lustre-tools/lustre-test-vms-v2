@@ -44,7 +44,7 @@ COPY common/setup-services.sh  /tmp/setup-services.sh
 RUN bash /tmp/build-tools.sh
 
 # Lustre-patched e2fsprogs (pinned release)
-RUN bash /tmp/build-e2fsprogs.sh v1.47.3-wc2
+RUN bash /tmp/build-e2fsprogs.sh
 
 # System configuration
 RUN bash /tmp/setup-ssh.sh

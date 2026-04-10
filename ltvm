@@ -59,7 +59,7 @@ log = logging.getLogger("ltvm")
 # ------------------------------------------------------------------
 
 
-class _HideSupressedSubcommands(argparse.HelpFormatter):
+class _HideSuppressedSubcommands(argparse.HelpFormatter):
     """Hide subcommands registered with help=argparse.SUPPRESS."""
 
     def _format_action(self, action: argparse.Action) -> str:
@@ -120,7 +120,7 @@ def build_parser() -> argparse.ArgumentParser:
         prog="ltvm",
         description="Lustre test VM infrastructure CLI",
         parents=[common],
-        formatter_class=_HideSupressedSubcommands,
+        formatter_class=_HideSuppressedSubcommands,
     )
 
     sub = p.add_subparsers(dest="command")
@@ -141,7 +141,7 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--install",
         action="store_true",
-        help="Install vm.sh + deploy-lustre.sh only",
+        help="Install scripts and VM directories only",
     )
     sp.add_argument(
         "--ssh", action="store_true", help="Configure host SSH only"
@@ -512,7 +512,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("vm", help="VM name")
     sp.add_argument(
-        "--build", default=".", help="Lustre build tree (default: cwd)"
+        "--build", default=None,
+        help="Lustre build tree (default: bundled fetch output, else cwd)",
     )
     sp.add_argument(
         "--mount", action="store_true", help="Mount filesystem after deploy"

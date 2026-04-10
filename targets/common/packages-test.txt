@@ -10,6 +10,15 @@ fio
 bonnie++
 dbench
 
+# Lustre userspace runtime libraries.  The build container has the
+# matching -devel packages (packages-dev.txt) and links Lustre tools
+# and tests against them; non-server VMs need the runtime libs to
+# actually execute those binaries (lctl, lfs, mount.lustre, aiocp,
+# etc.).  Server VMs get these transitively via packages-server.txt.
+libaio
+libyaml
+json-c
+
 # Test framework dependencies
 attr
 acl

@@ -11,7 +11,6 @@ import pytest
 from ltvm_pkg.kernel_build import (
     _build_config_fragment,
     _ensure_container_image,
-    _find_srpm_url,
     _shell_var,
     download_srpm,
     kernel_status,
@@ -169,35 +168,6 @@ class TestResolveLustreFiles:
 
         files = resolve_lustre_files(lustre_tree, "5.14-rhel9.7", target_info)
         assert files["patches"] == []
-
-
-# ------------------------------------------------------------------
-# TestFindSrpmUrl
-# ------------------------------------------------------------------
-
-
-class TestFindSrpmUrl:
-    def test_returns_url_with_base(self) -> None:
-        url = _find_srpm_url(
-            "kernel-5.14.0-503.26.1.el9_7.src.rpm", _ROCKY9_SRPM_URL
-        )
-        assert _ROCKY9_SRPM_URL in url
-
-    def test_returns_url_with_srpm_name(self) -> None:
-        srpm = "kernel-5.14.0-503.26.1.el9_7.src.rpm"
-        url = _find_srpm_url(srpm, _ROCKY9_SRPM_URL)
-        assert srpm in url
-
-    def test_url_combines_base_and_name(self) -> None:
-        srpm = "kernel-5.14.0-503.26.1.el9_7.src.rpm"
-        url = _find_srpm_url(srpm, _ROCKY9_SRPM_URL)
-        assert url == f"{_ROCKY9_SRPM_URL}/{srpm}"
-
-    def test_different_base_url(self) -> None:
-        srpm = "kernel-4.18.0-100.el8.src.rpm"
-        base = "https://dl.rockylinux.org/pub/rocky/8/BaseOS/source/tree/Packages/k"
-        url = _find_srpm_url(srpm, base)
-        assert url == f"{base}/{srpm}"
 
 
 # ------------------------------------------------------------------

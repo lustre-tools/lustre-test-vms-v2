@@ -19,7 +19,9 @@ COPY common/packages-server.txt /tmp/packages-server.txt
 COPY rocky8/packages-os.txt /tmp/packages-os.txt
 
 # Parse package lists (strip comments/blanks) and install.
-# Exclude kernel-devel -- Lustre builds on the host, not in VM.
+# Note: kernel-devel is excluded from the common lists because Lustre
+# builds on the host on EL9+.  EL8 still installs it explicitly below
+# (separate RUN step) because the EL8 build flow differs.
 # --skip-broken: numatop/bpftrace may not be available on EL8.
 RUN cat /tmp/packages-base.txt \
         /tmp/packages-test.txt \
@@ -43,9 +45,8 @@ COPY common/setup-kdump.sh     /tmp/setup-kdump.sh
 COPY common/setup-services.sh  /tmp/setup-services.sh
 
 # EL8-specific: kernel-devel + lustre userspace build deps.
-# On EL8, deploy-lustre.sh builds Lustre userspace inside the VM (EL8 glibc
-# is incompatible with the EL9 host).  kernel-devel is excluded from the
-# common package list (not needed on EL9+), so install it explicitly here.
+# kernel-devel is excluded from the common package list (not needed on
+# EL9+), so install it explicitly here.
 RUN dnf -y install kernel-devel libnl3-devel libselinux-devel \
     && dnf clean all
 
@@ -53,7 +54,7 @@ RUN dnf -y install kernel-devel libnl3-devel libselinux-devel \
 RUN bash /tmp/build-tools.sh
 
 # Lustre-patched e2fsprogs (pinned release)
-RUN bash /tmp/build-e2fsprogs.sh v1.47.3-wc2
+RUN bash /tmp/build-e2fsprogs.sh
 
 # System configuration
 RUN bash /tmp/setup-ssh.sh

@@ -13,12 +13,12 @@ from pathlib import Path
 from typing import Any
 
 from .vm_state import (
+    DEFAULT_TARGET,
     DISK_SIZE_BYTES,
     EXIT_ERROR,
     EXIT_NOT_FOUND,
     EXIT_TIMEOUT,
     EXIT_UNREACHABLE,
-    KERNEL,
     MARKER,
     OVERLAYS,
     QEMU_IMG,
@@ -30,13 +30,11 @@ from .vm_state import (
     resolve_os_artifacts,
 )
 from .vm_net import (
-    _atomic_write,
     _real_user_ssh_dir,
     alloc_ip,
     deploy_ssh_key,
     mac_for_name,
     register_ssh_name,
-    reload_dns,
     run_ssh,
     tap_for_name,
     unregister_ssh_name,
@@ -104,7 +102,7 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
         # Copy the kernel config so kdump-tools can read it.
         config_src = Path(vm.kernel).parent / "build-tree" / ".config"
         if config_src.exists():
-            run(
+            r_scp = run(
                 [
                     "sshpass", "-p", ROOT_PASSWORD, "scp",
                     "-o", "StrictHostKeyChecking=no",
@@ -115,12 +113,24 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
                 ],
                 capture_output=True, timeout=10,
             )
+            if r_scp.returncode != 0:
+                die(
+                    f"failed to copy kernel config to VM: "
+                    f"{r_scp.stderr.strip()}"
+                )
         r = run_ssh(
             vm.ip,
-            f"rm -f /usr/share/initramfs-tools/hooks/dhcpcd; "
-            f"update-initramfs -c -k {kver} 2>&1 | grep -v '^W:'; "
-            f"mkdir -p /var/lib/kdump; "
-            f"cp /boot/initrd.img-{kver} /var/lib/kdump/initrd.img-{kver}; "
+            # Use PIPESTATUS to check update-initramfs' exit code instead
+            # of the grep that follows it (grep -v's rc would otherwise
+            # mask initramfs failures).  `grep -v ... || true` keeps grep
+            # quiet when every line is a warning, without losing the
+            # PIPESTATUS check.
+            f"rm -f /usr/share/initramfs-tools/hooks/dhcpcd && "
+            f"{{ update-initramfs -c -k {kver} 2>&1 | "
+            f"  {{ grep -v '^W:' || true; }}; "
+            f"  test \"${{PIPESTATUS[0]}}\" -eq 0; }} && "
+            f"mkdir -p /var/lib/kdump && "
+            f"cp /boot/initrd.img-{kver} /var/lib/kdump/initrd.img-{kver} && "
             f"ln -sf /boot/vmlinuz-{kver} /var/lib/kdump/vmlinuz",
             timeout=120,
         )
@@ -133,21 +143,14 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
         print("generating kdump initramfs (dracut)...")
         r = run_ssh(
             vm.ip,
-            f"dracut --kver {kver} --force /boot/initramfs-{kver}.img {kver}",
+            f"dracut --kver {kver} --force /boot/initramfs-{kver}.img {kver} 2>&1",
             timeout=120,
         )
         if r.returncode != 0:
-            die(f"dracut failed for kdump initramfs: {r.stderr.strip()}")
-        r = run_ssh(vm.ip, "systemctl restart kdump", timeout=30)
+            die(f"dracut failed for kdump initramfs: {r.stdout.strip()}")
+        r = run_ssh(vm.ip, "systemctl restart kdump 2>&1", timeout=30)
         if r.returncode != 0:
-            die(f"kdump service failed to start: {r.stderr.strip()}")
-
-
-def _fmt_epoch(epoch: int) -> str:
-    """Format epoch seconds as a human-readable timestamp, or '-' if 0."""
-    if not epoch:
-        return "-"
-    return time.strftime("%Y-%m-%d %H:%M", time.localtime(epoch))
+            die(f"kdump service failed to start: {r.stdout.strip()}")
 
 
 def _ago(epoch: int) -> str:
@@ -219,7 +222,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     arch = getattr(args, "arch", None) or "x86_64"
     if not os_target:
         # Only print default-target notice when no explicit image was given
-        os_target = "rocky9"
+        os_target = DEFAULT_TARGET
         if not explicit_image and not explicit_kernel:
             print(f"using default target: {os_target}")
     os_arts = resolve_os_artifacts(os_target, arch=arch)
@@ -484,9 +487,12 @@ def cmd_exec(args: argparse.Namespace) -> None:
             )
         sys.exit(EXIT_TIMEOUT)
 
-    output = r.stdout or ""
-    if r.stderr:
-        output += r.stderr
+    stdout = r.stdout or ""
+    stderr = r.stderr or ""
+    # JSON callers consumed a single "output" field historically; preserve
+    # that by combining the streams there.  Human callers get them on the
+    # right file descriptors so stderr stays visible separately.
+    combined = stdout + stderr
 
     if r.returncode == 255:
         if args.json:
@@ -496,14 +502,16 @@ def cmd_exec(args: argparse.Namespace) -> None:
                         "ok": False,
                         "exit_code": EXIT_UNREACHABLE,
                         "error": "unreachable",
-                        "output": output,
+                        "output": combined,
                     }
                 )
             )
         else:
             print("error: unreachable", file=sys.stderr)
-            if output:
-                print(output)
+            if stdout:
+                print(stdout, end="")
+            if stderr:
+                print(stderr, end="", file=sys.stderr)
         sys.exit(EXIT_UNREACHABLE)
 
     if args.json:
@@ -512,13 +520,15 @@ def cmd_exec(args: argparse.Namespace) -> None:
                 {
                     "ok": r.returncode == 0,
                     "exit_code": r.returncode,
-                    "output": output,
+                    "output": combined,
                 }
             )
         )
     else:
-        if output:
-            print(output, end="")
+        if stdout:
+            print(stdout, end="")
+        if stderr:
+            print(stderr, end="", file=sys.stderr)
     sys.exit(r.returncode)
 
 
@@ -672,12 +682,18 @@ def _qmp_nmi(qmp_path: Path) -> None:
     import socket as _socket
 
     with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
+        s.settimeout(5)  # apply to connect() too, not just recv()
         s.connect(str(qmp_path))
-        s.settimeout(5)
-        # Drain the greeting
+        # Drain the greeting (bounded to avoid unbounded growth from
+        # a misbehaving QEMU that never sends "QMP").
         data = b""
         while b"QMP" not in data:
-            data += s.recv(4096)
+            chunk = s.recv(4096)
+            if not chunk:
+                raise RuntimeError("QMP socket closed before greeting")
+            data += chunk
+            if len(data) > 65536:
+                raise RuntimeError("QMP greeting exceeded 64K, giving up")
         # Negotiate capabilities
         s.sendall(json.dumps({"execute": "qmp_capabilities"}).encode())
         s.recv(4096)
@@ -802,47 +818,48 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
     print(f"vmcore: {local_vmcore}")
 
     # Resolve vmlinux: prefer the freshly-built vmlinux from output/, then
-    # look next to vm.kernel (which points to vmlinuz), then fall back to the
-    # static install-dir default.  We always prefer vmlinux over vmlinuz
-    # because drgn needs full debug symbols.
+    # look next to vm.kernel (which usually points to vmlinuz).  We always
+    # prefer vmlinux over vmlinuz because drgn needs full debug symbols.
+    vmlinux: Path | None = None
     try:
-        arts = resolve_os_artifacts(vm.os_id or "rocky9", arch=vm.arch)
+        arts = resolve_os_artifacts(vm.os_id or DEFAULT_TARGET, arch=vm.arch)
         candidate = arts.kernel.parent / "vmlinux"
-        vmlinux = candidate if candidate.exists() else KERNEL
+        if candidate.exists():
+            vmlinux = candidate
     except Exception:
-        vmlinux = KERNEL
-    # If output/ has no vmlinux but vm.kernel points to a vmlinuz,
-    # look for vmlinux in the same directory.
-    if vmlinux == KERNEL and vm.kernel:
+        pass
+    if vmlinux is None and vm.kernel:
         neighbor = Path(vm.kernel).parent / "vmlinux"
         if neighbor.exists():
             vmlinux = neighbor
 
+    if vmlinux is None:
+        print("warning: no vmlinux found; triage skipped")
+        print(f"vmcore dir: {local_dir}")
+        return
+
     if args.mod_dir:
         print("running lustre triage...")
-        triage_script = None
-        # Build a list of candidate paths, including SUDO_USER's home so
-        # that "sudo ltvm crash-collect" finds tools installed under the
-        # invoking user's home directory.
-        _homes = [Path.home()]
         sudo_user = os.environ.get("SUDO_USER")
-        if sudo_user:
-            import pwd
-            try:
-                _homes.append(Path(pwd.getpwnam(sudo_user).pw_dir))
-            except KeyError:
-                pass
-        candidates = [h / "llm_code_and_review_tools/lustre-drgn-tools/lustre_triage.py"
-                      for h in _homes]
+        # Search candidates in order: env var, $HOME, SUDO_USER's home.
+        candidates: list[Path] = []
         env_script = os.environ.get("LTVM_TRIAGE_SCRIPT")
         if env_script:
             candidates.append(Path(env_script))
-        for candidate in candidates:
-            if candidate and candidate.exists():
-                triage_script = candidate
-                break
+        homes = [Path.home()]
+        if sudo_user:
+            import pwd
+            try:
+                homes.append(Path(pwd.getpwnam(sudo_user).pw_dir))
+            except KeyError:
+                pass
+        for home in homes:
+            candidates.append(
+                home / "llm_code_and_review_tools/lustre-drgn-tools/lustre_triage.py"
+            )
+        triage_script = next((c for c in candidates if c.exists()), None)
         if not triage_script:
-            print("triage script not found (set LTVM_TRIAGE_SCRIPT or install llm_code_and_review_tools)")
+            print("triage script not found (set LTVM_TRIAGE_SCRIPT to lustre_triage.py path)")
             print(f"vmcore dir: {local_dir}")
             return
         # Run triage as SUDO_USER so user-installed packages (drgn) are
@@ -980,13 +997,10 @@ def cmd_doctor(args: argparse.Namespace) -> None:
                     print(f"stale hosts entry: {hname}")
                     issues += 1
                     if args.fix:
-                        lines = [
-                            ln
-                            for ln in hosts.read_text().splitlines()
-                            if f"{MARKER}:{hname}" not in ln
-                        ]
-                        _atomic_write(hosts, "\n".join(lines) + "\n")
-                        reload_dns()
+                        # Delegate to the same atomic write path used
+                        # by `ltvm destroy` so concurrent doctor + create
+                        # races don't lose entries.
+                        unregister_ssh_name(hname)
                         print("  fixed: removed from /etc/hosts")
 
     r = run(["ip", "-o", "link", "show", "type", "tun"])
@@ -1033,6 +1047,8 @@ def cmd_doctor(args: argparse.Namespace) -> None:
         print("no issues found")
     else:
         print("---")
-        print(f"{issues} issue(s) found")
-        if not args.fix:
+        if args.fix:
+            print(f"{issues} issue(s) found and fixed")
+        else:
+            print(f"{issues} issue(s) found")
             print("run with --fix to clean up")

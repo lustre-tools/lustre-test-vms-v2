@@ -9,13 +9,14 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ltvm_pkg.host_setup import (
-    MARKER,
+    SSH_BLOCK_MARKER,
     HostInfo,
     _qemu_installed_version,
     _translate_pkgs,
     check_kvm,
     check_prerequisites,
     print_verify,
+    setup_ssh,
     verify,
 )
 
@@ -28,10 +29,11 @@ class TestHostInfo:
         assert info.pkg_mgr in ("dnf", "apt")
         assert info.pretty_name != "unknown"
 
-    def test_missing_os_release(self, tmp_path: Path) -> None:
-        # Can't easily test missing /etc/os-release without mocking Path
-        # in a way that also breaks HostInfo's internal Path usage, so
-        # just verify the real file is found and parsed correctly.
+    def test_real_os_release_parses(self, tmp_path: Path) -> None:
+        """Smoke check: HostInfo() reads the real /etc/os-release on this
+        host and produces a non-None id.  The genuinely-missing-file case
+        is hard to mock without breaking HostInfo's internal Path usage,
+        so we don't cover it here."""
         info = HostInfo()
         assert info.id is not None
 
@@ -70,71 +72,55 @@ class TestTranslatePkgs:
 
 
 class TestSetupSsh:
-    def test_creates_ssh_config(self, tmp_path: Path) -> None:
+    """Tests that call the real setup_ssh() against a temp directory."""
+
+    def _call_setup_ssh(self, tmp_path: Path, subnet: str = "192.168.100") -> Path:
+        """Run setup_ssh() with /root/.ssh redirected to tmp_path."""
         ssh_dir = tmp_path / ".ssh"
-        config = ssh_dir / "config"
+        with patch("ltvm_pkg.host_setup.Path", side_effect=lambda p: ssh_dir if p == "/root/.ssh" else Path(p)):
+            setup_ssh(subnet)
+        return ssh_dir / "config"
 
-        with (
-            patch("ltvm_pkg.host_setup.Path") as mock_path_cls,
-        ):
-            # Make Path("/root/.ssh") return our tmp path
-            def side_effect(p: str) -> Path:
-                if p == "/root/.ssh":
-                    return ssh_dir
-                return Path(p)
-
-            mock_path_cls.side_effect = side_effect
-
-            # Directly test the block generation logic
-            ssh_dir.mkdir(mode=0o700, exist_ok=True)
-
-            # Write the block ourselves (testing the format)
-            subnet = "192.168.100"
-            block = f"""
-{MARKER}
-Host {subnet}.*
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    LogLevel ERROR
-    ServerAliveInterval 1
-    ServerAliveCountMax 2
-    ConnectTimeout 5
-    User root
-"""
-            config.write_text(block)
-
-            text = config.read_text()
-            assert MARKER in text
-            assert "StrictHostKeyChecking no" in text
-            assert f"Host {subnet}.*" in text
-            assert "User root" in text
+    def test_creates_ssh_config(self, tmp_path: Path) -> None:
+        config = self._call_setup_ssh(tmp_path)
+        text = config.read_text()
+        assert SSH_BLOCK_MARKER in text
+        assert "StrictHostKeyChecking no" in text
+        assert "Host 192.168.100.*" in text
+        assert "User root" in text
 
     def test_marker_format(self) -> None:
-        assert MARKER == "# lustre-test-vms"
+        assert SSH_BLOCK_MARKER == "# lustre-test-vms"
 
-    def test_ssh_block_contains_fast_timeouts(self) -> None:
+    def test_ssh_block_contains_fast_timeouts(self, tmp_path: Path) -> None:
         """SSH config should have aggressive timeouts for VMs."""
-        subnet = "192.168.100"
-        block = f"""
-{MARKER}
-Host {subnet}.*
-    StrictHostKeyChecking no
-    UserKnownHostsFile /dev/null
-    LogLevel ERROR
-    ServerAliveInterval 1
-    ServerAliveCountMax 2
-    ConnectTimeout 5
-    User root
-"""
-        assert "ServerAliveInterval 1" in block
-        assert "ServerAliveCountMax 2" in block
-        assert "ConnectTimeout 5" in block
+        config = self._call_setup_ssh(tmp_path)
+        text = config.read_text()
+        assert "ServerAliveInterval 5" in text
+        assert "ServerAliveCountMax 3" in text
+        assert "ConnectTimeout 5" in text
 
-    def test_custom_subnet(self) -> None:
-        """Different subnet in the SSH host pattern."""
-        subnet = "10.0.0"
-        expected = f"Host {subnet}.*"
-        assert expected == "Host 10.0.0.*"
+    def test_custom_subnet(self, tmp_path: Path) -> None:
+        """Different subnet produces the correct Host pattern."""
+        config = self._call_setup_ssh(tmp_path, subnet="10.0.0")
+        text = config.read_text()
+        assert "Host 10.0.0.*" in text
+
+    def test_idempotent(self, tmp_path: Path) -> None:
+        """Calling setup_ssh twice does not duplicate the block."""
+        self._call_setup_ssh(tmp_path)
+        config = self._call_setup_ssh(tmp_path)
+        text = config.read_text()
+        assert text.count(SSH_BLOCK_MARKER) == 1
+
+    def test_subnet_change_replaces_block(self, tmp_path: Path) -> None:
+        """Changing subnet replaces the old block."""
+        self._call_setup_ssh(tmp_path, subnet="192.168.100")
+        config = self._call_setup_ssh(tmp_path, subnet="10.0.0")
+        text = config.read_text()
+        assert "Host 10.0.0.*" in text
+        assert "192.168.100" not in text
+        assert text.count(SSH_BLOCK_MARKER) == 1
 
 
 # ------------------------------------------------------------------
@@ -352,14 +338,14 @@ class TestVerify:
             # dnsmasq is active
             # scripts are in PATH
             # podman is present
-            # SSH config exists and has MARKER
+            # SSH config exists and has SSH_BLOCK_MARKER
         }
 
     def test_all_ok(self) -> None:
         """all_ok=True when every component is healthy."""
         ssh_mock = MagicMock()
         ssh_mock.exists.return_value = True
-        ssh_mock.read_text.return_value = f"{MARKER}\n"
+        ssh_mock.read_text.return_value = f"{SSH_BLOCK_MARKER}\n"
 
         def _run_quiet_side(cmd: list, **kw: object) -> MagicMock:
             # ip addr show fcbr0
@@ -398,7 +384,6 @@ class TestVerify:
         assert result["bridge"]["up"] is True
         assert result["dnsmasq"]["running"] is True
         assert result["ltvm"]["installed"] is True
-        assert result["deploy-lustre.sh"]["installed"] is True
         assert result["podman"]["installed"] is True
         assert result["ssh"]["configured"] is True
 
@@ -406,7 +391,7 @@ class TestVerify:
         """all_ok=False and qemu.installed=False when QEMU absent."""
         ssh_mock = MagicMock()
         ssh_mock.exists.return_value = True
-        ssh_mock.read_text.return_value = f"{MARKER}\n"
+        ssh_mock.read_text.return_value = f"{SSH_BLOCK_MARKER}\n"
 
         def _run_quiet_side(cmd: list, **kw: object) -> MagicMock:
             if "fcbr0" in cmd:
@@ -439,7 +424,7 @@ class TestVerify:
         """all_ok=False when /dev/kvm is absent."""
         ssh_mock = MagicMock()
         ssh_mock.exists.return_value = True
-        ssh_mock.read_text.return_value = f"{MARKER}\n"
+        ssh_mock.read_text.return_value = f"{SSH_BLOCK_MARKER}\n"
 
         def _path_side(p: str) -> MagicMock:
             m = MagicMock()
@@ -501,7 +486,6 @@ class TestVerify:
             "bridge",
             "dnsmasq",
             "ltvm",
-            "deploy-lustre.sh",
             "podman",
             "ssh",
             "all_ok",
@@ -522,10 +506,6 @@ def _all_ok_result() -> dict:
         "bridge": {"up": True, "address": "192.168.100.1/24"},
         "dnsmasq": {"running": True},
         "ltvm": {"installed": True, "path": "/usr/local/bin/ltvm"},
-        "deploy-lustre.sh": {
-            "installed": True,
-            "path": "/usr/local/bin/deploy-lustre.sh",
-        },
         "podman": {"installed": True, "version": "4.9.0"},
         "ssh": {"configured": True},
         "all_ok": True,

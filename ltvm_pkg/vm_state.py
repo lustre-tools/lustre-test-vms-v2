@@ -15,7 +15,7 @@ from pathlib import Path
 
 VM_DIR = Path(os.environ.get("LTVM_VM_DIR", "/opt/qemu-vms"))
 QEMU_PREFIX = Path(os.environ.get("LTVM_QEMU_PREFIX", "/opt/qemu"))
-QEMU = str(QEMU_PREFIX / "bin" / "qemu-system-x86_64")
+# x86_64 qemu binary path -- non-x86_64 callers use qemu_binary_for_arch().
 QEMU_IMG = str(QEMU_PREFIX / "bin" / "qemu-img")
 
 
@@ -59,8 +59,9 @@ def qemu_machine_for_arch(arch: str = "x86_64") -> str:
         accel = "accel=kvm" if host_is_arm64 else "accel=tcg"
         return f"virt,{accel},gic-version=max"
     return "virt,accel=tcg"
+
+
 DISK_SIZE_BYTES = 500 * 1024 * 1024  # 500 MiB default
-KERNEL = VM_DIR / "kernel" / "vmlinux"
 
 # ltvm repo root — find via LTVM_ROOT env var, /usr/local/bin/ltvm
 # symlink, or fall back to this file's location.
@@ -105,7 +106,7 @@ def resolve_os_artifacts(os_name: str, arch: str = "x86_64") -> OSArtifacts:
         default_mem = int(target_cfg.get("default_mem", defaults.get("default_mem", 2048)))
 
     # Determine effective arch (CLI override > target config > default)
-    effective_arch = target_cfg.get("arch", arch)
+    effective_arch = arch or target_cfg.get("arch") or "x86_64"
     default_arch = "x86_64"
 
     # Output directory: arch-qualified subdir when non-default arch
@@ -137,21 +138,22 @@ def resolve_os_artifacts(os_name: str, arch: str = "x86_64") -> OSArtifacts:
             # Try glob for versioned subdirs
             matches = sorted(output_dir.glob(f"kernels/{kernel_suffix}*"))
             if matches:
-                kdir = matches[0]
+                kdir = matches[-1]
         for name in ("vmlinuz", "vmlinux"):
             c = kdir / name
             if c.exists():
                 kern = c
                 break
 
-    # Search output/<os>/kernels/*/ (any kernel)
+    # Search output/<os>/kernels/*/ (any kernel).  The glob already
+    # includes the filename, so each result is the kernel file path.
     if not kern and output_dir.is_dir():
-        for kdir in sorted(output_dir.glob("kernels/*/vmlinuz")):
-            kern = kdir
+        for kpath in sorted(output_dir.glob("kernels/*/vmlinuz")):
+            kern = kpath
             break
         if not kern:
-            for kdir in sorted(output_dir.glob("kernels/*/vmlinux")):
-                kern = kdir
+            for kpath in sorted(output_dir.glob("kernels/*/vmlinux")):
+                kern = kpath
                 break
 
     if not kern:
@@ -162,6 +164,8 @@ def resolve_os_artifacts(os_name: str, arch: str = "x86_64") -> OSArtifacts:
         )
 
     return OSArtifacts(image=img, kernel=kern, default_mem=default_mem, arch=effective_arch)
+
+
 OVERLAYS = VM_DIR / "overlays"
 SOCKETS = VM_DIR / "sockets"
 BRIDGE = "fcbr0"
@@ -170,6 +174,18 @@ GATEWAY = f"{SUBNET}.1"
 MARKER = "# qemu-vm"
 ROOT_PASSWORD = "initial0"
 SSH_TIMEOUT = 30
+DEFAULT_TARGET = "rocky9"
+
+
+def lustre_libdir(os_family: str = "rhel") -> str:
+    """Return the on-VM Lustre library directory for the given OS family.
+
+    rhel uses /usr/lib64; debian uses /usr/lib.  This is the single
+    source of truth for that path; deploy.py and vm_cluster.py both
+    derive everything else from it.
+    """
+    return "/usr/lib/lustre" if os_family == "debian" else "/usr/lib64/lustre"
+
 
 # Exit codes
 EXIT_OK = 0
@@ -198,7 +214,7 @@ class VMInfo:
     kernel: str = ""  # kernel path; empty = default (vmlinux)
     created: int = 0  # epoch seconds when VM was created
     last_boot: int = 0  # epoch seconds when QEMU was last started
-    last_deploy: int = 0  # epoch seconds when deploy-lustre.sh last ran
+    last_deploy: int = 0  # epoch seconds when last deploy ran
     build_path: str = ""  # Lustre build tree last deployed
     kver: str = ""  # kernel version running in the VM
     base_image: str = ""  # base image name (e.g. rocky9-base.ext4)
@@ -421,9 +437,7 @@ class ClusterInfo:
         for n in self.get_nodes():
             if n.is_mgs:
                 return n
-        from .qemu_run import die
-
-        die("cluster has no MGS node")
+        raise RuntimeError(f"cluster {self.name!r} has no MGS node")
 
     def mds_nodes(self) -> list[ClusterNode]:
         return [n for n in self.get_nodes() if n.is_mds]

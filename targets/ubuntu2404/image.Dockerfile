@@ -7,32 +7,37 @@ FROM ${BASE_IMAGE}
 
 ENV DEBIAN_FRONTEND=noninteractive
 
-# Install Ubuntu packages.
-# The common package lists use RHEL names; translate to Ubuntu equivalents.
+# Copy shared package lists and the ubuntu-specific name map.
+COPY common/packages-base.txt   /tmp/packages-base.txt
+COPY common/packages-test.txt   /tmp/packages-test.txt
+COPY common/packages-debug.txt  /tmp/packages-debug.txt
+COPY common/packages-server.txt /tmp/packages-server.txt
+COPY ubuntu2404/packages-os.txt /tmp/packages-os.txt
+COPY ubuntu2404/package-map.txt /tmp/package-map.txt
+
+# Parse the shared lists, translate RHEL names to Debian names via
+# package-map.txt, drop "skip" entries (mapped to "-"), and install.
+# Packages without a mapping pass through unchanged (assumes the
+# name is identical on both distros).
 RUN apt-get update \
-    && apt-get install -y \
-        bash coreutils systemd passwd hostname kmod util-linux \
-        less findutils procps tar gzip xz-utils sudo \
-        network-manager iproute2 iputils-ping \
-        openssh-server openssh-client \
-        vim-tiny vim \
-        rsync e2fsprogs dmsetup \
-        kexec-tools crash kdump-tools initramfs-tools \
-        python3 python3-pip python3-dev \
-        jq lsof psmisc \
-        openmpi-bin libopenmpi-dev \
-        fio bonnie++ dbench \
-        attr acl bc perl pdsh \
-        nfs-common sg3-utils quota \
-        iperf3 \
-        sysstat valgrind \
-        bpfcc-tools bpftrace \
-        trace-cmd systemtap strace ltrace \
-        ethtool tcpdump conntrack \
-        numactl hwloc \
-        blktrace iproute2 iotop \
-        htop tmux \
-        gcc g++ make autoconf automake libtool git curl \
+    && cat /tmp/packages-base.txt /tmp/packages-test.txt \
+           /tmp/packages-debug.txt /tmp/packages-server.txt \
+           /tmp/packages-os.txt \
+        | grep -v '^\s*#' | grep -v '^\s*$' \
+        | sort -u \
+        | awk 'NR==FNR { \
+                 if ($0 ~ /^[[:space:]]*#/ || $0 ~ /^[[:space:]]*$/) next; \
+                 rhel=$1; \
+                 sub(/^[^[:space:]]+[[:space:]]+/, ""); \
+                 map[rhel]=$0; \
+                 next \
+               } \
+               { if ($1 in map) { if (map[$1] != "-") print map[$1] } \
+                 else print $1 }' \
+            /tmp/package-map.txt - \
+        | tr ' ' '\n' \
+        | sort -u \
+        | xargs apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy shared setup scripts
@@ -49,7 +54,7 @@ COPY common/setup-services.sh  /tmp/setup-services.sh
 RUN bash /tmp/build-tools.sh
 
 # Lustre-patched e2fsprogs (pinned release)
-RUN bash /tmp/build-e2fsprogs.sh v1.47.3-wc2
+RUN bash /tmp/build-e2fsprogs.sh
 
 # System configuration
 RUN bash /tmp/setup-ssh.sh

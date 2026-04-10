@@ -1,0 +1,75 @@
+# package-map.txt -- ubuntu2404
+#
+# Translates RHEL package names (used in targets/common/packages-*.txt)
+# to Debian/Ubuntu package names.  Format:
+#
+#   rhel_name  debian_name [debian_name2 ...]
+#
+# A debian_name of "-" means "skip this package on ubuntu".
+# Packages not listed here pass through unchanged (assumes the name
+# matches on both distros).
+#
+# Lines starting with # and blank lines are ignored.
+
+# --- packages-base.txt ---------------------------------------------
+basesystem        -
+which             debianutils
+procps-ng         procps
+xz                xz-utils
+dnf               -
+NetworkManager    network-manager
+iproute           iproute2
+iputils           iputils-ping
+openssh-clients   openssh-client
+vim-minimal       vim-tiny
+vim-enhanced      vim
+device-mapper     dmsetup
+python3-devel     python3-dev
+
+# --- packages-test.txt ---------------------------------------------
+openmpi           openmpi-bin
+openmpi-devel     libopenmpi-dev
+libaio            libaio1t64
+libyaml           libyaml-0-2
+json-c            libjson-c5
+pdsh-rcmd-ssh     -
+nfs-utils         nfs-common
+sg3_utils         sg3-utils
+
+# --- packages-debug.txt --------------------------------------------
+kernel-tools      -
+numatop           -
+bcc-tools         bpfcc-tools
+conntrack-tools   conntrack
+iproute-tc        -
+numad             -
+tuna              -
+perf              linux-tools-generic
+
+# --- packages-server.txt -------------------------------------------
+elfutils-devel        libelf-dev
+elfutils-libelf-devel libelf-dev
+kernel-devel          -
+fuse-libs             libfuse2t64
+libmount-devel        libmount-dev
+libyaml-devel         libyaml-dev
+libnl3-devel          libnl-3-dev libnl-genl-3-dev
+libaio-devel          libaio-dev
+json-c-devel          libjson-c-dev
+
+# --- packages-dev.txt ----------------------------------------------
+gcc-c++               g++
+openssl-devel         libssl-dev
+perl-interpreter      perl
+perl-Carp             -
+perl-devel            libperl-dev
+perl-generators       -
+ncurses-devel         libncurses-dev
+libselinux-devel      libselinux1-dev
+zlib-devel            zlib1g-dev
+keyutils-libs-devel   libkeyutils-dev
+fuse-devel            libfuse-dev
+pkgconf-pkg-config    pkg-config
+kernel-rpm-macros     -
+rpm-build             debhelper dpkg-dev
+xz                    xz-utils

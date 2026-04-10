@@ -45,7 +45,6 @@ from ltvm_pkg.cli import (  # noqa: E402, I001
     _load_target,
     _not_found,
     _output,
-    _parse_vm_kwargs,
     _resolve_lustre_tree,
     cmd_status,
 )
@@ -364,40 +363,6 @@ class TestArtifactLabel:
 # ---------------------------------------------------------------------------
 # update: missing target and --all
 # ---------------------------------------------------------------------------
-
-
-# ---------------------------------------------------------------------------
-# _parse_vm_kwargs
-# ---------------------------------------------------------------------------
-
-
-class TestParseVmKwargs:
-    def test_empty(self) -> None:
-        assert _parse_vm_kwargs([]) == {}
-
-    def test_vcpus(self) -> None:
-        result = _parse_vm_kwargs(["--vcpus", "4"])
-        assert result == {"vcpus": 4}
-
-    def test_mem(self) -> None:
-        result = _parse_vm_kwargs(["--mem", "2048"])
-        assert result == {"mem": 2048}
-
-    def test_disks(self) -> None:
-        result = _parse_vm_kwargs(["--mdt-disks", "1", "--ost-disks", "3"])
-        assert result == {"mdt_disks": 1, "ost_disks": 3}
-
-    def test_combined(self) -> None:
-        result = _parse_vm_kwargs(
-            ["--vcpus", "2", "--mem", "4096", "--ost-disks", "2"]
-        )
-        assert result["vcpus"] == 2
-        assert result["mem"] == 4096
-        assert result["ost_disks"] == 2
-
-    def test_unknown_flags_ignored(self) -> None:
-        result = _parse_vm_kwargs(["--unknown", "foo"])
-        assert result == {}
 
 
 # ---------------------------------------------------------------------------

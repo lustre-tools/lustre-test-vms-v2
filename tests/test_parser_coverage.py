@@ -305,12 +305,9 @@ class TestNoOrphanVmCommandFunctions:
 
     With the flat structure, each function is reachable as a top-level
     subcommand (ltvm <action>) that delegates to vm_commands.
-    cmd_status is intentionally dropped (redundant with list).
     """
 
-    # cmd_status is intentionally not exposed as a top-level subcommand
-    # (it was vm status, dropped in the flat refactor).
-    _INTENTIONALLY_DROPPED = {"cmd_status"}
+    _INTENTIONALLY_DROPPED: set[str] = set()
 
     def test_all_cmd_functions_have_parser_action(self) -> None:
         top_level = _top_level_subcommand_names()
@@ -618,8 +615,18 @@ class TestListResilienceToMissingFiles:
 
         args = argparse.Namespace(json=True)
 
+        # Capture the real open() before patching so the side_effect
+        # can fall through without recursing into its own patch.
+        _real_open = open
+        import io as _io
+
+        def _open_side(*a, **kw):
+            if a and "/proc/meminfo" in str(a[0]):
+                return _io.StringIO("MemTotal: 8000000 kB\n")
+            return _real_open(*a, **kw)
+
         with patch("ltvm_pkg.vm_commands.VMInfo") as MockVMInfo, \
-             patch("builtins.open", side_effect=lambda *a, **kw: __import__("io").StringIO("MemTotal: 8000000 kB\n") if "/proc/meminfo" in str(a[0]) else open(*a, **kw)), \
+             patch("builtins.open", side_effect=_open_side), \
              patch("os.cpu_count", return_value=4):
             MockVMInfo.all_names.return_value = ["co1-test"]
             MockVMInfo.load.side_effect = VMNotFound("co1-test")
@@ -683,8 +690,6 @@ class TestJsonErrorShape:
     ) -> dict:
         """Call fn(args) and parse the first JSON object from stdout/stderr."""
         captured_lines: list[str] = []
-
-        original_print = __builtins__["print"] if isinstance(__builtins__, dict) else print
 
         with patch("builtins.print") as mock_print, \
              patch("sys.stderr"):

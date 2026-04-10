@@ -1,7 +1,18 @@
 # packages-os.txt -- Ubuntu 24.04 specific packages
+#
+# These are passed straight through (not via package-map.txt) and
+# are installed on top of the translated common/packages-*.txt lists.
 
 # Ubuntu base
 ubuntu-minimal
 
 # Extra repos / tools
 software-properties-common
+
+# Debian kdump tooling (RHEL uses kexec-tools + crash from base)
+kdump-tools
+initramfs-tools
+
+# C++ compiler (rhel ships gcc-c++ in the dev container; some
+# Lustre test programs need a g++ in the VM as well)
+g++

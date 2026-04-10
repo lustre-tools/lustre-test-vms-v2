@@ -134,7 +134,7 @@ def mounted_vm(request: pytest.FixtureRequest) -> str:  # type: ignore[return]
 @skip_no_image
 @skip_no_tree
 class TestLustreDeploy:
-    """Verify deploy-lustre.sh syncs modules and binaries correctly."""
+    """Verify deploy syncs modules and binaries correctly."""
 
     def test_deploy_ok(self, deployed_vm: str) -> None:
         """deploy() without mount exits ok."""
@@ -270,7 +270,7 @@ class TestOSTCount:
     """Verify that the number of OST disks configured on VM creation
     is reflected in the mounted Lustre filesystem.
 
-    deploy-lustre.sh generates cfg/local.sh based on available block
+    Deploy generates cfg/local.sh based on available block
     devices, so the OST count should match exactly.
     """
 

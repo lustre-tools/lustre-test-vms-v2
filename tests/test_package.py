@@ -32,13 +32,13 @@ class TestResolveKernel:
         assert name == "5.14-rhel9.7"
         assert path == kdir
 
-    def test_auto_detect_picks_first_sorted(self, tmp_path: Path) -> None:
+    def test_auto_detect_picks_latest_sorted(self, tmp_path: Path) -> None:
         for k in ["beta-kernel", "alpha-kernel"]:
             kdir = tmp_path / "kernels" / k
             kdir.mkdir(parents=True)
             (kdir / "vmlinux").touch()
         name, _ = _resolve_kernel(tmp_path, None)
-        assert name == "alpha-kernel"
+        assert name == "beta-kernel"
 
     def test_auto_detect_no_kernels_dir(self, tmp_path: Path) -> None:
         with pytest.raises(ValueError, match="No kernels/ directory"):

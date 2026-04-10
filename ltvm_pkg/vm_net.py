@@ -49,12 +49,6 @@ def _atomic_write(path: Path, content: str) -> None:
         raise
 
 
-def ip_for_name(name: str) -> str:
-    h = hashlib.md5(name.encode()).hexdigest()[:4]
-    octet = (int(h, 16) % 244) + 10
-    return f"{SUBNET}.{octet}"
-
-
 def tap_for_name(name: str) -> str:
     suffix = name
     if len(suffix) > 11:
@@ -65,19 +59,6 @@ def tap_for_name(name: str) -> str:
 def mac_for_name(name: str) -> str:
     h = hashlib.md5(name.encode()).hexdigest()
     return f"AA:FC:00:{h[0:2]}:{h[2:4]}:{h[4:6]}"
-
-
-def check_ip_collision(name: str, ip: str) -> None:
-    """Check that no other VM uses this IP."""
-    for other_name in VMInfo.all_names():
-        if other_name == name:
-            continue
-        try:
-            other = VMInfo.load(other_name)
-            if other.ip == ip:
-                die(f"IP {ip} already used by VM '{other_name}'")
-        except VMNotFound:
-            pass
 
 
 def _used_ips(exclude_name: str) -> set[str]:
@@ -194,8 +175,23 @@ def register_ssh_name(name: str, ip: str) -> None:
         f"\tServerAliveCountMax 3\n"
         f"\tConnectTimeout 5\n"
     )
-    if host_line not in cfg_text:
-        _atomic_write(ssh_cfg, cfg_text + block)
+    # Always strip any old block for this host before appending, so that
+    # IP changes (e.g. destroy + recreate with --ip) are picked up.
+    stripped_lines: list[str] = []
+    skip = False
+    for line in cfg_text.splitlines():
+        if host_line in line:
+            skip = True
+            if stripped_lines and stripped_lines[-1] == "":
+                stripped_lines.pop()
+            continue
+        if skip:
+            if line.startswith("\t") or line == "":
+                continue
+            skip = False
+        stripped_lines.append(line)
+    cfg_text = "\n".join(stripped_lines) + ("\n" if stripped_lines else "")
+    _atomic_write(ssh_cfg, cfg_text + block)
     ssh_cfg.chmod(0o600)
     import pwd
 
@@ -295,7 +291,12 @@ def run_ssh(
 
 
 def wait_for_ssh(ip: str, max_wait: int = 30) -> None:
-    """Wait for SSH to become available on a VM."""
+    """Wait for SSH to become available on a VM.
+
+    A FileNotFoundError here means sshpass/ssh aren't on PATH, which is
+    a host-setup bug we want to surface immediately rather than masquerade
+    as "SSH not ready".
+    """
     for _ in range(max_wait):
         try:
             r = run_ssh(ip, "true", timeout=5)
@@ -303,5 +304,8 @@ def wait_for_ssh(ip: str, max_wait: int = 30) -> None:
                 return
         except subprocess.TimeoutExpired:
             pass
+        except FileNotFoundError as e:
+            die(f"required command missing on host ({e}); "
+                f"is sshpass installed?")
         time.sleep(1)
     die(f"SSH not ready after {max_wait}s on {ip}")
