@@ -516,7 +516,16 @@ def _gh_api(endpoint: str) -> dict:
         raise RuntimeError(
             f"GitHub API failed (rc={r.returncode}): {api}\n  {r.stderr.strip()}"
         )
-    return json.loads(r.stdout)
+    try:
+        return json.loads(r.stdout)
+    except json.JSONDecodeError as e:
+        # GitHub occasionally serves an HTML status/incident page or a
+        # rate-limit body for a 200 response.  Without this guard the
+        # user gets a Python traceback instead of an actionable error.
+        snippet = r.stdout[:200].replace("\n", " ")
+        raise RuntimeError(
+            f"GitHub API returned non-JSON: {api}\n  {e}\n  body: {snippet}"
+        )
 
 
 def _find_release_url(
@@ -1158,6 +1167,24 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if not build_path.is_dir():
         return _error(f"Build path not found: {build_path}", use_json)
 
+    # Validate that --build points at an actual Lustre source tree
+    # before we try to feed it to `ltvm build-lustre`.  Skip this when
+    # we picked up a bundled snapshot, which is a DESTDIR layout (usr/,
+    # lib/modules/), not a source tree.  Without this validation a typo
+    # like `--build /wrong/dir` produces a confusing error several
+    # subprocess hops away inside the build container.
+    if bundled_snapshot is None:
+        missing = [
+            n for n in ("configure.ac", "lustre", "lnet")
+            if not (build_path / n).exists()
+        ]
+        if missing:
+            return _error(
+                f"--build:'{build_path}' does not look like a Lustre "
+                f"source tree (missing: {', '.join(missing)})",
+                use_json,
+            )
+
     userspace_only = getattr(args, "userspace_only", False)
 
     # Staging lives in the ltvm output dir, not the source tree.
@@ -1245,6 +1272,15 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 print(f"  Staging up to date, skipping build")
         else:
             build_cmd = ["ltvm", "build-lustre", target, "--lustre-tree", str(build_path)]
+            # Forward the VM's actual kernel to build-lustre.  Without
+            # this, a VM created with a non-default kernel rebuilds
+            # Lustre against the target's *default* kernel tree, producing
+            # modules that the running kernel can't load.  Cluster deploy
+            # already does this; single-node deploy was missing it.
+            if vm.kernel:
+                kernel_name = Path(vm.kernel).parent.name
+                if kernel_name:
+                    build_cmd += ["--kernel", kernel_name]
             sudo_user = os.environ.get("SUDO_USER")
             if sudo_user:
                 build_cmd = ["sudo", "-u", sudo_user] + build_cmd
@@ -1348,7 +1384,10 @@ def cmd_cluster(args: argparse.Namespace) -> int:
         # Parse optional flags out of cargs; remaining positionals are
         # name + node specs.
         vcpus = 2
-        mem = 4096
+        # mem=None means "let cmd_create resolve from os_arts.default_mem"
+        # so cluster nodes inherit the per-target default (e.g. rocky10
+        # needs 4096) instead of being silently overridden.
+        mem: int | None = None
         os_target: str | None = None
         arch: str | None = None
         disk_size: str | None = None
@@ -1370,6 +1409,12 @@ def cmd_cluster(args: argparse.Namespace) -> int:
             elif cargs[i] == "--disk-size" and i + 1 < len(cargs):
                 disk_size = cargs[i + 1]
                 i += 2
+            elif cargs[i].startswith("--"):
+                return _error(
+                    f"cluster create: unknown argument '{cargs[i]}'",
+                    use_json,
+                    hint="valid: --vcpus, --mem, --os, --arch, --disk-size",
+                )
             else:
                 positional.append(cargs[i])
                 i += 1

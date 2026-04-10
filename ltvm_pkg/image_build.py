@@ -282,7 +282,6 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
                     symlinks=False,
                     ignore=shutil.ignore_patterns("build", "source"),
                 )
-                lines.append("COPY modules/ /lib/modules/")
             if has_lustre:
                 log.info("Including pre-built Lustre")
                 # Copy staging subdirs that are safe (no FHS symlink clobbering)
@@ -309,8 +308,15 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
                         ["cp", "-a", str(staging_mods) + "/.", str(mod_dest) + "/"],
                         check=True,
                     )
-                    lines.append("# Lustre modules already merged into modules/")
                 lines.append("COPY usr/ /usr/")
+            # Emit COPY modules/ unconditionally if we ended up with any
+            # modules to inject -- previously this was gated on has_modules,
+            # so a Lustre-only inject (has_lustre but no kernel modules dir)
+            # silently dropped the staged .ko files.
+            if (inject_dir / "modules").is_dir() and any(
+                (inject_dir / "modules").iterdir()
+            ):
+                lines.append("COPY modules/ /lib/modules/")
             if kver:
                 lines.append(f"RUN ldconfig && depmod -a {kver}")
             else:
@@ -400,9 +406,13 @@ def _export_to_ext4(
         qtmp = shlex.quote(tmpdir)
 
         log.info("Exporting to ext4...")
+        # set -o pipefail so a `podman export` failure (stale container,
+        # missing image) propagates out of the pipeline instead of being
+        # masked by a successful downstream `mke2fs` against an empty tar
+        # stream -- which would silently produce a tiny rootfs image.
         _run(
             [
-                "bash", "-c",
+                "bash", "-o", "pipefail", "-c",
                 f"podman export {qcid} "
                 f"| fakeroot bash -c '"
                 f"tar -C {qtmp} -xf - --exclude=dev/* "

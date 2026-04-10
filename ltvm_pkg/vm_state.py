@@ -147,16 +147,20 @@ def resolve_os_artifacts(os_name: str, arch: str = "x86_64") -> OSArtifacts:
                 kern = c
                 break
 
-    # Search output/<os>/kernels/*/ (any kernel).  The glob already
-    # includes the filename, so each result is the kernel file path.
+    # Search output/<os>/kernels/*/ (any kernel).  Pick the lex-latest
+    # name -- with the kernel dir naming scheme
+    # `<lustre_target>-<full_version>` (e.g. 5.14-rhel9.7-5.14.0-611.13.1)
+    # this gives us the newest version, matching TargetConfig.resolve_kernel.
+    # Plain `sorted(...)[0]` would pick the OLDEST and silently boot the VM
+    # against a stale kernel after a new build landed alongside the old one.
     if not kern and output_dir.is_dir():
-        for kpath in sorted(output_dir.glob("kernels/*/vmlinuz")):
-            kern = kpath
-            break
-        if not kern:
-            for kpath in sorted(output_dir.glob("kernels/*/vmlinux")):
-                kern = kpath
-                break
+        candidates = sorted(output_dir.glob("kernels/*/vmlinuz"))
+        if candidates:
+            kern = candidates[-1]
+        else:
+            candidates = sorted(output_dir.glob("kernels/*/vmlinux"))
+            if candidates:
+                kern = candidates[-1]
 
     if not kern:
         arch_hint = f" --arch {effective_arch}" if effective_arch != default_arch else ""

@@ -173,7 +173,7 @@ def generate_local_sh(cluster: ClusterInfo, os_family: str = "rhel") -> str:
 def _create_one_node(
     node: ClusterNode,
     vcpus: int,
-    mem: int,
+    mem: int | None,
     os_target: str | None = None,
     arch: str | None = None,
     disk_size: str | None = None,
@@ -183,6 +183,11 @@ def _create_one_node(
     Returns (node_name, returncode, combined_output).
     Running via subprocess avoids threading issues with shared print/state
     inside cmd_create, and lets all nodes boot concurrently.
+
+    `mem=None` means "let the inner cmd_create resolve from the target's
+    default_mem", so cluster nodes inherit the per-target memory default
+    instead of being silently overridden by a hardcoded constant in the
+    cluster CLI parser.
     """
     mgs_disk = 1 if (node.is_mgs and not node.is_mds) else 0
     cmd = [
@@ -192,9 +197,9 @@ def _create_one_node(
         node.name,
         "--vcpus",
         str(vcpus),
-        "--mem",
-        str(mem),
     ]
+    if mem is not None:
+        cmd += ["--mem", str(mem)]
     if os_target:
         cmd += ["--os", os_target]
     if arch:
