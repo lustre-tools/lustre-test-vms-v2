@@ -17,19 +17,12 @@ Check whether it's already installed:
 ltvm doctor
 ```
 
-If not found, install it:
+If not found, run this from the repo directory (requires sudo — it
+installs QEMU, configures the host bridge and dnsmasq, sets up SSH,
+and symlinks `ltvm` into `/usr/local/bin`):
 
 ```bash
-pip install -e .
-# or, if uv is available:
-uv pip install -e .
-```
-
-Then set up the host (installs QEMU, bridge, SSH config).
-Some steps require sudo — run it and handle prompts:
-
-```bash
-ltvm install
+sudo ./ltvm install
 ```
 
 ### Step 2 — Fetch pre-built artifacts

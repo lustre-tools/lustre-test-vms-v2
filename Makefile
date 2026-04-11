@@ -1,4 +1,4 @@
-.PHONY: lint fix format typecheck test test-fast test-e2e coverage check
+.PHONY: lint fix format typecheck test test-fast test-e2e coverage check install uninstall
 
 # Lint only (report errors, don't fix)
 lint:
@@ -37,3 +37,12 @@ coverage:
 
 # CI-friendly check (non-zero exit on any issue)
 check: lint typecheck test
+
+# Install ltvm and host dependencies (QEMU, bridge, SSH, scripts)
+install:
+	sudo ./ltvm install
+
+# Remove ltvm from PATH and clean up installed files
+uninstall:
+	sudo rm -f /usr/local/bin/ltvm /usr/local/bin/dk-filter
+	sudo rm -f /etc/bash_completion.d/ltvm
