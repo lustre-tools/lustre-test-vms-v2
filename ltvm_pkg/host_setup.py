@@ -612,8 +612,48 @@ def install_qemu(host: HostInfo, force: bool = False) -> None:
 # ------------------------------------------------------------------
 
 
+def _network_already_configured(subnet: str) -> bool:
+    """Detect a working pre-existing network setup we should not touch.
+
+    Returns True if BOTH:
+      - the fcbr0 bridge interface exists and has the expected subnet
+        address (so the user has already brought it up), AND
+      - dnsmasq.service is active (so something is already serving DHCP
+        on the bridge)
+
+    When True, setup_network() short-circuits.  This protects users who
+    have a hand-rolled or coexisting dnsmasq setup (e.g. a separate
+    firecracker drop-in shipping `bind-interfaces`, which would conflict
+    with our `bind-dynamic` and prevent dnsmasq from restarting).  We
+    only touch the network when nothing is there.
+
+    The check is intentionally narrow: we don't try to inspect the
+    dnsmasq config or verify it serves the *right* subnet -- if the
+    bridge has the right address and dnsmasq is running, that's
+    "working from the host's perspective" and we leave it alone.
+    """
+    expected_addr = f"{subnet}.1/24"
+    r = _run_quiet(["ip", "-4", "addr", "show", "dev", "fcbr0"], check=False)
+    if r.returncode != 0 or expected_addr not in r.stdout:
+        return False
+    r = _run_quiet(["systemctl", "is-active", "dnsmasq"], check=False)
+    return r.returncode == 0
+
+
 def setup_network(host: HostInfo, subnet: str = DEFAULT_SUBNET) -> None:
     """Configure fcbr0 bridge, dnsmasq, and NAT."""
+    if _network_already_configured(subnet):
+        log.info(
+            "fcbr0 bridge on %s.0/24 and dnsmasq already configured -- "
+            "leaving network setup untouched",
+            subnet,
+        )
+        # Still persist the subnet file so vm_state.SUBNET reads the
+        # right value at import time even when we skip everything else.
+        VM_DIR.mkdir(parents=True, exist_ok=True)
+        (VM_DIR / "subnet").write_text(subnet + "\n")
+        return
+
     log.info("Configuring network bridge (fcbr0) on %s.0/24", subnet)
 
     # Persist the chosen subnet so vm_state.SUBNET (read at import time

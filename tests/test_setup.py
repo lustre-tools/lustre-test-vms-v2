@@ -11,6 +11,7 @@ import pytest
 from ltvm_pkg.host_setup import (
     SSH_BLOCK_MARKER,
     HostInfo,
+    _network_already_configured,
     _qemu_installed_version,
     _translate_pkgs,
     check_kvm,
@@ -139,6 +140,79 @@ class TestHostInfoNoPkgMgr:
         with patch("shutil.which", return_value=None):
             with pytest.raises(RuntimeError, match="package manager"):
                 HostInfo()
+
+
+# ------------------------------------------------------------------
+# TestNetworkAlreadyConfigured
+# ------------------------------------------------------------------
+
+
+class TestNetworkAlreadyConfigured:
+    """The detection short-circuit must respect a working pre-existing
+    setup, so a host with a hand-rolled or coexisting dnsmasq drop-in
+    (e.g. an older firecracker tooling shipping `bind-interfaces`) is
+    not stomped on by `ltvm install`."""
+
+    def _mock_run_quiet(self, ip_returncode, ip_stdout, dnsmasq_returncode):
+        def side(cmd, **kw):
+            r = MagicMock()
+            if "ip" in cmd:
+                r.returncode = ip_returncode
+                r.stdout = ip_stdout
+            elif "systemctl" in cmd:
+                r.returncode = dnsmasq_returncode
+                r.stdout = ""
+            return r
+
+        return side
+
+    def test_bridge_missing_returns_false(self) -> None:
+        """No fcbr0 -> we should configure."""
+        with patch(
+            "ltvm_pkg.host_setup._run_quiet",
+            side_effect=self._mock_run_quiet(
+                ip_returncode=1, ip_stdout="", dnsmasq_returncode=0
+            ),
+        ):
+            assert _network_already_configured("192.168.100") is False
+
+    def test_bridge_wrong_subnet_returns_false(self) -> None:
+        """fcbr0 exists but with a different address -> still configure
+        (we will need to reconcile)."""
+        with patch(
+            "ltvm_pkg.host_setup._run_quiet",
+            side_effect=self._mock_run_quiet(
+                ip_returncode=0,
+                ip_stdout="    inet 10.0.0.1/24 scope global fcbr0\n",
+                dnsmasq_returncode=0,
+            ),
+        ):
+            assert _network_already_configured("192.168.100") is False
+
+    def test_dnsmasq_inactive_returns_false(self) -> None:
+        """Bridge exists with the right address but dnsmasq isn't running
+        -> still need to configure."""
+        with patch(
+            "ltvm_pkg.host_setup._run_quiet",
+            side_effect=self._mock_run_quiet(
+                ip_returncode=0,
+                ip_stdout="    inet 192.168.100.1/24 scope global fcbr0\n",
+                dnsmasq_returncode=3,  # inactive
+            ),
+        ):
+            assert _network_already_configured("192.168.100") is False
+
+    def test_both_present_returns_true(self) -> None:
+        """The happy short-circuit case."""
+        with patch(
+            "ltvm_pkg.host_setup._run_quiet",
+            side_effect=self._mock_run_quiet(
+                ip_returncode=0,
+                ip_stdout="    inet 192.168.100.1/24 scope global fcbr0\n",
+                dnsmasq_returncode=0,
+            ),
+        ):
+            assert _network_already_configured("192.168.100") is True
 
 
 # ------------------------------------------------------------------
