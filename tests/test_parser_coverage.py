@@ -19,12 +19,9 @@ import importlib.machinery
 import importlib.util
 import inspect
 import json
-import sys
-import tempfile
-from io import StringIO
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -48,7 +45,6 @@ ltvm = _load_ltvm()
 
 from ltvm_pkg.cli import cmd_cluster  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -60,10 +56,13 @@ def _vm_top_level_commands() -> list[str]:
     These are the commands that were previously vm sub-actions and now live
     directly as top-level ltvm subcommands.
     """
-    import ltvm_pkg.vm_commands as vc
     import inspect
+
+    import ltvm_pkg.vm_commands as vc
+
     cmd_names = [
-        name for name, obj in inspect.getmembers(vc, inspect.isfunction)
+        name
+        for name, obj in inspect.getmembers(vc, inspect.isfunction)
         if name.startswith("cmd_")
     ]
     # Convert cmd_foo_bar -> foo-bar, and filter to those present in the parser
@@ -75,7 +74,7 @@ def _vm_top_level_commands() -> list[str]:
 
     result = []
     for cmd_name in cmd_names:
-        action = cmd_name[len("cmd_"):].replace("_", "-")
+        action = cmd_name[len("cmd_") :].replace("_", "-")
         if action in top_level:
             result.append(action)
     return sorted(result)
@@ -97,8 +96,10 @@ def _cluster_parser_choices() -> list[str]:
 def _vm_command_names() -> list[str]:
     """Return all public cmd_* function names in ltvm_pkg.vm_commands."""
     import ltvm_pkg.vm_commands as vc
+
     return [
-        name for name, obj in inspect.getmembers(vc, inspect.isfunction)
+        name
+        for name, obj in inspect.getmembers(vc, inspect.isfunction)
         if name.startswith("cmd_")
     ]
 
@@ -199,7 +200,6 @@ class TestVmSubcommandsDispatch:
     @pytest.mark.parametrize("subcmd", _vm_top_level_commands())
     def test_vm_subcommand_handler_calls_vm_commands(self, subcmd: str) -> None:
         """Each VM subcommand's handler must invoke the corresponding vm_commands fn."""
-        import ltvm_pkg.cli as cli_mod
 
         p = ltvm.build_parser()
         extra = _VM_SUBCOMMAND_PARSE_ARGS.get(subcmd, [])
@@ -287,7 +287,7 @@ class TestClusterActionsDispatch:
 def _action_from_cmd_name(cmd_name: str) -> str:
     """Convert 'cmd_foo_bar' -> 'foo-bar' (the parser action name)."""
     assert cmd_name.startswith("cmd_")
-    return cmd_name[len("cmd_"):].replace("_", "-")
+    return cmd_name[len("cmd_") :].replace("_", "-")
 
 
 def _top_level_subcommand_names() -> set[str]:
@@ -326,7 +326,7 @@ class TestNoOrphanVmCommandFunctions:
 
         assert not orphans, (
             "These vm_commands.py functions have no corresponding parser "
-            f"action:\n  " + "\n  ".join(orphans)
+            "action:\n  " + "\n  ".join(orphans)
         )
 
 
@@ -405,15 +405,28 @@ class TestEnsureToCreateNamespaceContract:
             patch.object(vm_commands, "SOCKETS", fake_sockets),
             patch.object(vm_commands, "OVERLAYS", fake_overlays),
             patch("ltvm_pkg.vm_commands.VMInfo", CapturingVMInfo),
-            patch("ltvm_pkg.vm_commands.alloc_ip", return_value=contextlib.contextmanager(lambda *a, **kw: (yield "192.168.100.5"))()),
-            patch("ltvm_pkg.vm_commands.tap_for_name", return_value="tap-co1-test"),
-            patch("ltvm_pkg.vm_commands.mac_for_name", return_value="52:54:00:aa:bb:cc"),
-            patch("ltvm_pkg.vm_commands.resolve_os_artifacts", return_value=MagicMock(
-                image="/resolved/base.ext4",
-                kernel="/resolved/vmlinuz",
-                default_mem=2048,
-                arch="aarch64",
-            )),
+            patch(
+                "ltvm_pkg.vm_commands.alloc_ip",
+                return_value=contextlib.contextmanager(
+                    lambda *a, **kw: (yield "192.168.100.5")
+                )(),
+            ),
+            patch(
+                "ltvm_pkg.vm_commands.tap_for_name", return_value="tap-co1-test"
+            ),
+            patch(
+                "ltvm_pkg.vm_commands.mac_for_name",
+                return_value="52:54:00:aa:bb:cc",
+            ),
+            patch(
+                "ltvm_pkg.vm_commands.resolve_os_artifacts",
+                return_value=MagicMock(
+                    image="/resolved/base.ext4",
+                    kernel="/resolved/vmlinuz",
+                    default_mem=2048,
+                    arch="aarch64",
+                ),
+            ),
             patch("ltvm_pkg.vm_commands.launch_qemu"),
             patch("ltvm_pkg.vm_commands.wait_for_ssh", return_value=True),
             patch("ltvm_pkg.vm_commands.register_ssh_name"),
@@ -495,7 +508,6 @@ class TestEnsureToCreateNamespaceContract:
         from ltvm_pkg import vm_commands
 
         resolve_calls: list[str] = []
-        real_resolve = vm_commands.resolve_os_artifacts
 
         def capturing_resolve(os_name: str, arch: str = "x86_64") -> Any:
             resolve_calls.append(os_name)
@@ -528,10 +540,23 @@ class TestEnsureToCreateNamespaceContract:
         patches = [
             patch.object(vm_commands, "SOCKETS", fake_sockets),
             patch.object(vm_commands, "OVERLAYS", fake_overlays),
-            patch("ltvm_pkg.vm_commands.resolve_os_artifacts", side_effect=capturing_resolve),
-            patch("ltvm_pkg.vm_commands.alloc_ip", return_value=contextlib.contextmanager(lambda *a, **kw: (yield "192.168.100.5"))()),
-            patch("ltvm_pkg.vm_commands.tap_for_name", return_value="tap-co1-test"),
-            patch("ltvm_pkg.vm_commands.mac_for_name", return_value="52:54:00:aa:bb:cc"),
+            patch(
+                "ltvm_pkg.vm_commands.resolve_os_artifacts",
+                side_effect=capturing_resolve,
+            ),
+            patch(
+                "ltvm_pkg.vm_commands.alloc_ip",
+                return_value=contextlib.contextmanager(
+                    lambda *a, **kw: (yield "192.168.100.5")
+                )(),
+            ),
+            patch(
+                "ltvm_pkg.vm_commands.tap_for_name", return_value="tap-co1-test"
+            ),
+            patch(
+                "ltvm_pkg.vm_commands.mac_for_name",
+                return_value="52:54:00:aa:bb:cc",
+            ),
             patch("ltvm_pkg.vm_commands.launch_qemu"),
             patch("ltvm_pkg.vm_commands.wait_for_ssh", return_value=True),
             patch("ltvm_pkg.vm_commands.register_ssh_name"),
@@ -543,9 +568,7 @@ class TestEnsureToCreateNamespaceContract:
         with contextlib.ExitStack() as stack:
             for p in patches:
                 stack.enter_context(p)
-            stack.enter_context(
-                patch("ltvm_pkg.vm_commands.VMInfo.save")
-            )
+            stack.enter_context(patch("ltvm_pkg.vm_commands.VMInfo.save"))
             vm_commands.cmd_ensure(args)
 
         assert resolve_calls, (
@@ -625,9 +648,11 @@ class TestListResilienceToMissingFiles:
                 return _io.StringIO("MemTotal: 8000000 kB\n")
             return _real_open(*a, **kw)
 
-        with patch("ltvm_pkg.vm_commands.VMInfo") as MockVMInfo, \
-             patch("builtins.open", side_effect=_open_side), \
-             patch("os.cpu_count", return_value=4):
+        with (
+            patch("ltvm_pkg.vm_commands.VMInfo") as MockVMInfo,
+            patch("builtins.open", side_effect=_open_side),
+            patch("os.cpu_count", return_value=4),
+        ):
             MockVMInfo.all_names.return_value = ["co1-test"]
             MockVMInfo.load.side_effect = VMNotFound("co1-test")
 
@@ -685,18 +710,16 @@ class TestListResilienceToMissingFiles:
 class TestJsonErrorShape:
     """JSON error responses always have an 'error' key."""
 
-    def _capture_json_output(
-        self, args: argparse.Namespace, fn: Any
-    ) -> dict:
+    def _capture_json_output(self, args: argparse.Namespace, fn: Any) -> dict:
         """Call fn(args) and parse the first JSON object from stdout/stderr."""
         captured_lines: list[str] = []
 
-        with patch("builtins.print") as mock_print, \
-             patch("sys.stderr"):
+        with patch("builtins.print") as mock_print, patch("sys.stderr"):
             # Capture calls to print()
             def capture(*a: Any, file: Any = None, **kw: Any) -> None:
                 if a:
                     captured_lines.append(str(a[0]))
+
             mock_print.side_effect = capture
             try:
                 fn(args)
@@ -718,13 +741,18 @@ class TestJsonErrorShape:
         except json.JSONDecodeError:
             return {}
 
-    @pytest.mark.parametrize("handler_name,args_ns,description", [
-        (
-            "cmd_destroy",
-            argparse.Namespace(names=[], json=True, verbose=False, arch=None),
-            "destroy with empty names list triggers VMNotFound",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        "handler_name,args_ns,description",
+        [
+            (
+                "cmd_destroy",
+                argparse.Namespace(
+                    names=[], json=True, verbose=False, arch=None
+                ),
+                "destroy with empty names list triggers VMNotFound",
+            ),
+        ],
+    )
     def test_vm_json_error_has_error_key(
         self, handler_name: str, args_ns: argparse.Namespace, description: str
     ) -> None:
@@ -736,11 +764,15 @@ class TestJsonErrorShape:
 
         output_lines: list[str] = []
 
-        with patch("ltvm_pkg.cli._require_root", return_value=None), \
-             patch("ltvm_pkg.vm_commands.cmd_destroy",
-                   side_effect=VMNotFound("co1-test")), \
-             patch("builtins.print") as mock_print, \
-             patch("sys.stderr"):
+        with (
+            patch("ltvm_pkg.cli._require_root", return_value=None),
+            patch(
+                "ltvm_pkg.vm_commands.cmd_destroy",
+                side_effect=VMNotFound("co1-test"),
+            ),
+            patch("builtins.print") as mock_print,
+            patch("sys.stderr"),
+        ):
             mock_print.side_effect = lambda *a, file=None, **kw: (
                 output_lines.append(str(a[0])) if a else None
             )
@@ -766,14 +798,17 @@ class TestJsonErrorShape:
             f"{handler_name} --json ({description}) JSON output "
             f"is missing 'error' key.\n"
             f"Got: {json_outputs[0]!r}\n"
-            f"All JSON error paths must produce {{\"error\": \"...\"}}."
+            f'All JSON error paths must produce {{"error": "..."}}.'
         )
 
-    @pytest.mark.parametrize("action,cluster_args,description", [
-        ("destroy", [], "missing cluster name"),
-        ("status", [], "missing cluster name"),
-        ("exec", ["co1", "oss"], "too few args for exec"),
-    ])
+    @pytest.mark.parametrize(
+        "action,cluster_args,description",
+        [
+            ("destroy", [], "missing cluster name"),
+            ("status", [], "missing cluster name"),
+            ("exec", ["co1", "oss"], "too few args for exec"),
+        ],
+    )
     def test_cluster_json_error_has_error_key(
         self, action: str, cluster_args: list[str], description: str
     ) -> None:
@@ -790,9 +825,11 @@ class TestJsonErrorShape:
 
         output_lines: list[str] = []
 
-        with patch("ltvm_pkg.cli._require_root", return_value=None), \
-             patch("builtins.print") as mock_print, \
-             patch("sys.stderr"):
+        with (
+            patch("ltvm_pkg.cli._require_root", return_value=None),
+            patch("builtins.print") as mock_print,
+            patch("sys.stderr"),
+        ):
             mock_print.side_effect = lambda *a, file=None, **kw: (
                 output_lines.append(str(a[0])) if a else None
             )
@@ -818,5 +855,5 @@ class TestJsonErrorShape:
             f"cmd_cluster --json action='{action}' ({description}) JSON output "
             f"is missing 'error' key.\n"
             f"Got: {json_outputs[0]!r}\n"
-            f"All JSON error paths must produce {{\"error\": \"...\"}}."
+            f'All JSON error paths must produce {{"error": "..."}}.'
         )

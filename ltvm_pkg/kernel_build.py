@@ -223,6 +223,7 @@ def download_srpm(srpm_name: str, cache_dir: str | Path, base_url: str) -> Path:
     # also keeps two concurrent build-kernel runs from clobbering each other's
     # download.
     import tempfile
+
     fd, tmp_str = tempfile.mkstemp(
         dir=str(cache_dir), prefix=f".{srpm_name}.", suffix=".partial"
     )
@@ -329,7 +330,9 @@ def _build_config_fragment(target_config: TargetConfig) -> str:
         lines.append(common.read_text())
 
     # Arch-specific fragment (e.g. kernel-config-aarch64.fragment)
-    arch_frag = targets_dir / "common" / f"kernel-config-{target_config.arch}.fragment"
+    arch_frag = (
+        targets_dir / "common" / f"kernel-config-{target_config.arch}.fragment"
+    )
     if arch_frag.exists():
         lines.append(arch_frag.read_text())
 

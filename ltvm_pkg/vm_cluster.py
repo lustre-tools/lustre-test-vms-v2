@@ -40,6 +40,7 @@ def parse_node_spec(spec: str) -> ClusterNode:
     # enforces -- spaces or special chars would break /etc/hosts /
     # SSH config / hostname / fc_name= cmdline.
     from .vm_commands import _validate_vm_name
+
     _validate_vm_name(name)
     if len(parts) > 2:
         try:
@@ -266,8 +267,13 @@ def cmd_cluster_create(args: argparse.Namespace) -> None:
     with ThreadPoolExecutor(max_workers=len(node_specs)) as executor:
         futures = {
             executor.submit(
-                _create_one_node, node, vcpus, mem,
-                os_target, arch, disk_size,
+                _create_one_node,
+                node,
+                vcpus,
+                mem,
+                os_target,
+                arch,
+                disk_size,
             ): node
             for node in node_specs
         }
@@ -360,7 +366,10 @@ def _deploy_one_node(
 
 
 def _write_cluster_local_sh(
-    node_name: str, node_ip: str, local_sh: str, ssh_opts: list[str],
+    node_name: str,
+    node_ip: str,
+    local_sh: str,
+    ssh_opts: list[str],
     os_family: str = "rhel",
 ) -> tuple[str, int, str]:
     """Write cluster local.sh to the standard test location on a node.
@@ -426,7 +435,9 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     # --server-only only affects the llmount.sh invocation, which only
     # runs when --mount is set.  Reject the combination instead of
     # silently dropping the flag.
-    if getattr(args, "server_only", False) and not getattr(args, "mount", False):
+    if getattr(args, "server_only", False) and not getattr(
+        args, "mount", False
+    ):
         die("--server-only requires --mount")
 
     # Derive os_family and target+kernel+arch from the first node's
@@ -443,13 +454,16 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
         die(f"cluster {cluster.name!r}: cannot load first node: {e}")
     if first_vm.os_id:
         from .target_config import TargetConfig
+
         target = first_vm.os_id
         # Let ValueError from TargetConfig propagate up with a clear
         # error.  Previously a broad `except (..., ValueError, ...): pass`
         # silently fell back to DEFAULT_TARGET, which deployed rocky9 .ko
         # files onto whatever the cluster actually ran.
         try:
-            os_family = TargetConfig(target, arch=first_vm.arch or None).os_family
+            os_family = TargetConfig(
+                target, arch=first_vm.arch or None
+            ).os_family
         except ValueError as e:
             die(f"cluster {cluster.name!r}: target {target!r}: {e}")
     if first_vm.kernel:
@@ -504,6 +518,7 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     # last_deploy/build_path/kver -- single-node cmd_deploy does this
     # at the end of its flow; cluster deploy was missing it.
     import time as _time
+
     _now = int(_time.time())
     for node in nodes:
         try:
@@ -560,8 +575,7 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
 
         lustre_dir = lustre_libdir(os_family)
         mount_cmd = (
-            f"cd {lustre_dir}/tests"
-            f" && LUSTRE={lustre_dir} bash llmount.sh"
+            f"cd {lustre_dir}/tests && LUSTRE={lustre_dir} bash llmount.sh"
         )
         if args.server_only:
             mount_cmd += " --server-only"

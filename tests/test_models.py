@@ -196,9 +196,7 @@ class TestUpdateFieldsAtomic:
         assert loaded.build_path == "/lustre"
         assert loaded.kver == "6.1"
 
-    def test_raises_vmnotfound_on_missing_file(
-        self, tmp_sockets: Path
-    ) -> None:
+    def test_raises_vmnotfound_on_missing_file(self, tmp_sockets: Path) -> None:
         """_update_fields raises when the .info file is gone.
 
         The previous silent no-op caused in-memory VMInfo state to
@@ -206,6 +204,7 @@ class TestUpdateFieldsAtomic:
         partially rolled-back create would silently lose updates.
         """
         from ltvm_pkg.vm_state import VMNotFound
+
         vm = VMInfo(name="no-file-test", ip="192.168.100.32")
         # Do NOT call vm.save() -- info file does not exist
         with pytest.raises(VMNotFound):
@@ -228,9 +227,10 @@ class TestWaitForSsh:
         fail_result = MagicMock()
         fail_result.returncode = 1
 
-        with patch(
-            "ltvm_pkg.vm_net.run_ssh", return_value=fail_result
-        ), patch("ltvm_pkg.vm_net.time.sleep"):
+        with (
+            patch("ltvm_pkg.vm_net.run_ssh", return_value=fail_result),
+            patch("ltvm_pkg.vm_net.time.sleep"),
+        ):
             with pytest.raises(SystemExit):
                 wait_for_ssh("192.168.100.99", max_wait=3)
 
@@ -254,7 +254,9 @@ class TestDeploySshKey:
 
         fake_ssh_dir = tmp_path / ".ssh"
         fake_ssh_dir.mkdir()
-        (fake_ssh_dir / "id_rsa.pub").write_text("ssh-rsa AAAA fake-key user@host")
+        (fake_ssh_dir / "id_rsa.pub").write_text(
+            "ssh-rsa AAAA fake-key user@host"
+        )
 
         with (
             patch(

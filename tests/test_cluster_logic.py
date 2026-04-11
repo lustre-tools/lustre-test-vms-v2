@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from ltvm_pkg import vm_cluster
 from ltvm_pkg.vm_state import ClusterInfo
-
 
 # ── parse_node_spec ──────────────────────────────────────
 

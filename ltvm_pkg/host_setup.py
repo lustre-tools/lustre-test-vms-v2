@@ -16,6 +16,7 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+
 def is_wsl2() -> bool:
     try:
         v = Path("/proc/version").read_text().lower()
@@ -30,6 +31,7 @@ def wsl2_has_kvm() -> bool:
 
 def wsl2_has_systemd() -> bool:
     return Path("/run/systemd/private").exists()
+
 
 log = logging.getLogger(__name__)
 
@@ -150,7 +152,10 @@ def _pkg_install(host: HostInfo, *pkgs: str) -> None:
         env = dict(os.environ, DEBIAN_FRONTEND="noninteractive")
         r = subprocess.run(
             ["apt-get", "install", "-y", *translated],
-            env=env, check=False, capture_output=True, text=True,
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
         )
     else:
         return
@@ -281,7 +286,10 @@ def check_kvm(require: bool = True) -> bool:
 
 def _qemu_installed_version(arch: str = "x86_64") -> str | None:
     """Return installed QEMU version string, or None."""
-    _BINARY_MAP = {"x86_64": "qemu-system-x86_64", "aarch64": "qemu-system-aarch64"}
+    _BINARY_MAP = {
+        "x86_64": "qemu-system-x86_64",
+        "aarch64": "qemu-system-aarch64",
+    }
     binary_name = _BINARY_MAP.get(arch, f"qemu-system-{arch}")
     qemu = QEMU_PREFIX / "bin" / binary_name
     if not qemu.exists():
@@ -340,10 +348,13 @@ def _fetch_prebuilt_qemu(host: HostInfo) -> bool:
     try:
         r = _run(
             ["curl", "-fsSL", url, "-o", str(tmpdir / asset)],
-            check=False, quiet=True,
+            check=False,
+            quiet=True,
         )
         if r.returncode != 0:
-            log.warning("Pre-built QEMU not available for this platform -- will build from source")
+            log.warning(
+                "Pre-built QEMU not available for this platform -- will build from source"
+            )
             return False
 
         # Tarball is structured as a /opt/qemu overlay: bin/qemu-system-*,
@@ -395,7 +406,8 @@ def _fetch_prebuilt_qemu(host: HostInfo) -> bool:
 
 
 def _system_qemu_has_machine(
-    binaries: tuple[str, ...], machine: str,
+    binaries: tuple[str, ...],
+    machine: str,
 ) -> str | None:
     """Return the first qemu binary in `binaries` that supports `machine`.
 
@@ -489,7 +501,8 @@ def install_qemu(host: HostInfo, force: bool = False) -> None:
     log.info(
         "System QEMU lacks microvm support and no pre-built binary "
         "available. Building QEMU %s from source into %s.",
-        QEMU_VERSION, QEMU_PREFIX,
+        QEMU_VERSION,
+        QEMU_PREFIX,
     )
 
     if existing:
@@ -581,9 +594,13 @@ def install_qemu(host: HostInfo, force: bool = False) -> None:
     if qemu_arm.exists():
         r = _run_quiet([str(qemu_arm), "-machine", "help"])
         if "virt" not in r.stdout:
-            raise RuntimeError("QEMU aarch64 built but virt machine type not available")
+            raise RuntimeError(
+                "QEMU aarch64 built but virt machine type not available"
+            )
     else:
-        raise RuntimeError(f"qemu-system-aarch64 not found after build at {qemu_arm}")
+        raise RuntimeError(
+            f"qemu-system-aarch64 not found after build at {qemu_arm}"
+        )
 
     _install_qemu_path_profile()
 
@@ -662,7 +679,8 @@ def setup_network(host: HostInfo, subnet: str = DEFAULT_SUBNET) -> None:
         if "\nbind-interfaces\n" in content:
             system_dnsmasq.write_text(
                 content.replace(
-                    "\nbind-interfaces\n", "\n# bind-interfaces  # disabled by ltvm\n"
+                    "\nbind-interfaces\n",
+                    "\n# bind-interfaces  # disabled by ltvm\n",
                 )
             )
             log.info(
@@ -992,5 +1010,7 @@ def run_setup(
         log.info("")
         log.info("Next:")
         log.info("  ltvm fetch rocky9")
-        log.info("  sudo ltvm create co1-test --os rocky9 --vcpus 2 --mdt-disks 1 --ost-disks 2")
+        log.info(
+            "  sudo ltvm create co1-test --os rocky9 --vcpus 2 --mdt-disks 1 --ost-disks 2"
+        )
         log.info("  sudo ltvm deploy co1-test --mount")

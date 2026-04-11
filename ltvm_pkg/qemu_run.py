@@ -96,6 +96,7 @@ def launch_qemu(vm: VMInfo) -> None:
     kernel = Path(vm.kernel)
 
     import platform as _platform
+
     arch = vm.arch
     qemu_bin = qemu_binary_for_arch(arch)
     machine = qemu_machine_for_arch(arch)
@@ -113,8 +114,9 @@ def launch_qemu(vm: VMInfo) -> None:
 
     # KVM allows -cpu host; TCG (cross-arch emulation) needs a real model.
     host_arch = _platform.machine()
-    if (arch == "x86_64" and host_arch in ("x86_64", "amd64")) or \
-       (arch == "aarch64" and host_arch in ("aarch64", "arm64")):
+    if (arch == "x86_64" and host_arch in ("x86_64", "amd64")) or (
+        arch == "aarch64" and host_arch in ("aarch64", "arm64")
+    ):
         cpu_model = "host"
     elif arch == "aarch64":
         cpu_model = "cortex-a57"
@@ -140,8 +142,10 @@ def launch_qemu(vm: VMInfo) -> None:
         "-nodefaults",
         "-no-user-config",
         "-nographic",
-        "-object", "rng-random,id=rng0,filename=/dev/urandom",
-        "-device", f"{rng_driver},rng=rng0",
+        "-object",
+        "rng-random,id=rng0,filename=/dev/urandom",
+        "-device",
+        f"{rng_driver},rng=rng0",
         "-serial",
         "chardev:serial0",
         "-chardev",

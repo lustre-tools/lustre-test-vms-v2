@@ -416,7 +416,9 @@ class TestVmSubcommands:
 
     def test_crash_collect_mod_dir(self) -> None:
         p = ltvm.build_parser()
-        args = p.parse_args(["crash-collect", "co1-single", "--mod-dir", "/path/to/build"])
+        args = p.parse_args(
+            ["crash-collect", "co1-single", "--mod-dir", "/path/to/build"]
+        )
         assert args.name == "co1-single"
         assert args.mod_dir == "/path/to/build"
 
@@ -473,7 +475,9 @@ class TestCmdDeployBuildGating:
                 patch("subprocess.run", return_value=fail_result),
             ):
                 mock_tc.return_value.os_family = "rhel"
-                mock_tc.return_value.resolve_kernel.return_value = "5.14-rhel9.7"
+                mock_tc.return_value.resolve_kernel.return_value = (
+                    "5.14-rhel9.7"
+                )
 
                 args = argparse.Namespace(
                     vm="co1-deploy-test",
@@ -523,7 +527,9 @@ class TestCmdDeployBuildGating:
                 patch("subprocess.run", return_value=ok_result),
             ):
                 mock_tc.return_value.os_family = "rhel"
-                mock_tc.return_value.resolve_kernel.return_value = "5.14-rhel9.7"
+                mock_tc.return_value.resolve_kernel.return_value = (
+                    "5.14-rhel9.7"
+                )
 
                 args = argparse.Namespace(
                     vm="co1-deploy-test",
@@ -537,9 +543,7 @@ class TestCmdDeployBuildGating:
 
         assert rc == EXIT_ERROR
 
-    def test_build_failure_does_not_reach_tar_ssh(
-        self, tmp_path: Path
-    ) -> None:
+    def test_build_failure_does_not_reach_tar_ssh(self, tmp_path: Path) -> None:
         """When build fails, the tar/ssh deploy step is never executed."""
         from ltvm_pkg import cli as cli_mod
         from ltvm_pkg.vm_state import VMInfo
@@ -572,7 +576,9 @@ class TestCmdDeployBuildGating:
                 patch("subprocess.run", side_effect=_track_run),
             ):
                 mock_tc.return_value.os_family = "rhel"
-                mock_tc.return_value.resolve_kernel.return_value = "5.14-rhel9.7"
+                mock_tc.return_value.resolve_kernel.return_value = (
+                    "5.14-rhel9.7"
+                )
 
                 args = argparse.Namespace(
                     vm="co1-deploy-test",
@@ -586,5 +592,11 @@ class TestCmdDeployBuildGating:
 
         # Only the build command should have been called (via subprocess.run).
         # The tar/ssh deploy uses subprocess.run with ["bash", "-c", tar_cmd].
-        bash_calls = [c for c in subprocess_calls if isinstance(c, list) and c[:1] == ["bash"]]
-        assert bash_calls == [], "tar/ssh deploy must not be called after build failure"
+        bash_calls = [
+            c
+            for c in subprocess_calls
+            if isinstance(c, list) and c[:1] == ["bash"]
+        ]
+        assert bash_calls == [], (
+            "tar/ssh deploy must not be called after build failure"
+        )

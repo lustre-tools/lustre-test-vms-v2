@@ -19,11 +19,9 @@ Also pinned here:
 from __future__ import annotations
 
 import json
-import shutil
 from pathlib import Path
 
 import pytest
-
 
 # ── /etc/hosts marker prefix collision ───────────────────
 
@@ -36,38 +34,48 @@ class TestHostsMarkerCollision:
     def _hosts_with(self, entries: list[tuple[str, str]]) -> str:
         """Build a fake /etc/hosts body with ltvm marker lines."""
         from ltvm_pkg.vm_state import MARKER
+
         lines = ["127.0.0.1\tlocalhost\n"]
         for ip, name in entries:
             lines.append(f"{ip}\t{name} {MARKER}:{name}\n")
         return "".join(lines)
 
     def test_register_co1_does_not_strip_co1_single(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """The actual bug: registering 'co1' must not remove the
         'co1-single' entry, because 'co1' is a prefix substring of
         'co1-single' under the old unanchored check."""
         import os as _os
+
         from ltvm_pkg import vm_net
         from ltvm_pkg.vm_state import MARKER
 
         fake_hosts = tmp_path / "hosts"
-        fake_hosts.write_text(self._hosts_with([
-            ("192.168.100.50", "co1-single"),
-            ("192.168.100.51", "co2-mds"),
-        ]))
+        fake_hosts.write_text(
+            self._hosts_with(
+                [
+                    ("192.168.100.50", "co1-single"),
+                    ("192.168.100.51", "co2-mds"),
+                ]
+            )
+        )
 
         # Patch Path("/etc/hosts") -> fake_hosts.
         real_path = Path
         monkeypatch.setattr(
-            vm_net, "Path",
+            vm_net,
+            "Path",
             lambda p: fake_hosts if p == "/etc/hosts" else real_path(p),
         )
         # Stub the surrounding ssh-config machinery so we only exercise
         # the /etc/hosts logic under test.
         monkeypatch.setattr(vm_net, "reload_dns", lambda: None)
         monkeypatch.setattr(
-            vm_net, "_real_user_ssh_dir",
+            vm_net,
+            "_real_user_ssh_dir",
             lambda: ("root", tmp_path / ".ssh"),
         )
         # Root-only chown is the final step; stub it so the test works
@@ -88,7 +96,9 @@ class TestHostsMarkerCollision:
         assert f"{MARKER}:co2-mds\n" in body
 
     def test_unregister_co1_does_not_strip_co1_single(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+        self,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """Symmetric: unregistering 'co1' must not take 'co1-single'
         with it."""
@@ -96,19 +106,25 @@ class TestHostsMarkerCollision:
         from ltvm_pkg.vm_state import MARKER
 
         fake_hosts = tmp_path / "hosts"
-        fake_hosts.write_text(self._hosts_with([
-            ("192.168.100.40", "co1"),
-            ("192.168.100.50", "co1-single"),
-        ]))
+        fake_hosts.write_text(
+            self._hosts_with(
+                [
+                    ("192.168.100.40", "co1"),
+                    ("192.168.100.50", "co1-single"),
+                ]
+            )
+        )
 
         real_path = Path
         monkeypatch.setattr(
-            vm_net, "Path",
+            vm_net,
+            "Path",
             lambda p: fake_hosts if p == "/etc/hosts" else real_path(p),
         )
         monkeypatch.setattr(vm_net, "reload_dns", lambda: None)
         monkeypatch.setattr(
-            vm_net, "_real_user_ssh_dir",
+            vm_net,
+            "_real_user_ssh_dir",
             lambda: ("root", tmp_path / ".ssh"),
         )
 
@@ -136,6 +152,7 @@ class TestImageStalenessUpstream:
         targets.yaml; instead we use the live target_config with a
         real target and an overridden output_dir."""
         from ltvm_pkg.target_config import TargetConfig
+
         try:
             tc = TargetConfig("rocky9")
         except (ValueError, FileNotFoundError):
@@ -206,9 +223,7 @@ class TestImageStalenessUpstream:
         # Must not raise
         tc.input_hash("image")
 
-    def test_corrupt_kernel_meta_is_tolerated(
-        self, tmp_path: Path
-    ) -> None:
+    def test_corrupt_kernel_meta_is_tolerated(self, tmp_path: Path) -> None:
         tc = self._stub_target_config(tmp_path)
         kdir = tc.output_dir / "kernels" / tc.resolve_kernel()
         kdir.mkdir(parents=True)
@@ -234,19 +249,22 @@ class TestBundledSnapshotAlwaysMirrors:
         """Inspect the source code to ensure the mirror is
         unconditional when bundled_snapshot is not None."""
         import inspect
+
         from ltvm_pkg import cli
+
         src = inspect.getsource(cli.cmd_deploy)
         # The old buggy form had `and not (staging.is_dir() and any(...))`
         # The new form should just test `bundled_snapshot is not None`
         # without the staging.rglob guard on the mirror branch.
         #
-        # We search for the mirror block by matching the rsync
-        # invocation and confirming the enclosing `if` does not
-        # reference staging.rglob in the same expression.
-        mirror_idx = src.find('"rsync", "-a", "--delete"')
+        # We search for the mirror block by matching the rsync invocation
+        # and confirming the enclosing `if` does not reference
+        # staging.rglob in the same expression.  Match "rsync" loosely so
+        # `ruff format` is free to wrap the args list across lines.
+        mirror_idx = src.find('"rsync"')
         assert mirror_idx != -1, "rsync mirror call not found in cmd_deploy"
         # Look backward a few hundred chars for the gating `if`
-        preamble = src[max(0, mirror_idx - 500): mirror_idx]
+        preamble = src[max(0, mirror_idx - 500) : mirror_idx]
         assert "bundled_snapshot is not None" in preamble
         # The key property: no ".rglob" staleness check gating the mirror
         assert 'staging.rglob("*.ko")' not in preamble, (

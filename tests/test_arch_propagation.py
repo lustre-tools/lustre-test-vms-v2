@@ -16,13 +16,11 @@ re-introduce the same bugs.
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 
 from ltvm_pkg import lustre_build
 from ltvm_pkg.lustre_build import _stamp_suffix, staging_path
-
 
 # ── staging_path is arch-aware ───────────────────────────
 
@@ -113,7 +111,9 @@ class TestNeedsReconfigureArch:
         (tree / "config.status").write_text("# fake config.status\n")
         return tree
 
-    def _make_build_tree(self, tmp_path: Path, kver: str = "5.14.0-test") -> Path:
+    def _make_build_tree(
+        self, tmp_path: Path, kver: str = "5.14.0-test"
+    ) -> Path:
         """Build a fake kernel build tree with kernel.release."""
         bt = tmp_path / "build-tree"
         (bt / "include" / "config").mkdir(parents=True)
@@ -144,8 +144,12 @@ class TestNeedsReconfigureArch:
 
         # Now ask: do we need to reconfigure for an aarch64 build?
         need = lustre_build._needs_reconfigure(
-            tree, build_tree, force=False, target="rocky9",
-            enable_server=True, arch="aarch64",
+            tree,
+            build_tree,
+            force=False,
+            target="rocky9",
+            enable_server=True,
+            arch="aarch64",
         )
         assert need is True, (
             "aarch64 build should not skip reconfigure because the "
@@ -168,8 +172,12 @@ class TestNeedsReconfigureArch:
         )
 
         need = lustre_build._needs_reconfigure(
-            tree, build_tree, force=False, target="rocky9",
-            enable_server=True, arch="x86_64",
+            tree,
+            build_tree,
+            force=False,
+            target="rocky9",
+            enable_server=True,
+            arch="x86_64",
         )
         assert need is False
 
@@ -181,16 +189,20 @@ class TestNeedsReconfigureArch:
         build_tree = self._make_build_tree(tmp_path)
         kver = "5.14.0-test"
 
-        (tree / f".ltvm-kernel-{_stamp_suffix('rocky9', 'aarch64')}").write_text(
-            kver + "\n"
-        )
-        (tree / f".ltvm-server-{_stamp_suffix('rocky9', 'aarch64')}").write_text(
-            "True\n"
-        )
+        (
+            tree / f".ltvm-kernel-{_stamp_suffix('rocky9', 'aarch64')}"
+        ).write_text(kver + "\n")
+        (
+            tree / f".ltvm-server-{_stamp_suffix('rocky9', 'aarch64')}"
+        ).write_text("True\n")
 
         need = lustre_build._needs_reconfigure(
-            tree, build_tree, force=False, target="rocky9",
-            enable_server=True, arch="x86_64",
+            tree,
+            build_tree,
+            force=False,
+            target="rocky9",
+            enable_server=True,
+            arch="x86_64",
         )
         assert need is True
 
@@ -207,6 +219,7 @@ class TestExtraConfigureQuoting:
     def test_simple_flags_pass_through(self, tmp_path: Path) -> None:
         """Plain flags like --with-foo=bar are unchanged after quoting."""
         import shlex
+
         args = ["--with-o2ib=no", "--disable-server"]
         joined = " ".join(shlex.quote(a) for a in args)
         # shlex.quote leaves alnum + safe chars alone
@@ -216,7 +229,8 @@ class TestExtraConfigureQuoting:
     def test_value_with_spaces_is_quoted(self, tmp_path: Path) -> None:
         """A configure flag with embedded spaces survives shell parsing."""
         import shlex
-        args = ['--with-linux=/tmp/build dir/linux']
+
+        args = ["--with-linux=/tmp/build dir/linux"]
         joined = " ".join(shlex.quote(a) for a in args)
         # shlex.quote wraps the whole thing in single quotes
         assert "'" in joined
@@ -226,6 +240,7 @@ class TestExtraConfigureQuoting:
     def test_metachar_does_not_escape_quoting(self, tmp_path: Path) -> None:
         """A semicolon in a value does not turn into a separator."""
         import shlex
+
         args = ["--with-foo=bar; rm -rf /"]
         joined = " ".join(shlex.quote(a) for a in args)
         # The injection vector: `rm -rf /` must be inside the quoted arg,
@@ -248,6 +263,7 @@ class TestDeployBundledSnapshotPath:
         the arch subdir; cmd_deploy must use tc.output_dir to find
         bundled snapshots."""
         from ltvm_pkg.target_config import TargetConfig
+
         # Use a real target from the repo so the test doesn't depend on
         # fixture scaffolding.  We just need to verify the path shape.
         try:
@@ -262,6 +278,7 @@ class TestDeployBundledSnapshotPath:
     def test_x86_64_lookup_is_flat(self) -> None:
         """Default arch keeps the flat layout."""
         from ltvm_pkg.target_config import TargetConfig
+
         try:
             tc = TargetConfig("rocky9")  # default arch
         except (ValueError, FileNotFoundError):
@@ -281,6 +298,7 @@ class TestCcacheVolumeArch:
     def test_default_arch_volume_name(self) -> None:
         from ltvm_pkg.kernel_build import _ccache_volume
         from ltvm_pkg.target_config import TargetConfig
+
         try:
             tc = TargetConfig("rocky9")
         except (ValueError, FileNotFoundError):
@@ -290,6 +308,7 @@ class TestCcacheVolumeArch:
     def test_aarch64_volume_name(self) -> None:
         from ltvm_pkg.kernel_build import _ccache_volume
         from ltvm_pkg.target_config import TargetConfig
+
         try:
             tc = TargetConfig("rocky9", arch="aarch64")
         except (ValueError, FileNotFoundError):
@@ -300,6 +319,7 @@ class TestCcacheVolumeArch:
         """The whole point of arch-qualifying the volume name."""
         from ltvm_pkg.kernel_build import _ccache_volume
         from ltvm_pkg.target_config import TargetConfig
+
         try:
             native = _ccache_volume(TargetConfig("rocky9"))
             cross = _ccache_volume(TargetConfig("rocky9", arch="aarch64"))

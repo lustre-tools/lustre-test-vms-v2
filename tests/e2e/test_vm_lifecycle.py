@@ -21,7 +21,6 @@ import os
 import time
 
 import pytest
-
 from lib.vmctl import (
     vm_create,
     vm_destroy,
@@ -73,9 +72,7 @@ def _wait_for_ssh(name: str, timeout: int = SSH_READY_TIMEOUT) -> None:
         if result["ok"]:
             return
         time.sleep(2)
-    pytest.fail(
-        f"VM {name!r} SSH not reachable after {timeout}s"
-    )
+    pytest.fail(f"VM {name!r} SSH not reachable after {timeout}s")
 
 
 @pytest.fixture

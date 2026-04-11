@@ -19,7 +19,8 @@ class TestValidateVmName:
     """VM names must be safe for /etc/hosts, ssh config, shell and cmdline."""
 
     @pytest.mark.parametrize(
-        "name", ["co1-mds", "co1.single", "vm_1", "A-123.test", "x"],
+        "name",
+        ["co1-mds", "co1.single", "vm_1", "A-123.test", "x"],
     )
     def test_accepts_valid(self, name: str) -> None:
         vm_commands._validate_vm_name(name)  # must not raise
@@ -37,7 +38,8 @@ class TestValidateVmName:
         vm_commands._validate_vm_name("a" * 63)
 
     @pytest.mark.parametrize(
-        "name", [
+        "name",
+        [
             "-leading-dash",
             "has space",
             "tab\there",
@@ -161,8 +163,11 @@ def tmp_vmdir(tmp_path: Path) -> Path:
 
 
 def _seed_vm_files(
-    tmp_vmdir: Path, name: str,
-    *, mdt: int = 0, ost: int = 0,
+    tmp_vmdir: Path,
+    name: str,
+    *,
+    mdt: int = 0,
+    ost: int = 0,
 ) -> VMInfo:
     """Create overlay, data disks, and info file for *name*."""
     vm = VMInfo(
@@ -285,7 +290,9 @@ class TestCmdDestroy:
     """cmd_destroy stops QEMU, removes artifacts, and unregisters DNS."""
 
     def test_destroy_missing_is_soft_error(
-        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_vmdir: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """Destroying a missing VM prints 'not found' instead of lying.
 
@@ -303,7 +310,8 @@ class TestCmdDestroy:
         assert "destroy: ghost not found" in capsys.readouterr().out
 
     def test_destroy_live_vm_kills_and_unregisters(
-        self, tmp_vmdir: Path,
+        self,
+        tmp_vmdir: Path,
     ) -> None:
         vm = _seed_vm_files(tmp_vmdir, "live")
         args = argparse.Namespace(names=["live"])
@@ -325,10 +333,15 @@ class TestCmdExec:
     """cmd_exec reports missing, unreachable, empty-cmd, and timeout."""
 
     def test_missing_vm_json(
-        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_vmdir: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         args = argparse.Namespace(
-            name="ghost", command=["ls"], timeout=10, json=True,
+            name="ghost",
+            command=["ls"],
+            timeout=10,
+            json=True,
         )
         with pytest.raises(SystemExit) as exc:
             vm_commands.cmd_exec(args)
@@ -338,11 +351,16 @@ class TestCmdExec:
         assert out["exit_code"] == 2
 
     def test_vm_not_running_json(
-        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_vmdir: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         _seed_vm_files(tmp_vmdir, "stopped")
         args = argparse.Namespace(
-            name="stopped", command=["ls"], timeout=10, json=True,
+            name="stopped",
+            command=["ls"],
+            timeout=10,
+            json=True,
         )
         with (
             patch("ltvm_pkg.vm_commands.is_running", return_value=False),
@@ -355,11 +373,16 @@ class TestCmdExec:
         assert "not running" in out["error"]
 
     def test_empty_command_json(
-        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_vmdir: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         _seed_vm_files(tmp_vmdir, "live")
         args = argparse.Namespace(
-            name="live", command=[], timeout=10, json=True,
+            name="live",
+            command=[],
+            timeout=10,
+            json=True,
         )
         with (
             patch("ltvm_pkg.vm_commands.is_running", return_value=True),
@@ -371,12 +394,17 @@ class TestCmdExec:
         assert "no command" in out["error"]
 
     def test_ssh_255_is_unreachable(
-        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_vmdir: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """ssh rc=255 means connection refused/timed-out -> EXIT_UNREACHABLE."""
         _seed_vm_files(tmp_vmdir, "flaky")
         args = argparse.Namespace(
-            name="flaky", command=["true"], timeout=10, json=True,
+            name="flaky",
+            command=["true"],
+            timeout=10,
+            json=True,
         )
         r = MagicMock()
         r.returncode = 255
@@ -393,11 +421,16 @@ class TestCmdExec:
         assert out["error"] == "unreachable"
 
     def test_successful_exec_forwards_rc(
-        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_vmdir: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         _seed_vm_files(tmp_vmdir, "live")
         args = argparse.Namespace(
-            name="live", command=["whoami"], timeout=10, json=True,
+            name="live",
+            command=["whoami"],
+            timeout=10,
+            json=True,
         )
         r = MagicMock()
         r.returncode = 0
@@ -415,12 +448,18 @@ class TestCmdExec:
         assert "root" in out["output"]
 
     def test_timeout_reports_timeout_exit(
-        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_vmdir: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         import subprocess as _sp
+
         _seed_vm_files(tmp_vmdir, "slow")
         args = argparse.Namespace(
-            name="slow", command=["sleep 100"], timeout=1, json=True,
+            name="slow",
+            command=["sleep 100"],
+            timeout=1,
+            json=True,
         )
         with (
             patch("ltvm_pkg.vm_commands.is_running", return_value=True),
@@ -443,7 +482,9 @@ class TestCmdStop:
     """cmd_stop is lenient about missing VMs."""
 
     def test_missing_vm_not_an_error(
-        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_vmdir: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         args = argparse.Namespace(names=["ghost"])
         with patch("ltvm_pkg.vm_commands.kill_qemu") as mock_kill:
@@ -466,22 +507,34 @@ class TestCmdList:
     """cmd_list aggregates vcpu/memory totals and handles JSON output."""
 
     def test_empty(
-        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_vmdir: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         args = argparse.Namespace(json=False)
         vm_commands.cmd_list(args)
         assert "(no VMs)" in capsys.readouterr().out
 
     def test_json_totals(
-        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_vmdir: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         v1 = VMInfo(
-            name="a", ip="10.0.0.1", pid=100,
-            vcpus=4, mem=2048, mdt_disks=1, ost_disks=0,
+            name="a",
+            ip="10.0.0.1",
+            pid=100,
+            vcpus=4,
+            mem=2048,
+            mdt_disks=1,
+            ost_disks=0,
         )
         v2 = VMInfo(
-            name="b", ip="10.0.0.2", pid=0,
-            vcpus=2, mem=1024,
+            name="b",
+            ip="10.0.0.2",
+            pid=0,
+            vcpus=2,
+            mem=1024,
         )
         v1.save()
         v2.save()
@@ -508,12 +561,12 @@ class TestCmdConsoleLog:
     """console_log prints the tail of the serial-log file."""
 
     def test_tails_last_n_lines(
-        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_vmdir: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         vm = _seed_vm_files(tmp_vmdir, "logged")
-        vm.log_path.write_text(
-            "\n".join(f"line{i}" for i in range(20)) + "\n"
-        )
+        vm.log_path.write_text("\n".join(f"line{i}" for i in range(20)) + "\n")
         args = argparse.Namespace(name="logged", lines=5)
         vm_commands.cmd_console_log(args)
         out = capsys.readouterr().out.splitlines()

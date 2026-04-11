@@ -159,8 +159,10 @@ def _run_launch(vm: VMInfo, harness: _LaunchHarness) -> None:
     vm.pid_path.write_text("12345\n")
     with (
         patch("ltvm_pkg.qemu_run.run", side_effect=harness.run),
-        patch("ltvm_pkg.qemu_run.subprocess.run",
-              side_effect=harness.subprocess_run),
+        patch(
+            "ltvm_pkg.qemu_run.subprocess.run",
+            side_effect=harness.subprocess_run,
+        ),
         patch("ltvm_pkg.qemu_run.is_running", return_value=False),
         patch("ltvm_pkg.qemu_run.time.time", return_value=1700000000),
         patch.object(VMInfo, "update_pid"),
@@ -172,9 +174,7 @@ def _run_launch(vm: VMInfo, harness: _LaunchHarness) -> None:
 class TestLaunchQemuCommand:
     """launch_qemu builds the expected QEMU args for each arch."""
 
-    def test_x86_64_microvm_with_virtio_mmio(
-        self, tmp_vmdir: Path
-    ) -> None:
+    def test_x86_64_microvm_with_virtio_mmio(self, tmp_vmdir: Path) -> None:
         """x86_64 uses our custom binary + microvm machine + MMIO devices."""
         vm = _make_vm(tmp_vmdir, arch="x86_64", mem=2048)
         h = _LaunchHarness()
@@ -209,9 +209,7 @@ class TestLaunchQemuCommand:
         assert "virtio-rng-pci" in joined
         assert "virtio-blk-device" not in joined
 
-    def test_boot_args_contains_ip_name_gateway(
-        self, tmp_vmdir: Path
-    ) -> None:
+    def test_boot_args_contains_ip_name_gateway(self, tmp_vmdir: Path) -> None:
         """The -append arg wires IP/gateway/name into the kernel cmdline."""
         vm = _make_vm(tmp_vmdir)
         vm.ip = "192.168.100.77"
@@ -252,9 +250,7 @@ class TestLaunchQemuCommand:
         append2 = h2.qemu_args[h2.qemu_args.index("-append") + 1]
         assert "console=ttyS0" in append2
 
-    def test_data_disks_emit_device_and_drive(
-        self, tmp_vmdir: Path
-    ) -> None:
+    def test_data_disks_emit_device_and_drive(self, tmp_vmdir: Path) -> None:
         """mdt+ost disks produce paired -device/-drive args, 1-indexed."""
         vm = _make_vm(tmp_vmdir, mdt_disks=1, ost_disks=2)
         h = _LaunchHarness()
@@ -274,8 +270,9 @@ class TestLaunchQemuCommand:
         h = _LaunchHarness()
         with (
             patch("ltvm_pkg.qemu_run.run", side_effect=h.run),
-            patch("ltvm_pkg.qemu_run.subprocess.run",
-                  side_effect=h.subprocess_run),
+            patch(
+                "ltvm_pkg.qemu_run.subprocess.run", side_effect=h.subprocess_run
+            ),
             patch("ltvm_pkg.qemu_run.is_running", return_value=False),
         ):
             with pytest.raises(SystemExit):
@@ -296,8 +293,9 @@ class TestLaunchQemuCommand:
         h = _LaunchHarness()
         with (
             patch("ltvm_pkg.qemu_run.run", side_effect=h.run),
-            patch("ltvm_pkg.qemu_run.subprocess.run",
-                  side_effect=h.subprocess_run),
+            patch(
+                "ltvm_pkg.qemu_run.subprocess.run", side_effect=h.subprocess_run
+            ),
             patch("ltvm_pkg.qemu_run.is_running", return_value=False),
         ):
             with pytest.raises(SystemExit):
@@ -309,8 +307,9 @@ class TestLaunchQemuCommand:
         h = _LaunchHarness()
         with (
             patch("ltvm_pkg.qemu_run.run", side_effect=h.run),
-            patch("ltvm_pkg.qemu_run.subprocess.run",
-                  side_effect=h.subprocess_run),
+            patch(
+                "ltvm_pkg.qemu_run.subprocess.run", side_effect=h.subprocess_run
+            ),
             patch("ltvm_pkg.qemu_run.is_running", return_value=True),
         ):
             qemu_run.launch_qemu(vm)
@@ -327,22 +326,20 @@ class TestLaunchQemuCommand:
         assert ["link", "del", vm.tap] in verbs
         # tuntap add + link set master + link set up all present
         flat = [tuple(c) for c in h.run_calls]
-        assert any(
-            "tuntap" in c and "add" in c for c in flat
-        )
-        assert any(
-            "master" in c for c in flat
-        )
+        assert any("tuntap" in c and "add" in c for c in flat)
+        assert any("master" in c for c in flat)
 
     def test_tap_rollback_on_failure(self, tmp_vmdir: Path) -> None:
         """If launch fails after TAP creation, the TAP is torn back down."""
         vm = _make_vm(tmp_vmdir)
         h = _LaunchHarness()
+
         # Simulate qemu-system-x86_64 failing (returncode != 0 -> die()).
         def bad_qemu(args, **kwargs):
             r = MagicMock()
             r.returncode = 1
             return r
+
         with (
             patch("ltvm_pkg.qemu_run.run", side_effect=h.run),
             patch("ltvm_pkg.qemu_run.subprocess.run", side_effect=bad_qemu),
@@ -352,13 +349,12 @@ class TestLaunchQemuCommand:
                 qemu_run.launch_qemu(vm)
         # Two "link del <tap>" calls: initial stale cleanup + rollback
         del_calls = [
-            c for c in h.run_calls
-            if len(c) >= 3 and c[:3] == ["ip", "link", "del"]
-            and c[3] == vm.tap
+            c
+            for c in h.run_calls
+            if len(c) >= 3 and c[:3] == ["ip", "link", "del"] and c[3] == vm.tap
         ]
         assert len(del_calls) >= 2, (
-            "expected rollback to tear down TAP, saw: "
-            f"{h.run_calls}"
+            f"expected rollback to tear down TAP, saw: {h.run_calls}"
         )
 
 
@@ -373,15 +369,19 @@ class TestKillQemu:
         vm = _make_vm(tmp_vmdir)
         vm.pid = 0
         run_calls: list[list[str]] = []
+
         def fake_run(cmd, **kwargs):
             if isinstance(cmd, list):
                 run_calls.append(cmd)
             r = MagicMock()
             r.returncode = 0
             return r
+
         kill_calls: list[int] = []
+
         def fake_kill(pid, sig):
             kill_calls.append(sig)
+
         with (
             patch("ltvm_pkg.qemu_run.run", side_effect=fake_run),
             patch("ltvm_pkg.qemu_run.os.kill", side_effect=fake_kill),
@@ -392,14 +392,14 @@ class TestKillQemu:
         assert kill_calls == []
         # TAP teardown + ARP flush still happen
         assert any(
-            len(c) >= 4 and c[1:4] == ["link", "del", vm.tap]
-            for c in run_calls
+            len(c) >= 4 and c[1:4] == ["link", "del", vm.tap] for c in run_calls
         )
         assert any("neigh" in c for c in run_calls)
 
     def test_clean_sigterm_shutdown(self, tmp_vmdir: Path) -> None:
         """A process that exits after SIGTERM is not escalated to SIGKILL."""
         import signal as _signal
+
         vm = _make_vm(tmp_vmdir)
         vm.pid = 555
         sent: list[int] = []
@@ -410,12 +410,14 @@ class TestKillQemu:
         # We simulate this by tracking how many kill(0) calls we've seen
         # and only raising on the 2nd onward.
         zero_calls = [0]
+
         def fake_kill(pid, sig):
             sent.append(sig)
             if sig == 0:
                 zero_calls[0] += 1
                 if zero_calls[0] >= 2:
                     raise OSError("gone")
+
         with (
             patch("ltvm_pkg.qemu_run.run"),
             patch("ltvm_pkg.qemu_run.os.kill", side_effect=fake_kill),
@@ -433,13 +435,16 @@ class TestKillQemu:
     def test_sigkill_escalation(self, tmp_vmdir: Path) -> None:
         """A process that ignores SIGTERM gets SIGKILL after the grace period."""
         import signal as _signal
+
         vm = _make_vm(tmp_vmdir)
         vm.pid = 555
         sent: list[int] = []
+
         def fake_kill(pid, sig):
             sent.append(sig)
             # kill(0) always succeeds -> process stays alive through the loop
             return None
+
         with (
             patch("ltvm_pkg.qemu_run.run"),
             patch("ltvm_pkg.qemu_run.os.kill", side_effect=fake_kill),
@@ -453,15 +458,19 @@ class TestKillQemu:
         assert _signal.SIGKILL in sent
 
     def test_kill_qemu_skips_when_pid_is_not_qemu(
-        self, tmp_vmdir: Path,
+        self,
+        tmp_vmdir: Path,
     ) -> None:
         """PID reuse: vm.pid points at a non-qemu process; we don't signal it."""
         import signal as _signal
+
         vm = _make_vm(tmp_vmdir)
         vm.pid = 555
         sent: list[int] = []
+
         def fake_kill(pid, sig):
             sent.append(sig)
+
         with (
             patch("ltvm_pkg.qemu_run.run"),
             patch("ltvm_pkg.qemu_run.os.kill", side_effect=fake_kill),

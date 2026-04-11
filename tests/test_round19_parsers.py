@@ -21,9 +21,8 @@ from unittest.mock import patch
 import pytest
 
 from ltvm_pkg import cli
-from ltvm_pkg.cli import _gh_next_link, _artifact_label, _gh_api
+from ltvm_pkg.cli import _artifact_label, _gh_api, _gh_next_link
 from ltvm_pkg.vm_commands import _parse_snapshot_tags
-
 
 # ── _parse_snapshot_tags ─────────────────────────────────
 
@@ -131,8 +130,7 @@ class TestGhNextLink:
     def test_case_insensitive_link_header(self) -> None:
         """HTTP headers are case-insensitive; some servers use lowercase."""
         headers = (
-            "HTTP/2 200\n"
-            'link: <https://api.github.com/x?page=2>; rel="next"\n'
+            'HTTP/2 200\nlink: <https://api.github.com/x?page=2>; rel="next"\n'
         )
         assert _gh_next_link(headers) == "https://api.github.com/x?page=2"
 
@@ -155,13 +153,10 @@ class TestGhApiSplit:
 
     def test_parses_body_after_single_header_block(self) -> None:
         body = json.dumps([{"tag_name": "v1"}])
-        stdout = (
-            "HTTP/2 200\n"
-            "content-type: application/json\n"
-            "\n"
-            f"{body}"
-        )
-        with patch.object(cli.subprocess, "run", return_value=_fake_curl(stdout)):
+        stdout = f"HTTP/2 200\ncontent-type: application/json\n\n{body}"
+        with patch.object(
+            cli.subprocess, "run", return_value=_fake_curl(stdout)
+        ):
             result = _gh_api("releases")
         assert result == [{"tag_name": "v1"}]
 
@@ -180,7 +175,9 @@ class TestGhApiSplit:
             "\n"
             f"{body}"
         )
-        with patch.object(cli.subprocess, "run", return_value=_fake_curl(stdout)):
+        with patch.object(
+            cli.subprocess, "run", return_value=_fake_curl(stdout)
+        ):
             result = _gh_api("releases")
         assert result == [{"tag_name": "v2"}]
 
@@ -188,7 +185,9 @@ class TestGhApiSplit:
         """Non-list responses (e.g. a single release) don't paginate."""
         body = json.dumps({"tag_name": "v1", "id": 42})
         stdout = f"HTTP/2 200\ncontent-type: application/json\n\n{body}"
-        with patch.object(cli.subprocess, "run", return_value=_fake_curl(stdout)):
+        with patch.object(
+            cli.subprocess, "run", return_value=_fake_curl(stdout)
+        ):
             result = _gh_api("releases/42")
         assert result == {"tag_name": "v1", "id": 42}
 
@@ -196,7 +195,9 @@ class TestGhApiSplit:
         """When the body genuinely isn't JSON, the error surfaces the
         first 200 chars so the caller can debug."""
         stdout = "HTTP/2 500\ncontent-type: text/html\n\n<html>boom</html>"
-        with patch.object(cli.subprocess, "run", return_value=_fake_curl(stdout)):
+        with patch.object(
+            cli.subprocess, "run", return_value=_fake_curl(stdout)
+        ):
             with pytest.raises(RuntimeError, match="non-JSON"):
                 _gh_api("releases")
 

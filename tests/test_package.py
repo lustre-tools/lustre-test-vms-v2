@@ -218,10 +218,9 @@ class TestExportBuildContainer:
             with pytest.raises(RuntimeError, match="podman save failed"):
                 export_build_container("my-target", tmp_path)
 
-    def test_success_writes_file_and_returns_path(
-        self, tmp_path: Path
-    ) -> None:
+    def test_success_writes_file_and_returns_path(self, tmp_path: Path) -> None:
         """Happy path: image.tar lands at output/<target>/container/."""
+
         def mock_run(cmd, *args, **kwargs):
             r = MagicMock()
             r.returncode = 0
@@ -322,8 +321,7 @@ class TestSnapshotLustre:
 
         # rsync was called (plus possibly git rev-parse)
         rsync_calls = [
-            c for c in mock_run.call_args_list
-            if c[0][0][0] == "rsync"
+            c for c in mock_run.call_args_list if c[0][0][0] == "rsync"
         ]
         assert len(rsync_calls) == 1
         args = rsync_calls[0][0][0]
@@ -399,9 +397,7 @@ class TestPackageTarget:
         _setup_package_artifacts so the subsequent _find_artifacts check
         passes; this stub just bypasses the podman save itself.
         """
-        with patch(
-            "ltvm_pkg.release_package.export_build_container"
-        ) as m:
+        with patch("ltvm_pkg.release_package.export_build_container") as m:
             m.return_value = Path("/fake/container/image.tar")
             yield m
 
@@ -531,7 +527,9 @@ class TestPackageTarget:
             return result
 
         with patch("subprocess.run", side_effect=mock_run):
-            with pytest.raises(RuntimeError, match="meta.json missing or unreadable"):
+            with pytest.raises(
+                RuntimeError, match="meta.json missing or unreadable"
+            ):
                 package_target(
                     "my-target",
                     output_dir,
@@ -731,9 +729,7 @@ class TestInstallTarget:
         ln_calls = [c for c in calls_made if "ln" in c]
         assert len(ln_calls) == 0
 
-    def test_lustre_artifacts_key_present(
-        self, tmp_path: Path
-    ) -> None:
+    def test_lustre_artifacts_key_present(self, tmp_path: Path) -> None:
         output_dir = self._make_output_dir(tmp_path, with_lustre=True)
         kernel_dir = tmp_path / "kdir"
         image_dir = tmp_path / "imgdir"

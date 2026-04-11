@@ -29,6 +29,7 @@ def qemu_binary_for_arch(arch: str = "x86_64") -> str:
     package) since we only ship x86_64 in the release tarball.
     """
     import shutil
+
     name = f"qemu-system-{arch}"
     if arch == "x86_64":
         return str(QEMU_PREFIX / "bin" / name)
@@ -49,6 +50,7 @@ def qemu_machine_for_arch(arch: str = "x86_64") -> str:
     different ISA).  Cross-arch VMs fall back to TCG emulation.
     """
     import platform
+
     host_arch = platform.machine()
     # Normalise: aarch64 == arm64, x86_64 == amd64
     host_is_x86 = host_arch in ("x86_64", "amd64")
@@ -66,8 +68,12 @@ def qemu_machine_for_arch(arch: str = "x86_64") -> str:
 DISK_SIZE_BYTES = 500 * 1024 * 1024  # 500 MiB default
 
 # ltvm repo root -- single source of truth in paths.py so target_config
-# (build side) and vm_state (runtime side) cannot drift.
-from .paths import find_ltvm_root
+# (build side) and vm_state (runtime side) cannot drift.  Imported here
+# rather than at the top of the file because vm_state.py is a hub other
+# modules import from; isolating the helper import prevents an
+# initialization cycle (paths.py -> vm_state.py -> paths.py).  E402 is
+# suppressed deliberately for that reason.
+from .paths import find_ltvm_root  # noqa: E402
 
 _LTVM_ROOT = find_ltvm_root()
 TARGETS_YAML = _LTVM_ROOT / "targets" / "targets.yaml"
@@ -93,12 +99,15 @@ def resolve_os_artifacts(os_name: str, arch: str = "x86_64") -> OSArtifacts:
     target_cfg: dict = {}
     if TARGETS_YAML.exists():
         import yaml
+
         with open(TARGETS_YAML) as f:
             cfg = yaml.safe_load(f)
         defaults = cfg.get("defaults", {})
         target_cfg = cfg.get("targets", {}).get(os_name, {})
         kernel_suffix = target_cfg.get("kernels", {}).get("default", "")
-        default_mem = int(target_cfg.get("default_mem", defaults.get("default_mem", 2048)))
+        default_mem = int(
+            target_cfg.get("default_mem", defaults.get("default_mem", 2048))
+        )
 
     # Determine effective arch (CLI override > target config > default)
     effective_arch = arch or target_cfg.get("arch") or "x86_64"
@@ -116,7 +125,11 @@ def resolve_os_artifacts(os_name: str, arch: str = "x86_64") -> OSArtifacts:
     if not img.exists():
         img = None
     if not img:
-        arch_hint = f" --arch {effective_arch}" if effective_arch != default_arch else ""
+        arch_hint = (
+            f" --arch {effective_arch}"
+            if effective_arch != default_arch
+            else ""
+        )
         raise FileNotFoundError(
             f"No image for '{os_name}' (arch={effective_arch})\n"
             f"Run: ltvm fetch {os_name}{arch_hint}  (or: ltvm build-image {os_name}{arch_hint})"
@@ -156,13 +169,19 @@ def resolve_os_artifacts(os_name: str, arch: str = "x86_64") -> OSArtifacts:
                 kern = candidates[-1]
 
     if not kern:
-        arch_hint = f" --arch {effective_arch}" if effective_arch != default_arch else ""
+        arch_hint = (
+            f" --arch {effective_arch}"
+            if effective_arch != default_arch
+            else ""
+        )
         raise FileNotFoundError(
             f"No kernel for '{os_name}' (arch={effective_arch})\n"
             f"Run: ltvm fetch {os_name}{arch_hint}  (or: ltvm build-kernel {os_name}{arch_hint})"
         )
 
-    return OSArtifacts(image=img, kernel=kern, default_mem=default_mem, arch=effective_arch)
+    return OSArtifacts(
+        image=img, kernel=kern, default_mem=default_mem, arch=effective_arch
+    )
 
 
 OVERLAYS = VM_DIR / "overlays"
@@ -346,7 +365,9 @@ class VMInfo:
                 pattern = rf"^{key}=.*$"
                 replacement = f"{key}={value}"
                 if re.search(pattern, text, flags=re.MULTILINE):
-                    text = re.sub(pattern, replacement, text, flags=re.MULTILINE)
+                    text = re.sub(
+                        pattern, replacement, text, flags=re.MULTILINE
+                    )
                 else:
                     text = text.rstrip("\n") + f"\n{replacement}\n"
             fd, tmp_str = tempfile.mkstemp(

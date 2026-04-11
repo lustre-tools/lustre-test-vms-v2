@@ -32,21 +32,26 @@ if _VENV_PY.exists() and str(_VENV_PY) != sys.executable:
             [str(_VENV_PY), str(Path(__file__).resolve()), *sys.argv[1:]],
         )
 
-import argparse
-import logging
+# NOTE: argparse/logging/cli imports are intentionally below the venv
+# bootstrap above -- the bootstrap may os.execv into the venv python, in
+# which case any imports here are wasted in the doomed parent process.
+# E402 (module level import not at top) is suppressed for that reason.
+import argparse  # noqa: E402
+import logging  # noqa: E402
 
 # Ensure repo root is importable
 sys.path.insert(0, str(_REPO_ROOT))
 
-from ltvm_pkg.cli import (
+from ltvm_pkg.cli import (  # noqa: E402
     EXIT_ERROR,
-    _error,
     cmd_build_all,
     cmd_build_container,
     cmd_build_image,
     cmd_build_kernel,
     cmd_build_lustre,
+    cmd_build_shell,
     cmd_cluster,
+    cmd_console_log,
     cmd_crash_collect,
     cmd_create,
     cmd_deploy,
@@ -58,12 +63,10 @@ from ltvm_pkg.cli import (
     cmd_fetch,
     cmd_list,
     cmd_nmi,
-    cmd_console_log,
     cmd_package,
     cmd_publish,
     cmd_restore,
     cmd_setup,
-    cmd_build_shell,
     cmd_snapshot,
     cmd_status,
     cmd_vm_ssh,
@@ -108,7 +111,7 @@ class _HideSuppressedSubcommands(argparse.HelpFormatter):
             def fmt(tuple_size: int):
                 if tuple_size != 1:
                     return (tuple(visible),)
-                return ("{%s}" % ",".join(visible),)
+                return ("{" + ",".join(visible) + "}",)
 
             return fmt
         return super()._metavar_formatter(action, default_metavar)
@@ -257,7 +260,9 @@ def build_parser() -> argparse.ArgumentParser:
         "target", nargs="?", default="rocky9", help="Target (default: rocky9)"
     )
     sp.add_argument(
-        "lustre_tree_pos", nargs="?", default=None,
+        "lustre_tree_pos",
+        nargs="?",
+        default=None,
         metavar="lustre-tree",
         help="Path to Lustre source tree (positional or --lustre-tree)",
     )
@@ -313,14 +318,21 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Download pre-built target artifacts from GitHub",
     )
-    sp.add_argument("target", nargs="?", default=None,
-                    help="Target name (e.g. rocky9)")
-    sp.add_argument("filter", nargs="?", default=None,
-                    help="Optional filter (e.g. '5.14', '611')")
-    sp.add_argument("--list", action="store_true",
-                    help="List available releases")
-    sp.add_argument("--url", default=None,
-                    help="Direct URL (skip GitHub lookup)")
+    sp.add_argument(
+        "target", nargs="?", default=None, help="Target name (e.g. rocky9)"
+    )
+    sp.add_argument(
+        "filter",
+        nargs="?",
+        default=None,
+        help="Optional filter (e.g. '5.14', '611')",
+    )
+    sp.add_argument(
+        "--list", action="store_true", help="List available releases"
+    )
+    sp.add_argument(
+        "--url", default=None, help="Direct URL (skip GitHub lookup)"
+    )
     sp.set_defaults(func=cmd_fetch)
 
     # -- publish (hidden: maintainer use only) --
@@ -359,33 +371,61 @@ def build_parser() -> argparse.ArgumentParser:
 
     # -- build-status --
     sp = sub.add_parser(
-        "build-status", parents=[common], help="Show build status of all targets"
+        "build-status",
+        parents=[common],
+        help="Show build status of all targets",
     )
     sp.set_defaults(func=cmd_status)
 
     # -- VM lifecycle: create --
     _vm_create_args = argparse.ArgumentParser(add_help=False)
-    _vm_create_args.add_argument("--vcpus", type=int, default=2,
-                                 help="vCPU count (default: 2)")
-    _vm_create_args.add_argument("--mem", type=int, default=None,
-                                 help="Memory in MB (default: target's "
-                                      "default_mem from targets.yaml, "
-                                      "else 2048)")
+    _vm_create_args.add_argument(
+        "--vcpus", type=int, default=2, help="vCPU count (default: 2)"
+    )
+    _vm_create_args.add_argument(
+        "--mem",
+        type=int,
+        default=None,
+        help="Memory in MB (default: target's "
+        "default_mem from targets.yaml, "
+        "else 2048)",
+    )
     _vm_create_args.add_argument("--ip", default=None, help="Static IP address")
-    _vm_create_args.add_argument("--rootfs", default=None,
-                                 help="Explicit rootfs image path")
-    _vm_create_args.add_argument("--image", default=None,
-                                 help="Explicit base image path")
-    _vm_create_args.add_argument("--kernel", default=None,
-                                 help="Explicit kernel path")
-    _vm_create_args.add_argument("--os", default=None,
-                                 help="OS target (e.g. rocky9)")
-    _vm_create_args.add_argument("--mdt-disks", dest="mdt_disks", type=int,
-                                 default=1, help="Number of MDT disks (default: 1)")
-    _vm_create_args.add_argument("--ost-disks", dest="ost_disks", type=int,
-                                 default=2, help="Number of OST disks (default: 2)")
-    _vm_create_args.add_argument("--disk-size", dest="disk_size", default=None,
-                                 help="Per-disk size with suffix M or G (e.g. 500M, 2G); default 500M, max 100G")
+    _vm_create_args.add_argument(
+        "--rootfs", default=None, help="Explicit rootfs image path"
+    )
+    _vm_create_args.add_argument(
+        "--image", default=None, help="Explicit base image path"
+    )
+    _vm_create_args.add_argument(
+        "--kernel", default=None, help="Explicit kernel path"
+    )
+    _vm_create_args.add_argument(
+        "--os", default=None, help="OS target (e.g. rocky9)"
+    )
+    _vm_create_args.add_argument(
+        "--mdt-disks",
+        dest="mdt_disks",
+        type=int,
+        default=1,
+        help="Number of MDT disks (default: 1)",
+    )
+    _vm_create_args.add_argument(
+        "--ost-disks",
+        dest="ost_disks",
+        type=int,
+        default=2,
+        help="Number of OST disks (default: 2)",
+    )
+    _vm_create_args.add_argument(
+        "--disk-size",
+        dest="disk_size",
+        default=None,
+        help=(
+            "Per-disk size with suffix M or G (e.g. 500M, 2G); "
+            "default 500M, max 100G"
+        ),
+    )
 
     sp = sub.add_parser(
         "create",
@@ -431,7 +471,6 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument("names", nargs="+", help="VM name(s)")
     sp.set_defaults(func=cmd_vm_stop)
 
-
     # -- VM info: list --
     sp = sub.add_parser(
         "list",
@@ -447,8 +486,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="SSH into a VM (replaces shell with ssh session)",
     )
     sp.add_argument("name", help="VM name")
-    sp.add_argument("command", nargs=argparse.REMAINDER,
-                    help="Optional command to run")
+    sp.add_argument(
+        "command", nargs=argparse.REMAINDER, help="Optional command to run"
+    )
     sp.set_defaults(func=cmd_vm_ssh)
 
     # -- VM observability: console-log --
@@ -458,8 +498,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show QEMU console log for a VM",
     )
     sp.add_argument("name", help="VM name")
-    sp.add_argument("--lines", type=int, default=50,
-                    help="Number of lines to show (default: 50)")
+    sp.add_argument(
+        "--lines",
+        type=int,
+        default=50,
+        help="Number of lines to show (default: 50)",
+    )
     sp.set_defaults(func=cmd_console_log)
 
     # -- VM observability: dmesg --
@@ -469,8 +513,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Show kernel dmesg from a VM",
     )
     sp.add_argument("name", help="VM name")
-    sp.add_argument("--tail", type=int, default=100,
-                    help="Number of lines to show (default: 100)")
+    sp.add_argument(
+        "--tail",
+        type=int,
+        default=100,
+        help="Number of lines to show (default: 100)",
+    )
     sp.set_defaults(func=cmd_dmesg)
 
     # -- VM crash: crash-collect --
@@ -480,14 +528,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Collect vmcore from a VM (optionally trigger crash first)",
     )
     sp.add_argument("name", help="VM name")
-    sp.add_argument("--outdir", default="/tmp/crashes",
-                    help="Local directory for crash dumps (default: /tmp/crashes)")
-    sp.add_argument("--trigger", action="store_true", default=False,
-                    help="Trigger a crash via sysrq before collecting")
-    sp.add_argument("--wait", type=int, default=120,
-                    help="Seconds to wait for VM to come back (default: 120)")
-    sp.add_argument("--mod-dir", dest="mod_dir", default=None,
-                    help="Lustre build tree for triage (enables auto-triage)")
+    sp.add_argument(
+        "--outdir",
+        default="/tmp/crashes",
+        help="Local directory for crash dumps (default: /tmp/crashes)",
+    )
+    sp.add_argument(
+        "--trigger",
+        action="store_true",
+        default=False,
+        help="Trigger a crash via sysrq before collecting",
+    )
+    sp.add_argument(
+        "--wait",
+        type=int,
+        default=120,
+        help="Seconds to wait for VM to come back (default: 120)",
+    )
+    sp.add_argument(
+        "--mod-dir",
+        dest="mod_dir",
+        default=None,
+        help="Lustre build tree for triage (enables auto-triage)",
+    )
     sp.set_defaults(func=cmd_crash_collect)
 
     # -- VM crash: nmi --
@@ -506,8 +569,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Create a snapshot of a VM's overlay disk",
     )
     sp.add_argument("name", help="VM name")
-    sp.add_argument("tag", nargs="?", default=None,
-                    help="Snapshot tag (default: auto-generated timestamp)")
+    sp.add_argument(
+        "tag",
+        nargs="?",
+        default=None,
+        help="Snapshot tag (default: auto-generated timestamp)",
+    )
     sp.set_defaults(func=cmd_snapshot)
 
     # -- VM snapshot: restore --
@@ -517,8 +584,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Restore a VM to a snapshot (or list snapshots if no tag)",
     )
     sp.add_argument("name", help="VM name")
-    sp.add_argument("tag", nargs="?", default=None,
-                    help="Snapshot tag to restore (omit to list snapshots)")
+    sp.add_argument(
+        "tag",
+        nargs="?",
+        default=None,
+        help="Snapshot tag to restore (omit to list snapshots)",
+    )
     sp.set_defaults(func=cmd_restore)
 
     # -- VM maintenance: doctor --
@@ -527,8 +598,12 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Check for and optionally fix VM infrastructure issues",
     )
-    sp.add_argument("--fix", action="store_true", default=False,
-                    help="Fix issues automatically")
+    sp.add_argument(
+        "--fix",
+        action="store_true",
+        default=False,
+        help="Fix issues automatically",
+    )
     sp.set_defaults(func=cmd_doctor)
 
     # -- deploy-lustre --
@@ -540,14 +615,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument("vm", help="VM name")
     sp.add_argument(
-        "--build", default=None,
+        "--build",
+        default=None,
         help="Lustre build tree (default: bundled fetch output, else cwd)",
     )
     sp.add_argument(
         "--mount", action="store_true", help="Mount filesystem after deploy"
     )
     sp.add_argument(
-        "--userspace-only", action="store_true",
+        "--userspace-only",
+        action="store_true",
         help="Deploy only userspace (tools, tests) -- skip kernel modules and depmod",
     )
     sp.add_argument(
@@ -579,7 +656,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "action",
-        choices=["create", "destroy", "deploy", "status", "exec", "list", "ssh"],
+        choices=[
+            "create",
+            "destroy",
+            "deploy",
+            "status",
+            "exec",
+            "list",
+            "ssh",
+        ],
         help="Cluster action",
     )
     sp.add_argument("cluster_args", nargs=argparse.REMAINDER)

@@ -321,7 +321,9 @@ class TestGetPackageManifest:
         mock_result = MagicMock()
         mock_result.stdout = ""
 
-        with patch("ltvm_pkg.image_build._run", return_value=mock_result) as mock_run:
+        with patch(
+            "ltvm_pkg.image_build._run", return_value=mock_result
+        ) as mock_run:
             image._get_package_manifest("ltvm-image-rocky9")
 
         cmd = mock_run.call_args[0][0]

@@ -130,7 +130,9 @@ def _needs_reconfigure(
     if stamp_server.exists():
         prev_server = stamp_server.read_text().strip()
         if prev_server != str(enable_server):
-            print(f"  Server flag changed ({prev_server} -> {enable_server}), reconfiguring")
+            print(
+                f"  Server flag changed ({prev_server} -> {enable_server}), reconfiguring"
+            )
             return True
     else:
         return True  # no server stamp = never built for this target
@@ -237,21 +239,28 @@ def _build_in_container(
     print(f"  Version:   {kver}")
 
     need_reconf = _needs_reconfigure(
-        lustre_tree, build_tree, force,
-        target=target, enable_server=enable_server, arch=arch,
+        lustre_tree,
+        build_tree,
+        force,
+        target=target,
+        enable_server=enable_server,
+        arch=arch,
     )
 
     # Detect cross-compilation
     import platform
+
     host_machine = platform.machine()
-    cross_compiling = (arch == "aarch64" and host_machine != "aarch64")
+    cross_compiling = arch == "aarch64" and host_machine != "aarch64"
 
     # Build the shell script to run inside the container
     script_parts = ["set -e", "cd /lustre"]
 
     # Install cross-compiler and cross-arch dev libraries if needed
     if cross_compiling:
-        script_parts.append("echo '--- Installing aarch64 cross-compiler and dev libs...'")
+        script_parts.append(
+            "echo '--- Installing aarch64 cross-compiler and dev libs...'"
+        )
         script_parts.append(
             "if command -v dnf &>/dev/null; then "
             "dnf -y install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu 2>&1 | tail -3; "
@@ -427,7 +436,8 @@ fi""")
 
 
 def lustre_status(
-    lustre_tree: str | Path, build_tree: str | Path,
+    lustre_tree: str | Path,
+    build_tree: str | Path,
     target: str = DEFAULT_TARGET,
     arch: str = "x86_64",
 ) -> StatusResult:
@@ -438,7 +448,9 @@ def lustre_status(
     stamp = lustre_tree / f".ltvm-kernel-{_stamp_suffix(target, arch)}"
     config_status = lustre_tree / "config.status"
     host_staging = staging_path(target, arch=arch)
-    ko_count = len(list(host_staging.rglob("*.ko"))) if host_staging.is_dir() else 0
+    ko_count = (
+        len(list(host_staging.rglob("*.ko"))) if host_staging.is_dir() else 0
+    )
 
     built_against = stamp.read_text().strip() if stamp.exists() else None
     current_kver = _kernel_release(build_tree) if build_tree.exists() else None

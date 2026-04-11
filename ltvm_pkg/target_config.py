@@ -19,7 +19,11 @@ from .paths import find_ltvm_root, load_meta_safe
 
 REPO_ROOT = find_ltvm_root()
 TARGETS_DIR = REPO_ROOT / "targets"
-OUTPUT_DIR = Path(os.environ["LTVM_OUTPUT_DIR"]) if "LTVM_OUTPUT_DIR" in os.environ else REPO_ROOT / "output"
+OUTPUT_DIR = (
+    Path(os.environ["LTVM_OUTPUT_DIR"])
+    if "LTVM_OUTPUT_DIR" in os.environ
+    else REPO_ROOT / "output"
+)
 TARGETS_YAML = TARGETS_DIR / "targets.yaml"
 
 _DEFAULTS = {
@@ -113,9 +117,7 @@ class TargetConfig:
             )
         self._kernels: dict[str, Any] = self._data["kernels"]
         if "default" not in self._kernels:
-            raise ValueError(
-                f"target {name!r}: 'kernels.default' is required"
-            )
+            raise ValueError(f"target {name!r}: 'kernels.default' is required")
 
         # Resolve effective arch: CLI override > target > defaults
         default_arch = str(self._data["arch"])

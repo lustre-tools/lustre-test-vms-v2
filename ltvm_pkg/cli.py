@@ -37,9 +37,7 @@ EXIT_NOT_FOUND = 2
 # GitHub repo for release downloads.  Override with LTVM_GITHUB_REPO
 # so a fork can use `ltvm fetch` / `ltvm publish` without editing
 # source.
-GITHUB_REPO = os.environ.get(
-    "LTVM_GITHUB_REPO", "lustre-tools/lustre-test-vms"
-)
+GITHUB_REPO = os.environ.get("LTVM_GITHUB_REPO", "lustre-tools/lustre-test-vms")
 
 
 # ------------------------------------------------------------------
@@ -208,7 +206,9 @@ def cmd_build_all(args: argparse.Namespace) -> int:
     against the freshly built kernel.
     """
     use_json = args.json
-    tc, err = _load_target(args.target, use_json, arch=getattr(args, "arch", None))
+    tc, err = _load_target(
+        args.target, use_json, arch=getattr(args, "arch", None)
+    )
     if err is not None:
         return err
     assert tc is not None
@@ -298,7 +298,9 @@ def cmd_build_all(args: argparse.Namespace) -> int:
 
 def cmd_build_container(args: argparse.Namespace) -> int:
     use_json = args.json
-    tc, err = _load_target(args.target, use_json, arch=getattr(args, "arch", None))
+    tc, err = _load_target(
+        args.target, use_json, arch=getattr(args, "arch", None)
+    )
     if err is not None:
         return err
     assert tc is not None
@@ -323,7 +325,9 @@ def cmd_build_container(args: argparse.Namespace) -> int:
 
 def cmd_build_kernel(args: argparse.Namespace) -> int:
     use_json = args.json
-    tc, err = _load_target(args.target, use_json, arch=getattr(args, "arch", None))
+    tc, err = _load_target(
+        args.target, use_json, arch=getattr(args, "arch", None)
+    )
     if err is not None:
         return err
     assert tc is not None
@@ -368,7 +372,9 @@ def cmd_build_kernel(args: argparse.Namespace) -> int:
 
 def cmd_build_image(args: argparse.Namespace) -> int:
     use_json = args.json
-    tc, err = _load_target(args.target, use_json, arch=getattr(args, "arch", None))
+    tc, err = _load_target(
+        args.target, use_json, arch=getattr(args, "arch", None)
+    )
     if err is not None:
         return err
     assert tc is not None
@@ -393,7 +399,9 @@ def cmd_build_image(args: argparse.Namespace) -> int:
 
 def cmd_build_lustre(args: argparse.Namespace) -> int:
     use_json = args.json
-    tc, err = _load_target(args.target, use_json, arch=getattr(args, "arch", None))
+    tc, err = _load_target(
+        args.target, use_json, arch=getattr(args, "arch", None)
+    )
     if err is not None:
         return err
     assert tc is not None
@@ -485,7 +493,9 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
 
 def cmd_package(args: argparse.Namespace) -> int:
     use_json = args.json
-    tc, err = _load_target(args.target, use_json, arch=getattr(args, "arch", None))
+    tc, err = _load_target(
+        args.target, use_json, arch=getattr(args, "arch", None)
+    )
     if err is not None:
         return err
     assert tc is not None
@@ -554,7 +564,9 @@ def _gh_api(endpoint: str) -> dict | list:
         try:
             r = subprocess.run(
                 ["curl", "-fsSL", "--max-time", "30", "-D", "-", url],
-                capture_output=True, text=True, timeout=35,
+                capture_output=True,
+                text=True,
+                timeout=35,
             )
         except subprocess.TimeoutExpired as e:
             raise RuntimeError(
@@ -590,7 +602,9 @@ def _gh_api(endpoint: str) -> dict | list:
 
         url = _gh_next_link(headers)
 
-    return aggregated if isinstance(first_result, list) else (first_result or {})
+    return (
+        aggregated if isinstance(first_result, list) else (first_result or {})
+    )
 
 
 def _gh_next_link(headers: str) -> str | None:
@@ -677,15 +691,22 @@ def _list_releases(target: str | None = None) -> list[dict]:
         tag = rel.get("tag_name", "")
         if target and tag != target and not tag.startswith(target + "-"):
             continue
-        assets = [a["name"] for a in rel.get("assets", [])
-                  if a["name"].endswith((".tar.zst", ".tar.gz"))]
-        size_mb = sum(a.get("size", 0) for a in rel.get("assets", [])) / (1024 * 1024)
-        result.append({
-            "tag": tag,
-            "date": rel.get("published_at", "")[:10],
-            "assets": assets,
-            "size_mb": round(size_mb),
-        })
+        assets = [
+            a["name"]
+            for a in rel.get("assets", [])
+            if a["name"].endswith((".tar.zst", ".tar.gz"))
+        ]
+        size_mb = sum(a.get("size", 0) for a in rel.get("assets", [])) / (
+            1024 * 1024
+        )
+        result.append(
+            {
+                "tag": tag,
+                "date": rel.get("published_at", "")[:10],
+                "assets": assets,
+                "size_mb": round(size_mb),
+            }
+        )
     return result
 
 
@@ -729,7 +750,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     # URL: .../releases/download/<tag>/<filename>
     # For non-default arch use an arch-qualified tag file so x86_64 and
     # aarch64 fetches don't stomp on each other.
-    release_tag = url.split("/releases/download/")[1].split("/")[0] if "/releases/download/" in url else ""
+    if "/releases/download/" in url:
+        release_tag = url.split("/releases/download/")[1].split("/")[0]
+    else:
+        release_tag = ""
     arch_suffix = f"-{arch}" if arch != "x86_64" else ""
     tag_file = OUTPUT_DIR / target / f".ltvm-release-tag{arch_suffix}"
     if release_tag and tag_file.exists():
@@ -759,8 +783,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         print()
         print("Next:")
         arch_flag = f" --arch {arch}" if arch != "x86_64" else ""
-        print(f"  sudo ltvm create co1-test --os {target}{arch_flag} "
-              f"--vcpus 2 --mem 2048 --mdt-disks 1 --ost-disks 2")
+        print(
+            f"  sudo ltvm create co1-test --os {target}{arch_flag} "
+            f"--vcpus 2 --mem 2048 --mdt-disks 1 --ost-disks 2"
+        )
         print("  sudo ltvm deploy co1-test --mount")
 
     return EXIT_OK
@@ -774,7 +800,9 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 def cmd_publish(args: argparse.Namespace) -> int:
     """Upload a packaged tarball to a GitHub release."""
     use_json = args.json
-    tc, err = _load_target(args.target, use_json, arch=getattr(args, "arch", None))
+    tc, err = _load_target(
+        args.target, use_json, arch=getattr(args, "arch", None)
+    )
     if err is not None:
         return err
     assert tc is not None
@@ -795,8 +823,11 @@ def cmd_publish(args: argparse.Namespace) -> int:
         # Look for existing tarball in output/
         pattern = f"{args.target}-*.tar.*"
         candidates = [
-            c for c in sorted(tc.output_dir.parent.glob(pattern))
-            if c.suffix in (".gz", ".zst") or c.name.endswith(".tar.gz") or c.name.endswith(".tar.zst")
+            c
+            for c in sorted(tc.output_dir.parent.glob(pattern))
+            if c.suffix in (".gz", ".zst")
+            or c.name.endswith(".tar.gz")
+            or c.name.endswith(".tar.zst")
         ]
         if kernel:
             candidates = [c for c in candidates if kernel in c.name]
@@ -898,6 +929,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     # otherwise aarch64 publish writes to output/<t>/aarch64/... and
     # fetch never finds it.
     from ltvm_pkg.target_config import OUTPUT_DIR
+
     arch = getattr(args, "arch", None) or "x86_64"
     arch_suffix = f"-{arch}" if arch != "x86_64" else ""
     tag_file = OUTPUT_DIR / args.target / f".ltvm-release-tag{arch_suffix}"
@@ -921,7 +953,9 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
 def cmd_build_shell(args: argparse.Namespace) -> int:
     use_json = args.json
-    tc, err = _load_target(args.target, use_json, arch=getattr(args, "arch", None))
+    tc, err = _load_target(
+        args.target, use_json, arch=getattr(args, "arch", None)
+    )
     if err is not None:
         return err
     assert tc is not None
@@ -1033,6 +1067,7 @@ def _vm_call(fn, ns, use_json: bool) -> int:
     cmd_doctor can signal "issues found" via a non-zero exit.
     """
     from ltvm_pkg.vm_state import VMNotFound
+
     try:
         rc = fn(ns)
         return rc if isinstance(rc, int) else EXIT_OK
@@ -1048,6 +1083,7 @@ def cmd_create(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_create as _create
+
     ns = _qemu_ns(
         name=args.name,
         vcpus=args.vcpus,
@@ -1073,6 +1109,7 @@ def cmd_ensure(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_ensure as _ensure
+
     ns = _qemu_ns(
         name=args.name,
         vcpus=args.vcpus,
@@ -1098,6 +1135,7 @@ def cmd_destroy(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_destroy as _destroy
+
     return _vm_call(_destroy, _qemu_ns(names=args.names), use_json)
 
 
@@ -1107,6 +1145,7 @@ def cmd_vm_start(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_start as _start
+
     return _vm_call(_start, _qemu_ns(names=args.names), use_json)
 
 
@@ -1116,12 +1155,14 @@ def cmd_vm_stop(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_stop as _stop
+
     return _vm_call(_stop, _qemu_ns(names=args.names), use_json)
 
 
 def cmd_list(args: argparse.Namespace) -> int:
     use_json = args.json
     from ltvm_pkg.vm_commands import cmd_list as _list
+
     return _vm_call(_list, _qemu_ns(json=use_json), use_json)
 
 
@@ -1131,7 +1172,10 @@ def cmd_vm_ssh(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_ssh as _ssh
-    return _vm_call(_ssh, _qemu_ns(name=args.name, command=args.command), use_json)
+
+    return _vm_call(
+        _ssh, _qemu_ns(name=args.name, command=args.command), use_json
+    )
 
 
 def cmd_console_log(args: argparse.Namespace) -> int:
@@ -1140,6 +1184,7 @@ def cmd_console_log(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_console_log as _log
+
     return _vm_call(_log, _qemu_ns(name=args.name, lines=args.lines), use_json)
 
 
@@ -1149,6 +1194,7 @@ def cmd_dmesg(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_dmesg as _dmesg
+
     return _vm_call(_dmesg, _qemu_ns(name=args.name, tail=args.tail), use_json)
 
 
@@ -1158,6 +1204,7 @@ def cmd_crash_collect(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_crash_collect as _crash_collect
+
     return _vm_call(
         _crash_collect,
         _qemu_ns(
@@ -1177,6 +1224,7 @@ def cmd_nmi(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_nmi as _nmi
+
     return _vm_call(_nmi, _qemu_ns(name=args.name), use_json)
 
 
@@ -1186,6 +1234,7 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_snapshot as _snapshot
+
     return _vm_call(_snapshot, _qemu_ns(name=args.name, tag=args.tag), use_json)
 
 
@@ -1195,6 +1244,7 @@ def cmd_restore(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_restore as _restore
+
     return _vm_call(_restore, _qemu_ns(name=args.name, tag=args.tag), use_json)
 
 
@@ -1204,6 +1254,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     from ltvm_pkg.vm_commands import cmd_doctor as _doctor
+
     return _vm_call(_doctor, _qemu_ns(fix=args.fix), use_json)
 
 
@@ -1294,7 +1345,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     # subprocess hops away inside the build container.
     if bundled_snapshot is None:
         missing = [
-            n for n in ("configure.ac", "lustre", "lnet")
+            n
+            for n in ("configure.ac", "lustre", "lnet")
             if not (build_path / n).exists()
         ]
         if missing:
@@ -1310,6 +1362,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     # Pass vm_arch so the staging path matches what build-lustre wrote
     # for this VM's architecture.
     from ltvm_pkg.lustre_build import staging_path as _staging_path
+
     staging = _staging_path(target, arch=vm_arch)
 
     # If we picked up a bundled snapshot, mirror it into staging
@@ -1326,9 +1379,15 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             print(f"  Mirroring bundled snapshot into staging: {staging}")
         staging.mkdir(parents=True, exist_ok=True)
         r = subprocess.run(
-            ["rsync", "-a", "--delete",
-             str(bundled_snapshot) + "/", str(staging) + "/"],
-            capture_output=True, text=True,
+            [
+                "rsync",
+                "-a",
+                "--delete",
+                str(bundled_snapshot) + "/",
+                str(staging) + "/",
+            ],
+            capture_output=True,
+            text=True,
         )
         if r.returncode != 0:
             return _error(
@@ -1361,28 +1420,70 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         # simpler -- just skip build artifacts and VCS dirs.
         r = subprocess.run(
             [
-                "find", str(src),
-                "-path", "*/.git", "-prune", "-o",
-                "-path", "*/autom4te.cache", "-prune", "-o",
-                "-path", "*/_lpb", "-prune", "-o",
-                "-path", "*/kconftest.dir", "-prune", "-o",
+                "find",
+                str(src),
+                "-path",
+                "*/.git",
+                "-prune",
+                "-o",
+                "-path",
+                "*/autom4te.cache",
+                "-prune",
+                "-o",
+                "-path",
+                "*/_lpb",
+                "-prune",
+                "-o",
+                "-path",
+                "*/kconftest.dir",
+                "-prune",
+                "-o",
                 "(",
-                "-name", "*.o",
-                "-o", "-name", "*.ko",
-                "-o", "-name", "*.a",
-                "-o", "-name", "*.so",
-                "-o", "-name", "*.so.*",
-                "-o", "-name", "*.cmd",
-                "-o", "-name", "*.d",
-                "-o", "-name", "*.tmp_*",
-                "-o", "-name", "conftest*",
-                "-o", "-name", "config.log",
-                "-o", "-name", "config.status",
-                "-o", "-name", ".ltvm-*",
-                ")", "-prune", "-o",
-                "-newer", str(stamp), "-print", "-quit",
+                "-name",
+                "*.o",
+                "-o",
+                "-name",
+                "*.ko",
+                "-o",
+                "-name",
+                "*.a",
+                "-o",
+                "-name",
+                "*.so",
+                "-o",
+                "-name",
+                "*.so.*",
+                "-o",
+                "-name",
+                "*.cmd",
+                "-o",
+                "-name",
+                "*.d",
+                "-o",
+                "-name",
+                "*.tmp_*",
+                "-o",
+                "-name",
+                "conftest*",
+                "-o",
+                "-name",
+                "config.log",
+                "-o",
+                "-name",
+                "config.status",
+                "-o",
+                "-name",
+                ".ltvm-*",
+                ")",
+                "-prune",
+                "-o",
+                "-newer",
+                str(stamp),
+                "-print",
+                "-quit",
             ],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if r.returncode != 0:
             return False  # treat find errors conservatively as stale
@@ -1411,7 +1512,13 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             if not use_json:
                 print("  Staging up to date, skipping build")
         else:
-            build_cmd = ["ltvm", "build-lustre", target, "--lustre-tree", str(build_path)]
+            build_cmd = [
+                "ltvm",
+                "build-lustre",
+                target,
+                "--lustre-tree",
+                str(build_path),
+            ]
             # Forward the VM's actual kernel to build-lustre.  Without
             # this, a VM created with a non-default kernel rebuilds
             # Lustre against the target's *default* kernel tree, producing
@@ -1435,7 +1542,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 build_cmd = ["sudo", "-u", sudo_user] + build_cmd
             r = subprocess.run(build_cmd, capture_output=False)
             if r.returncode != 0:
-                return _error(f"Lustre build failed (rc={r.returncode})", use_json)
+                return _error(
+                    f"Lustre build failed (rc={r.returncode})", use_json
+                )
 
             if not staging.is_dir() or not any(staging.rglob("*.ko")):
                 return _error(
@@ -1445,7 +1554,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     try:
         deploy_to_vm(
-            vm, staging,
+            vm,
+            staging,
             os_family=os_family,
             userspace_only=userspace_only,
         )
@@ -1460,6 +1570,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     # is dispatched directly (not through _vm_call), so without this
     # catch the exception leaks as a Python traceback to the user.
     import time as _time
+
     kver = vm.kver  # already set on boot; keep existing value
     try:
         vm.update_deploy(int(_time.time()), str(build_path), kver)
@@ -1499,12 +1610,14 @@ def cmd_exec(args: argparse.Namespace) -> int:
     cmd_str = " ".join(args.cmd)
     timeout = getattr(args, "timeout", 120)
     try:
-        _qexec(_qemu_ns(
-            name=args.vm,
-            command=[cmd_str],
-            timeout=timeout,
-            json=use_json,
-        ))
+        _qexec(
+            _qemu_ns(
+                name=args.vm,
+                command=[cmd_str],
+                timeout=timeout,
+                json=use_json,
+            )
+        )
         return EXIT_OK
     except SystemExit as e:
         return int(e.code) if e.code is not None else EXIT_ERROR
@@ -1737,5 +1850,3 @@ def cmd_setup(args: argparse.Namespace) -> int:
         return _error(f"Setup failed: {e}", use_json)
 
     return EXIT_OK
-
-

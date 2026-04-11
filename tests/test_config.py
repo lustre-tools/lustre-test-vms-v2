@@ -9,7 +9,6 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from ltvm_pkg.target_config import TargetConfig
 from tests.conftest import _ROCKY9_YAML, _make_config, _write_targets_yaml
 
 
@@ -407,10 +406,12 @@ class TestLoadMetaSafe:
 
     def test_missing_returns_none(self, tmp_path: Path) -> None:
         from ltvm_pkg.paths import load_meta_safe
+
         assert load_meta_safe(tmp_path / "nope.json") is None
 
     def test_corrupt_returns_none(self, tmp_path: Path) -> None:
         from ltvm_pkg.paths import load_meta_safe
+
         bad = tmp_path / "bad.json"
         bad.write_text("{not valid json")
         assert load_meta_safe(bad) is None
@@ -419,12 +420,14 @@ class TestLoadMetaSafe:
         """A common failure mode is a build that died mid-write,
         leaving an empty file."""
         from ltvm_pkg.paths import load_meta_safe
+
         empty = tmp_path / "empty.json"
         empty.write_text("")
         assert load_meta_safe(empty) is None
 
     def test_valid_returns_dict(self, tmp_path: Path) -> None:
         from ltvm_pkg.paths import load_meta_safe
+
         good = tmp_path / "good.json"
         good.write_text('{"input_hash": "abc", "version": "1.0"}')
         result = load_meta_safe(good)
@@ -440,7 +443,9 @@ class TestIsStaleCorruption:
         tc.write_meta("container")
         assert tc.is_stale("container") is False
         # Corrupt the file mid-flight
-        meta_file = tmp_targets / "output" / "rocky9" / "container" / "meta.json"
+        meta_file = (
+            tmp_targets / "output" / "rocky9" / "container" / "meta.json"
+        )
         meta_file.write_text("{garbage")
         # Must not raise
         assert tc.is_stale("container") is True

@@ -65,6 +65,7 @@ def _container_image_tag(target_config: TargetConfig) -> str:
 def _is_cross_build(target_config: TargetConfig) -> bool:
     """True if the target arch differs from the host."""
     import platform
+
     return target_config.arch != platform.machine()
 
 
@@ -95,6 +96,7 @@ def _prebuild_tools_native(
     # _ensure_container_image with default_arch=x86_64), and the
     # unsuffixed tag does not exist there.
     import platform as _platform
+
     arch = target_config.arch
     host_machine = _platform.machine()
     if host_machine in ("x86_64", "amd64"):
@@ -113,10 +115,14 @@ def _prebuild_tools_native(
         build_dockerfile = target_config.target_dir / "container.Dockerfile"
         subprocess.run(
             [
-                "podman", "build",
-                "-t", build_tag,
-                "--build-arg", f"BASE_IMAGE={target_config.container_image}",
-                "-f", str(build_dockerfile),
+                "podman",
+                "build",
+                "-t",
+                build_tag,
+                "--build-arg",
+                f"BASE_IMAGE={target_config.container_image}",
+                "-f",
+                str(build_dockerfile),
                 str(TARGETS_DIR),
             ],
             check=True,
@@ -124,7 +130,8 @@ def _prebuild_tools_native(
 
     log.info(
         "Pre-building tools natively for %s (cross-compile in %s)...",
-        arch, build_tag,
+        arch,
+        build_tag,
     )
 
     script = (
@@ -135,11 +142,16 @@ def _prebuild_tools_native(
 
     common_dir = TARGETS_DIR / "common"
     cmd = [
-        "podman", "run", "--rm",
-        "-v", f"{common_dir}:/input:ro,Z",
-        "-v", f"{output_dir}:/output:Z",
+        "podman",
+        "run",
+        "--rm",
+        "-v",
+        f"{common_dir}:/input:ro,Z",
+        "-v",
+        f"{output_dir}:/output:Z",
         build_tag,
-        "-c", script,
+        "-c",
+        script,
     ]
     subprocess.run(cmd, check=True)
     log.info("Pre-built tools at %s", output_dir)
@@ -196,10 +208,8 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
         original = dockerfile.read_text()
         patched = original
         replacements = {
-            "RUN bash /tmp/build-tools.sh":
-                "COPY _prebuilt/usr/local/ /usr/local/",
-            "RUN bash /tmp/build-e2fsprogs.sh":
-                "COPY _prebuilt/usr/ /usr/",
+            "RUN bash /tmp/build-tools.sh": "COPY _prebuilt/usr/local/ /usr/local/",
+            "RUN bash /tmp/build-e2fsprogs.sh": "COPY _prebuilt/usr/ /usr/",
         }
         for old, new in replacements.items():
             # Match any line starting with the key (ignoring trailing args
@@ -216,7 +226,9 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
         # Write patched Dockerfile next to the original
         effective_dockerfile = out_dir / "image.Dockerfile.cross"
         effective_dockerfile.write_text(patched)
-        log.info("Using patched Dockerfile for cross-build: %s", effective_dockerfile)
+        log.info(
+            "Using patched Dockerfile for cross-build: %s", effective_dockerfile
+        )
 
         # Build context needs the prebuilt dir AND the targets/ content.
         # Podman doesn't follow symlinks outside the context, so we
@@ -234,11 +246,15 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
     log.info("Building container image %s ...", tag)
     _run(
         [
-            "podman", "build",
+            "podman",
+            "build",
             *platform_args,
-            "--build-arg", f"BASE_IMAGE={target_config.container_image}",
-            "-t", tag,
-            "-f", str(effective_dockerfile),
+            "--build-arg",
+            f"BASE_IMAGE={target_config.container_image}",
+            "-t",
+            tag,
+            "-f",
+            str(effective_dockerfile),
             str(build_context),
         ],
         capture_output=False,
@@ -257,17 +273,19 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
         # Read the exact kernel release string the modules were built for
         # so the injected `depmod -a <kver>` is deterministic instead of
         # globbing /lib/modules.
-        kver_file = kdir / "build-tree" / "include" / "config" / "kernel.release"
+        kver_file = (
+            kdir / "build-tree" / "include" / "config" / "kernel.release"
+        )
         kver = kver_file.read_text().strip() if kver_file.exists() else None
         from ltvm_pkg.lustre_build import staging_path as _staging_path
+
         staging_dir = _staging_path(target_config.name, arch=target_config.arch)
         has_modules = (modules_dir / "lib" / "modules").is_dir()
         # Staging dir may exist but be empty (pre-Lustre build).  Require
         # actual content (usr/ or lib/modules/) before trying to inject.
-        has_lustre = (
-            (staging_dir / "usr").is_dir()
-            or (staging_dir / "lib" / "modules").is_dir()
-        )
+        has_lustre = (staging_dir / "usr").is_dir() or (
+            staging_dir / "lib" / "modules"
+        ).is_dir()
 
         if has_modules or has_lustre:
             # Build a context dir with the files to inject
@@ -311,7 +329,12 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
                     if not mod_dest.exists():
                         mod_dest.mkdir()
                     subprocess.run(
-                        ["cp", "-a", str(staging_mods) + "/.", str(mod_dest) + "/"],
+                        [
+                            "cp",
+                            "-a",
+                            str(staging_mods) + "/.",
+                            str(mod_dest) + "/",
+                        ],
                         check=True,
                     )
                 # Only emit COPY usr/ when we actually populated it.
@@ -347,8 +370,15 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
             final_tag = f"{tag}-final"
             log.info("Building final image with kernel modules + Lustre...")
             _run(
-                ["podman", "build", "-t", final_tag,
-                 "-f", str(inject_dockerfile), str(inject_dir)],
+                [
+                    "podman",
+                    "build",
+                    "-t",
+                    final_tag,
+                    "-f",
+                    str(inject_dockerfile),
+                    str(inject_dir),
+                ],
                 capture_output=False,
             )
             # Clean up inject dir
@@ -423,7 +453,10 @@ def _export_to_ext4(
         # stream -- which would silently produce a tiny rootfs image.
         _run(
             [
-                "bash", "-o", "pipefail", "-c",
+                "bash",
+                "-o",
+                "pipefail",
+                "-c",
                 f"podman export {qcid} "
                 f"| fakeroot bash -c '"
                 f"tar -C {qtmp} -xf - --exclude=dev/* "
@@ -444,9 +477,7 @@ def _export_to_ext4(
         # Shrink to minimum. The qcow2 overlay is resized to 8G at VM
         # creation, and rc.local runs resize2fs on first boot to expand
         # the ext4 to fill the overlay — no headroom needed here.
-        r_fsck = subprocess.run(
-            ["e2fsck", "-fy", tmpfile], capture_output=True
-        )
+        r_fsck = subprocess.run(["e2fsck", "-fy", tmpfile], capture_output=True)
         # e2fsck exit codes: 0 = clean, 1 = errors corrected (both OK),
         # 2+ = errors remain or operational failure.
         if r_fsck.returncode > 1:

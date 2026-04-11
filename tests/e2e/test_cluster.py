@@ -27,7 +27,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from lib.vmctl import (
     cluster_create,
     cluster_deploy,

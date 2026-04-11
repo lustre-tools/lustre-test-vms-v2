@@ -59,7 +59,9 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
     if not kver:
         r = run_ssh(vm.ip, "uname -r", timeout=10)
         if r.returncode != 0:
-            print("warning: could not determine kernel version; kdump boot seeding skipped")
+            print(
+                "warning: could not determine kernel version; kdump boot seeding skipped"
+            )
             return
         kver = r.stdout.strip()
 
@@ -73,11 +75,16 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
     print(f"seeding /boot/vmlinuz-{kver} for kdump...")
     r = run(
         [
-            "sshpass", "-p", ROOT_PASSWORD,
+            "sshpass",
+            "-p",
+            ROOT_PASSWORD,
             "scp",
-            "-o", "StrictHostKeyChecking=no",
-            "-o", "UserKnownHostsFile=/dev/null",
-            "-o", "LogLevel=ERROR",
+            "-o",
+            "StrictHostKeyChecking=no",
+            "-o",
+            "UserKnownHostsFile=/dev/null",
+            "-o",
+            "LogLevel=ERROR",
             str(kernel_host),
             f"root@{vm.ip}:/boot/vmlinuz-{kver}",
         ],
@@ -97,6 +104,7 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
     if vm.os_id:
         try:
             from .target_config import TargetConfig
+
             os_family = TargetConfig(vm.os_id).os_family
         except (ValueError, FileNotFoundError) as e:
             print(
@@ -115,14 +123,21 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
         if config_src.exists():
             r_scp = run(
                 [
-                    "sshpass", "-p", ROOT_PASSWORD, "scp",
-                    "-o", "StrictHostKeyChecking=no",
-                    "-o", "UserKnownHostsFile=/dev/null",
-                    "-o", "LogLevel=ERROR",
+                    "sshpass",
+                    "-p",
+                    ROOT_PASSWORD,
+                    "scp",
+                    "-o",
+                    "StrictHostKeyChecking=no",
+                    "-o",
+                    "UserKnownHostsFile=/dev/null",
+                    "-o",
+                    "LogLevel=ERROR",
                     str(config_src),
                     f"root@{vm.ip}:/boot/config-{kver}",
                 ],
-                capture_output=True, timeout=10,
+                capture_output=True,
+                timeout=10,
             )
             if r_scp.returncode != 0:
                 die(
@@ -139,7 +154,7 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
             f"rm -f /usr/share/initramfs-tools/hooks/dhcpcd && "
             f"{{ update-initramfs -c -k {kver} 2>&1 | "
             f"  {{ grep -v '^W:' || true; }}; "
-            f"  test \"${{PIPESTATUS[0]}}\" -eq 0; }} && "
+            f'  test "${{PIPESTATUS[0]}}" -eq 0; }} && '
             f"mkdir -p /var/lib/kdump && "
             f"cp /boot/initrd.img-{kver} /var/lib/kdump/initrd.img-{kver} && "
             f"ln -sf /boot/vmlinuz-{kver} /var/lib/kdump/vmlinuz",
@@ -183,8 +198,8 @@ def _ago(epoch: int) -> str:
 
 
 _SIZE_SUFFIXES = {"M": 1 << 20, "G": 1 << 30}
-_MIN_DISK_BYTES = 64 * (1 << 20)    # 64 MiB
-_MAX_DISK_BYTES = 100 * (1 << 30)   # 100 GiB
+_MIN_DISK_BYTES = 64 * (1 << 20)  # 64 MiB
+_MAX_DISK_BYTES = 100 * (1 << 30)  # 100 GiB
 
 
 def _parse_disk_size(value: str | int | None) -> int:
@@ -202,7 +217,9 @@ def _parse_disk_size(value: str | int | None) -> int:
         return DISK_SIZE_BYTES
     suffix = s[-1]
     if suffix not in _SIZE_SUFFIXES:
-        die(f"Invalid --disk-size '{value}': suffix must be M or G (e.g. 500M, 2G)")
+        die(
+            f"Invalid --disk-size '{value}': suffix must be M or G (e.g. 500M, 2G)"
+        )
     try:
         n = int(s[:-1])
     except ValueError:
@@ -789,7 +806,6 @@ def cmd_list(args: argparse.Namespace) -> None:
         )
 
 
-
 def cmd_console_log(args: argparse.Namespace) -> None:
     vm = VMInfo.load(args.name)
     if not vm.log_path.exists():
@@ -1038,17 +1054,21 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
         homes = [Path.home()]
         if sudo_user:
             import pwd
+
             try:
                 homes.append(Path(pwd.getpwnam(sudo_user).pw_dir))
             except KeyError:
                 pass
         for home in homes:
             candidates.append(
-                home / "llm_code_and_review_tools/lustre-drgn-tools/lustre_triage.py"
+                home
+                / "llm_code_and_review_tools/lustre-drgn-tools/lustre_triage.py"
             )
         triage_script = next((c for c in candidates if c.exists()), None)
         if not triage_script:
-            print("triage script not found (set LTVM_TRIAGE_SCRIPT to lustre_triage.py path)")
+            print(
+                "triage script not found (set LTVM_TRIAGE_SCRIPT to lustre_triage.py path)"
+            )
             print(f"vmcore dir: {local_dir}")
             return
         # Run triage as SUDO_USER so user-installed packages (drgn) are
@@ -1057,7 +1077,8 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
         if sudo_user:
             python_cmd = ["sudo", "-u", sudo_user, "python3"]
         triage_r = run(
-            python_cmd + [
+            python_cmd
+            + [
                 str(triage_script),
                 "--vmcore",
                 str(local_vmcore),
@@ -1268,7 +1289,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     print("  fixed: removed")
     for f in sorted(SOCKETS.glob(".*.info.lock")):
         # Strip leading "." and trailing ".info.lock"
-        bare = f.name[1:-len(".info.lock")]
+        bare = f.name[1 : -len(".info.lock")]
         if not (SOCKETS / f"{bare}.info").exists():
             print(f"orphan info lock: {f.name}")
             issues += 1
@@ -1280,13 +1301,15 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     # node` individually after a `cluster create`, leaving the .cluster
     # file pointing at VMs that no longer exist.
     from .vm_state import ClusterInfo, ClusterNotFound
+
     for cname in ClusterInfo.all_names():
         try:
             cluster = ClusterInfo.load(cname)
         except ClusterNotFound:
             continue
         missing_nodes = [
-            n for n in cluster.get_nodes()
+            n
+            for n in cluster.get_nodes()
             if not (SOCKETS / f"{n.name}.info").exists()
         ]
         if missing_nodes and len(missing_nodes) == len(cluster.get_nodes()):

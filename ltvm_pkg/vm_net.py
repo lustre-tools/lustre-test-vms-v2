@@ -12,8 +12,8 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from .vm_state import MARKER, ROOT_PASSWORD, SUBNET, VM_DIR, VMInfo, VMNotFound
 from .qemu_run import die, run
+from .vm_state import MARKER, ROOT_PASSWORD, SUBNET, VM_DIR, VMInfo, VMNotFound
 
 _IP_LOCK_PATH = VM_DIR / ".ip-alloc.lock"
 _HOSTS_LOCK_PATH = VM_DIR / ".hosts.lock"
@@ -110,7 +110,9 @@ def alloc_ip(name: str, explicit_ip: str | None = None):
             yield explicit_ip
             return
 
-        base_octet = (int(hashlib.md5(name.encode()).hexdigest()[:4], 16) % 244) + 10
+        base_octet = (
+            int(hashlib.md5(name.encode()).hexdigest()[:4], 16) % 244
+        ) + 10
         used = _used_ips(name)
         for delta in range(244):
             octet = ((base_octet - 10 + delta) % 244) + 10
@@ -352,8 +354,9 @@ def wait_for_ssh(ip: str, max_wait: int = 30) -> None:
         except subprocess.TimeoutExpired:
             pass
         except FileNotFoundError as e:
-            die(f"required command missing on host ({e}); "
-                f"is sshpass installed?")
+            die(
+                f"required command missing on host ({e}); is sshpass installed?"
+            )
         time.sleep(1)
     elapsed = int(time.monotonic() - start)
     die(f"SSH not ready after {elapsed}s on {ip}")

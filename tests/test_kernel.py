@@ -192,7 +192,7 @@ class TestDownloadSrpm:
         mock_run.assert_not_called()
 
     @staticmethod
-    def _curl_mock(content: bytes = b"fake srpm") -> "MagicMock":
+    def _curl_mock(content: bytes = b"fake srpm") -> MagicMock:
         """A subprocess.run mock that creates the curl -o output file.
 
         download_srpm now writes to a .partial tempfile and renames
@@ -200,6 +200,7 @@ class TestDownloadSrpm:
         we need the side_effect to actually create the partial file
         so the rename works.
         """
+
         def side_effect(cmd, *args, **kwargs):
             if cmd and cmd[0] == "curl" and "-o" in cmd:
                 out_idx = cmd.index("-o") + 1
@@ -207,6 +208,7 @@ class TestDownloadSrpm:
             r = MagicMock()
             r.returncode = 0
             return r
+
         mock = MagicMock(side_effect=side_effect)
         return mock
 
@@ -215,7 +217,8 @@ class TestDownloadSrpm:
         cache_dir = tmp_path / "cache"
 
         with patch(
-            "ltvm_pkg.kernel_build.subprocess.run", new=self._curl_mock(),
+            "ltvm_pkg.kernel_build.subprocess.run",
+            new=self._curl_mock(),
         ) as mock_run:
             result = download_srpm(srpm, cache_dir, _ROCKY9_SRPM_URL)
 
@@ -233,7 +236,8 @@ class TestDownloadSrpm:
         cache_dir = tmp_path / "cache" / "nested"
 
         with patch(
-            "ltvm_pkg.kernel_build.subprocess.run", new=self._curl_mock(),
+            "ltvm_pkg.kernel_build.subprocess.run",
+            new=self._curl_mock(),
         ):
             download_srpm(srpm, cache_dir, _ROCKY9_SRPM_URL)
 
@@ -244,7 +248,8 @@ class TestDownloadSrpm:
         cache_dir = tmp_path / "cache"
 
         with patch(
-            "ltvm_pkg.kernel_build.subprocess.run", new=self._curl_mock(),
+            "ltvm_pkg.kernel_build.subprocess.run",
+            new=self._curl_mock(),
         ) as mock_run:
             download_srpm(srpm, cache_dir, _ROCKY9_SRPM_URL)
 
@@ -377,9 +382,7 @@ class TestKernelStatus:
         assert result["stale"] is None
         assert result["kernel_version"] == "5.14.0-503.26.1.el9_7"
 
-    def test_stale_when_extra_hash_mismatches(
-        self, tmp_targets: Path
-    ) -> None:
+    def test_stale_when_extra_hash_mismatches(self, tmp_targets: Path) -> None:
         """When the caller passes the live Lustre-inputs hash, staleness
         IS computed and a meta with a stale hash is reported stale.
         """
@@ -396,9 +399,7 @@ class TestKernelStatus:
         assert result["built"] is True
         assert result["stale"] is True
 
-    def test_not_stale_when_extra_hash_matches(
-        self, tmp_targets: Path
-    ) -> None:
+    def test_not_stale_when_extra_hash_matches(self, tmp_targets: Path) -> None:
         cfg = _make_config(tmp_targets)
         live_extra = b"live-lustre-inputs"
         input_hash = cfg.input_hash("kernel", extra=live_extra)

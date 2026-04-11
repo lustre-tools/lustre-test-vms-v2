@@ -74,10 +74,15 @@ class TestTranslatePkgs:
 class TestSetupSsh:
     """Tests that call the real setup_ssh() against a temp directory."""
 
-    def _call_setup_ssh(self, tmp_path: Path, subnet: str = "192.168.100") -> Path:
+    def _call_setup_ssh(
+        self, tmp_path: Path, subnet: str = "192.168.100"
+    ) -> Path:
         """Run setup_ssh() with /root/.ssh redirected to tmp_path."""
         ssh_dir = tmp_path / ".ssh"
-        with patch("ltvm_pkg.host_setup.Path", side_effect=lambda p: ssh_dir if p == "/root/.ssh" else Path(p)):
+        with patch(
+            "ltvm_pkg.host_setup.Path",
+            side_effect=lambda p: ssh_dir if p == "/root/.ssh" else Path(p),
+        ):
             setup_ssh(subnet)
         return ssh_dir / "config"
 
@@ -286,7 +291,9 @@ class TestQemuInstalledVersion:
             args=[], returncode=0, stdout="QEMU emulator version 9.2.2\n"
         )
         with patch("ltvm_pkg.host_setup.QEMU_PREFIX", tmp_path):
-            with patch("ltvm_pkg.host_setup._run_quiet", return_value=completed):
+            with patch(
+                "ltvm_pkg.host_setup._run_quiet", return_value=completed
+            ):
                 result = _qemu_installed_version()
         assert result == "9.2.2"
 
@@ -300,7 +307,9 @@ class TestQemuInstalledVersion:
             args=[], returncode=0, stdout="something completely different\n"
         )
         with patch("ltvm_pkg.host_setup.QEMU_PREFIX", tmp_path):
-            with patch("ltvm_pkg.host_setup._run_quiet", return_value=completed):
+            with patch(
+                "ltvm_pkg.host_setup._run_quiet", return_value=completed
+            ):
                 result = _qemu_installed_version()
         assert result == "unknown"
 
@@ -311,7 +320,9 @@ class TestQemuInstalledVersion:
         fake_bin.touch()
 
         with patch("ltvm_pkg.host_setup.QEMU_PREFIX", tmp_path):
-            with patch("ltvm_pkg.host_setup._run_quiet", side_effect=OSError("oops")):
+            with patch(
+                "ltvm_pkg.host_setup._run_quiet", side_effect=OSError("oops")
+            ):
                 result = _qemu_installed_version()
         assert result is None
 
@@ -360,7 +371,10 @@ class TestVerify:
             return _mock_completed(0)
 
         with (
-            patch("ltvm_pkg.host_setup._qemu_installed_version", return_value="9.2.2"),
+            patch(
+                "ltvm_pkg.host_setup._qemu_installed_version",
+                return_value="9.2.2",
+            ),
             patch(
                 "ltvm_pkg.host_setup.Path",
                 side_effect=lambda p: (
@@ -369,7 +383,9 @@ class TestVerify:
                     else MagicMock(exists=MagicMock(return_value=True))
                 ),
             ),
-            patch("ltvm_pkg.host_setup._run_quiet", side_effect=_run_quiet_side),
+            patch(
+                "ltvm_pkg.host_setup._run_quiet", side_effect=_run_quiet_side
+            ),
             patch(
                 "shutil.which",
                 side_effect=lambda cmd: f"/usr/bin/{cmd}",
@@ -403,7 +419,9 @@ class TestVerify:
             return _mock_completed(0)
 
         with (
-            patch("ltvm_pkg.host_setup._qemu_installed_version", return_value=None),
+            patch(
+                "ltvm_pkg.host_setup._qemu_installed_version", return_value=None
+            ),
             patch(
                 "ltvm_pkg.host_setup.Path",
                 side_effect=lambda p: (
@@ -412,7 +430,9 @@ class TestVerify:
                     else MagicMock(exists=MagicMock(return_value=True))
                 ),
             ),
-            patch("ltvm_pkg.host_setup._run_quiet", side_effect=_run_quiet_side),
+            patch(
+                "ltvm_pkg.host_setup._run_quiet", side_effect=_run_quiet_side
+            ),
             patch("shutil.which", side_effect=lambda cmd: f"/usr/bin/{cmd}"),
         ):
             result = verify()
@@ -446,9 +466,14 @@ class TestVerify:
             return _mock_completed(0)
 
         with (
-            patch("ltvm_pkg.host_setup._qemu_installed_version", return_value="9.2.2"),
+            patch(
+                "ltvm_pkg.host_setup._qemu_installed_version",
+                return_value="9.2.2",
+            ),
             patch("ltvm_pkg.host_setup.Path", side_effect=_path_side),
-            patch("ltvm_pkg.host_setup._run_quiet", side_effect=_run_quiet_side),
+            patch(
+                "ltvm_pkg.host_setup._run_quiet", side_effect=_run_quiet_side
+            ),
             patch("shutil.which", side_effect=lambda cmd: f"/usr/bin/{cmd}"),
         ):
             result = verify()
@@ -466,7 +491,9 @@ class TestVerify:
             return _mock_completed(1)
 
         with (
-            patch("ltvm_pkg.host_setup._qemu_installed_version", return_value=None),
+            patch(
+                "ltvm_pkg.host_setup._qemu_installed_version", return_value=None
+            ),
             patch(
                 "ltvm_pkg.host_setup.Path",
                 side_effect=lambda p: (
@@ -475,7 +502,9 @@ class TestVerify:
                     else MagicMock(exists=MagicMock(return_value=False))
                 ),
             ),
-            patch("ltvm_pkg.host_setup._run_quiet", side_effect=_run_quiet_side),
+            patch(
+                "ltvm_pkg.host_setup._run_quiet", side_effect=_run_quiet_side
+            ),
             patch("shutil.which", return_value=None),
         ):
             result = verify()

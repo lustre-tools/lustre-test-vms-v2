@@ -197,7 +197,9 @@ def snapshot_lustre(
             sample = ko_files[0]
             r = subprocess.run(
                 ["modinfo", "-F", "vermagic", str(sample)],
-                capture_output=True, text=True, check=False,
+                capture_output=True,
+                text=True,
+                check=False,
             )
             parts = r.stdout.split() if r.returncode == 0 else []
             actual_kver = parts[0] if parts else ""
@@ -235,7 +237,9 @@ def snapshot_lustre(
     try:
         r = subprocess.run(
             ["git", "-C", str(lustre_tree), "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=False,
+            capture_output=True,
+            text=True,
+            check=False,
         )
         if r.returncode == 0:
             lustre_commit = r.stdout.strip()
@@ -302,7 +306,8 @@ def export_build_container(target_name: str, output_dir: str | Path) -> Path:
     print(f"  Exporting build container '{container_tag}' -> {image_tar}")
     r = subprocess.run(
         ["podman", "save", "-o", str(image_tar), container_tag],
-        capture_output=True, text=True,
+        capture_output=True,
+        text=True,
     )
     if r.returncode != 0:
         raise RuntimeError(
@@ -371,9 +376,7 @@ def package_target(
         )
     version = meta.get("kernel_version")
     if not version:
-        raise RuntimeError(
-            f"kernel_version missing from {kernel_meta}"
-        )
+        raise RuntimeError(f"kernel_version missing from {kernel_meta}")
 
     arch_suffix = f"-{arch}" if arch != "x86_64" else ""
     base_name = f"{target_name}-{version}{arch_suffix}"
@@ -407,8 +410,15 @@ def package_target(
     tarball_zst = dest_dir / f"{base_name}.tar.zst"
     tarball_gz = dest_dir / f"{base_name}.tar.gz"
     r = subprocess.run(
-        ["tar", "--use-compress-program=zstd", "-cf", str(tarball_zst),
-         "-C", str(tar_base)] + tar_paths,
+        [
+            "tar",
+            "--use-compress-program=zstd",
+            "-cf",
+            str(tarball_zst),
+            "-C",
+            str(tar_base),
+        ]
+        + tar_paths,
         capture_output=True,
     )
     if r.returncode == 0:
@@ -421,7 +431,9 @@ def package_target(
         )
         tarball = tarball_gz
 
-    print(f"  Packaging {target_name} (kernel={kernel_name}, arch={arch}) -> {tarball.name}")
+    print(
+        f"  Packaging {target_name} (kernel={kernel_name}, arch={arch}) -> {tarball.name}"
+    )
     print(f"    Kernel: {artifacts['vmlinux']}")
     print(f"    Image:  {artifacts['image']}")
     if "lustre-artifacts" in artifacts:
@@ -487,10 +499,16 @@ def fetch_target(
         try:
             r = subprocess.run(
                 [
-                    "curl", "-fSL", "--progress-bar",
-                    "--connect-timeout", "15",
-                    "--max-time", "600",
-                    "-o", tmp_path, url,
+                    "curl",
+                    "-fSL",
+                    "--progress-bar",
+                    "--connect-timeout",
+                    "15",
+                    "--max-time",
+                    "600",
+                    "-o",
+                    tmp_path,
+                    url,
                 ],
                 check=False,
             )
@@ -510,8 +528,15 @@ def fetch_target(
         print(f"    Extracting to {output_base}/...")
         try:
             subprocess.run(
-                ["tar", "-xf", tmp_path, "-C", str(output_base),
-                 "--overwrite", "--no-same-owner"],
+                [
+                    "tar",
+                    "-xf",
+                    tmp_path,
+                    "-C",
+                    str(output_base),
+                    "--overwrite",
+                    "--no-same-owner",
+                ],
                 check=True,
             )
         except FileNotFoundError:
@@ -554,7 +579,8 @@ def fetch_target(
     try:
         r = subprocess.run(
             ["podman", "load", "-i", str(container_image)],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
     except FileNotFoundError:
         raise RuntimeError(
@@ -611,8 +637,12 @@ def install_target(
 
     # Install kernel -- include kernel name (and arch if non-default) in filename
     arch_suffix = f"-{arch}" if arch != "x86_64" else ""
-    vmlinux_dest = kernel_dir / f"vmlinux-{target_name}-{kernel_name}{arch_suffix}"
-    vmlinuz_dest = kernel_dir / f"vmlinuz-{target_name}-{kernel_name}{arch_suffix}"
+    vmlinux_dest = (
+        kernel_dir / f"vmlinux-{target_name}-{kernel_name}{arch_suffix}"
+    )
+    vmlinuz_dest = (
+        kernel_dir / f"vmlinuz-{target_name}-{kernel_name}{arch_suffix}"
+    )
 
     print(f"  Installing kernel ({kernel_name}) to {kernel_dir}/")
     subprocess.run(["sudo", "mkdir", "-p", str(kernel_dir)], check=True)

@@ -10,7 +10,6 @@ import pytest
 from ltvm_pkg import vm_net
 from ltvm_pkg.vm_state import VMInfo
 
-
 # ── deterministic name → tap / mac ───────────────────────
 
 
@@ -179,6 +178,7 @@ class TestSshRegistry:
 
         # Patch Path("/etc/hosts") + _real_user_ssh_dir.
         real_path = vm_net.Path
+
         class _PathRouter(type(real_path)):
             def __call__(cls, *a, **k):
                 if a and a[0] == "/etc/hosts":
@@ -188,10 +188,15 @@ class TestSshRegistry:
                 return real_path(*a, **k)
 
         with (
-            patch("ltvm_pkg.vm_net._real_user_ssh_dir",
-                  return_value=("nobody", fake_ssh)),
+            patch(
+                "ltvm_pkg.vm_net._real_user_ssh_dir",
+                return_value=("nobody", fake_ssh),
+            ),
             patch("ltvm_pkg.vm_net.reload_dns"),
-            patch("ltvm_pkg.vm_net.Path", new=_PathRouter("Path", (real_path,), {})),
+            patch(
+                "ltvm_pkg.vm_net.Path",
+                new=_PathRouter("Path", (real_path,), {}),
+            ),
             # Tests run unprivileged; swallow chown so the non-root
             # fallback path doesn't leak a PermissionError.
             patch("ltvm_pkg.vm_net.os.chown"),
@@ -213,7 +218,8 @@ class TestSshRegistry:
         vm_net.register_ssh_name("co1-single", "192.168.100.50")
         vm_net.register_ssh_name("co1-single", "192.168.100.50")
         matching = [
-            ln for ln in fake_hosts.read_text().splitlines()
+            ln
+            for ln in fake_hosts.read_text().splitlines()
             if "# qemu-vm:co1-single" in ln
         ]
         assert len(matching) == 1
@@ -286,11 +292,13 @@ class TestRunSsh:
 
     def test_includes_sshpass_and_options(self) -> None:
         captured: list[str] = []
+
         def fake_run(cmd, timeout=None):
             captured.extend(cmd)
             r = MagicMock()
             r.returncode = 0
             return r
+
         with patch("ltvm_pkg.vm_net.run", side_effect=fake_run):
             vm_net.run_ssh("10.0.0.5", "ls /tmp", timeout=30)
         assert captured[0] == "sshpass"
@@ -305,11 +313,13 @@ class TestRunSsh:
 
     def test_timeout_forwarded(self) -> None:
         seen = {}
+
         def fake_run(cmd, timeout=None):
             seen["timeout"] = timeout
             r = MagicMock()
             r.returncode = 0
             return r
+
         with patch("ltvm_pkg.vm_net.run", side_effect=fake_run):
             vm_net.run_ssh("10.0.0.5", "whoami", timeout=42)
         assert seen["timeout"] == 42

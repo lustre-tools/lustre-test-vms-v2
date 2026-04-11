@@ -32,7 +32,6 @@ import os
 from pathlib import Path
 
 import pytest
-
 from lib.vmctl import deploy, lustre_mount, vm_destroy, vm_ensure, vm_exec
 
 # ---------------------------------------------------------------------------

@@ -53,7 +53,10 @@ def _make_vm(
     disk_size: int = 500 * 1024 * 1024,
 ) -> VMInfo:
     return VMInfo(
-        name=name, ip=ip, mdt_disks=mdt_disks, ost_disks=ost_disks,
+        name=name,
+        ip=ip,
+        mdt_disks=mdt_disks,
+        ost_disks=ost_disks,
         disk_size=disk_size,
     )
 
@@ -65,17 +68,26 @@ class TestConfigureTestDisks:
     """configure_test_disks writes a correct disk topology into local.sh."""
 
     def _capture_script(
-        self, mdt: int, ost: int, disk_size: int = 0,
+        self,
+        mdt: int,
+        ost: int,
+        disk_size: int = 0,
         os_family: str = "rhel",
     ) -> str:
         captured: dict = {}
+
         def fake_run_ssh(ip, script, timeout=30):
             captured["ip"] = ip
             captured["script"] = script
             return _ok()
+
         with patch("ltvm_pkg.deploy.run_ssh", side_effect=fake_run_ssh):
             deploy.configure_test_disks(
-                "10.0.0.1", mdt, ost, disk_size, os_family=os_family,
+                "10.0.0.1",
+                mdt,
+                ost,
+                disk_size,
+                os_family=os_family,
             )
         return captured["script"]
 
@@ -110,7 +122,9 @@ class TestConfigureTestDisks:
         """disk_size_bytes emits MDSSIZE/OSTSIZE in kilobytes."""
         # 500 MiB
         script = self._capture_script(
-            mdt=1, ost=1, disk_size=500 * 1024 * 1024,
+            mdt=1,
+            ost=1,
+            disk_size=500 * 1024 * 1024,
         )
         assert "MDSSIZE=512000" in script
         assert "OSTSIZE=512000" in script
@@ -143,7 +157,9 @@ class TestConfigureTestDisks:
     def test_debian_libdir(self) -> None:
         """debian os_family writes to /usr/lib/lustre (not /usr/lib64)."""
         script = self._capture_script(
-            mdt=1, ost=1, os_family="debian",
+            mdt=1,
+            ost=1,
+            os_family="debian",
         )
         assert "/usr/lib/lustre/tests/cfg/local.sh" in script
         assert "/usr/lib64/lustre" not in script
@@ -151,7 +167,9 @@ class TestConfigureTestDisks:
     def test_rhel_libdir(self) -> None:
         """rhel os_family writes to /usr/lib64/lustre."""
         script = self._capture_script(
-            mdt=1, ost=1, os_family="rhel",
+            mdt=1,
+            ost=1,
+            os_family="rhel",
         )
         assert "/usr/lib64/lustre/tests/cfg/local.sh" in script
 
@@ -212,9 +230,7 @@ class TestDeployToVm:
                 return_value=_ok(),
             ),
             patch("ltvm_pkg.deploy.run_ssh", return_value=_ok()),
-            patch(
-                "ltvm_pkg.deploy.configure_test_disks"
-            ) as mock_cfg,
+            patch("ltvm_pkg.deploy.configure_test_disks") as mock_cfg,
         ):
             deploy.deploy_to_vm(vm, staging)
             mock_cfg.assert_not_called()
@@ -228,24 +244,26 @@ class TestDeployToVm:
                 return_value=_ok(),
             ),
             patch("ltvm_pkg.deploy.run_ssh", return_value=_ok()),
-            patch(
-                "ltvm_pkg.deploy.configure_test_disks"
-            ) as mock_cfg,
+            patch("ltvm_pkg.deploy.configure_test_disks") as mock_cfg,
         ):
             deploy.deploy_to_vm(vm, staging, os_family="rhel")
             mock_cfg.assert_called_once_with(
-                vm.ip, 1, 2, 12345, os_family="rhel",
+                vm.ip,
+                1,
+                2,
+                12345,
+                os_family="rhel",
             )
 
-    def test_tar_command_targets_staging_and_vm_ip(
-        self, staging: Path
-    ) -> None:
+    def test_tar_command_targets_staging_and_vm_ip(self, staging: Path) -> None:
         """The bash tar|ssh pipeline references the staging dir and VM IP."""
         vm = _make_vm(ip="10.11.12.13")
         captured = {}
+
         def fake_run(args, **kwargs):
             captured["args"] = args
             return _ok()
+
         with (
             patch("ltvm_pkg.deploy.subprocess.run", side_effect=fake_run),
             patch("ltvm_pkg.deploy.run_ssh", return_value=_ok()),
@@ -266,13 +284,17 @@ class TestDeployToVm:
         """userspace_only excludes lib/modules and runs ldconfig only."""
         vm = _make_vm()
         captured = {}
+
         def fake_run(args, **kwargs):
             captured["args"] = args
             return _ok()
+
         ssh_cmds = []
+
         def fake_ssh(ip, cmd, timeout=60):
             ssh_cmds.append(cmd)
             return _ok()
+
         with (
             patch("ltvm_pkg.deploy.subprocess.run", side_effect=fake_run),
             patch("ltvm_pkg.deploy.run_ssh", side_effect=fake_ssh),
@@ -286,13 +308,13 @@ class TestDeployToVm:
         """Normal (kernel-module) deploy runs depmod -a && ldconfig."""
         vm = _make_vm()
         ssh_cmds = []
+
         def fake_ssh(ip, cmd, timeout=60):
             ssh_cmds.append(cmd)
             return _ok()
+
         with (
-            patch(
-                "ltvm_pkg.deploy.subprocess.run", return_value=_ok()
-            ),
+            patch("ltvm_pkg.deploy.subprocess.run", return_value=_ok()),
             patch("ltvm_pkg.deploy.run_ssh", side_effect=fake_ssh),
         ):
             deploy.deploy_to_vm(vm, staging)
@@ -306,9 +328,12 @@ class TestLustreMountVm:
     """lustre_mount_vm cleans up state then runs llmount.sh."""
 
     def test_vm_not_found_returns_not_found_exit(
-        self, tmp_sockets: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_sockets: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         from ltvm_pkg.vm_state import EXIT_NOT_FOUND
+
         rc = deploy.lustre_mount_vm("ghost", os_family="rhel")
         assert rc == EXIT_NOT_FOUND
 
@@ -316,22 +341,20 @@ class TestLustreMountVm:
         """Happy path: cleanup + llmount.sh both return 0."""
         vm = _make_vm(name="mount-ok", ip="10.0.0.5")
         vm.save()
-        with patch(
-            "ltvm_pkg.deploy.run_ssh", return_value=_ok(stdout="")
-        ):
+        with patch("ltvm_pkg.deploy.run_ssh", return_value=_ok(stdout="")):
             rc = deploy.lustre_mount_vm("mount-ok", os_family="rhel")
         assert rc == 0
 
-    def test_mount_calls_cleanup_then_llmount(
-        self, tmp_sockets: Path
-    ) -> None:
+    def test_mount_calls_cleanup_then_llmount(self, tmp_sockets: Path) -> None:
         """lustre_mount_vm runs llmountcleanup first, then llmount."""
         vm = _make_vm(name="mount-order", ip="10.0.0.6")
         vm.save()
         calls = []
+
         def fake_ssh(ip, cmd, timeout=0):
             calls.append(cmd)
             return _ok()
+
         with patch("ltvm_pkg.deploy.run_ssh", side_effect=fake_ssh):
             deploy.lustre_mount_vm("mount-order", os_family="rhel")
         assert len(calls) == 2
@@ -345,32 +368,36 @@ class TestLustreMountVm:
         vm = _make_vm(name="mount-deb", ip="10.0.0.7")
         vm.save()
         calls = []
+
         def fake_ssh(ip, cmd, timeout=0):
             calls.append(cmd)
             return _ok()
+
         with patch("ltvm_pkg.deploy.run_ssh", side_effect=fake_ssh):
             deploy.lustre_mount_vm("mount-deb", os_family="debian")
         assert all("/usr/lib/lustre" in c for c in calls)
         assert all("/usr/lib64/lustre" not in c for c in calls)
 
     def test_mount_failure_returns_rc(
-        self, tmp_sockets: Path, capsys: pytest.CaptureFixture[str],
+        self,
+        tmp_sockets: Path,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         """A failing llmount.sh surfaces its rc from lustre_mount_vm."""
         vm = _make_vm(name="mount-fail", ip="10.0.0.8")
         vm.save()
         results = iter([_ok(), _fail(rc=5, stderr="mount broken")])
         with patch(
-            "ltvm_pkg.deploy.run_ssh", side_effect=lambda *a, **k: next(results),
+            "ltvm_pkg.deploy.run_ssh",
+            side_effect=lambda *a, **k: next(results),
         ):
             rc = deploy.lustre_mount_vm("mount-fail", os_family="rhel")
         assert rc == 5
 
-    def test_mount_ssh_exception_returns_error(
-        self, tmp_sockets: Path
-    ) -> None:
+    def test_mount_ssh_exception_returns_error(self, tmp_sockets: Path) -> None:
         """A run_ssh exception becomes EXIT_ERROR (not a traceback)."""
         from ltvm_pkg.vm_state import EXIT_ERROR
+
         vm = _make_vm(name="mount-exc", ip="10.0.0.9")
         vm.save()
         with patch(

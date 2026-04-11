@@ -76,14 +76,20 @@ def deploy_to_vm(
     # Configure test framework's local.sh with VM disk topology
     if vm.mdt_disks or vm.ost_disks:
         configure_test_disks(
-            vm.ip, vm.mdt_disks, vm.ost_disks, vm.disk_size,
+            vm.ip,
+            vm.mdt_disks,
+            vm.ost_disks,
+            vm.disk_size,
             os_family=os_family,
         )
 
 
 def configure_test_disks(
-    ip: str, mdt_disks: int, ost_disks: int,
-    disk_size_bytes: int = 0, os_family: str = "rhel",
+    ip: str,
+    mdt_disks: int,
+    ost_disks: int,
+    disk_size_bytes: int = 0,
+    os_family: str = "rhel",
 ) -> None:
     """Write OSTCOUNT/OSTDEV*/MDSCOUNT/MDSDEV*/OSTSIZE into cfg/local.sh.
 
@@ -104,13 +110,13 @@ def configure_test_disks(
     if mdt_disks:
         lines.append(f"MDSCOUNT={mdt_disks}")
         for n in range(1, mdt_disks + 1):
-            letter = chr(ord('a') + n)
+            letter = chr(ord("a") + n)
             lines.append(f"MDSDEV{n}=/dev/vd{letter}")
 
     if ost_disks:
         lines.append(f"OSTCOUNT={ost_disks}")
         for n in range(1, ost_disks + 1):
-            letter = chr(ord('a') + mdt_disks + n)
+            letter = chr(ord("a") + mdt_disks + n)
             lines.append(f"OSTDEV{n}=/dev/vd{letter}")
 
     snippet = "\\n".join(lines)

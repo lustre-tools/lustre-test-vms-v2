@@ -117,7 +117,10 @@ class TestNeedsReconfigure:
         (lustre / "config.status").write_text("# status\n")
         assert (
             _needs_reconfigure(
-                lustre, kernel, force=False, target=self.TARGET,
+                lustre,
+                kernel,
+                force=False,
+                target=self.TARGET,
             )
             is True
         )
@@ -127,7 +130,10 @@ class TestNeedsReconfigure:
         (lustre / "configure").write_text("#!/bin/sh\n")
         assert (
             _needs_reconfigure(
-                lustre, kernel, force=False, target=self.TARGET,
+                lustre,
+                kernel,
+                force=False,
+                target=self.TARGET,
             )
             is True
         )
@@ -141,26 +147,33 @@ class TestNeedsReconfigure:
         release_dir.mkdir(parents=True, exist_ok=True)
         (release_dir / "kernel.release").write_text("5.14.0-new\n")
         result = _needs_reconfigure(
-            lustre, kernel, force=False, target=self.TARGET,
+            lustre,
+            kernel,
+            force=False,
+            target=self.TARGET,
         )
         assert result is True
 
     def test_everything_matches_returns_false(self, tmp_path: Path) -> None:
         lustre, kernel = self._full_tree(tmp_path, kver="5.14.0")
         result = _needs_reconfigure(
-            lustre, kernel, force=False, target=self.TARGET,
+            lustre,
+            kernel,
+            force=False,
+            target=self.TARGET,
         )
         assert result is False
 
-    def test_no_stamp_files_returns_true(
-        self, tmp_path: Path
-    ) -> None:
+    def test_no_stamp_files_returns_true(self, tmp_path: Path) -> None:
         """No per-target stamps means never built for this target."""
         lustre, kernel = self._tree(tmp_path)
         (lustre / "configure").write_text("#!/bin/sh\n")
         (lustre / "config.status").write_text("# status\n")
         result = _needs_reconfigure(
-            lustre, kernel, force=False, target=self.TARGET,
+            lustre,
+            kernel,
+            force=False,
+            target=self.TARGET,
         )
         assert result is True
 
