@@ -164,6 +164,10 @@ def _run_launch(vm: VMInfo, harness: _LaunchHarness) -> None:
             side_effect=harness.subprocess_run,
         ),
         patch("ltvm_pkg.qemu_run.is_running", return_value=False),
+        # Skip the host-memory budget check so command-construction
+        # tests don't depend on the test host's RAM.  See
+        # TestMemoryBudgetCheck for direct coverage of the check.
+        patch("ltvm_pkg.qemu_run._check_memory_for_launch"),
         patch("ltvm_pkg.qemu_run.time.time", return_value=1700000000),
         patch.object(VMInfo, "update_pid"),
         patch.object(VMInfo, "update_last_boot"),
@@ -274,6 +278,7 @@ class TestLaunchQemuCommand:
                 "ltvm_pkg.qemu_run.subprocess.run", side_effect=h.subprocess_run
             ),
             patch("ltvm_pkg.qemu_run.is_running", return_value=False),
+            patch("ltvm_pkg.qemu_run._check_memory_for_launch"),
         ):
             with pytest.raises(SystemExit):
                 qemu_run.launch_qemu(vm)
@@ -297,6 +302,7 @@ class TestLaunchQemuCommand:
                 "ltvm_pkg.qemu_run.subprocess.run", side_effect=h.subprocess_run
             ),
             patch("ltvm_pkg.qemu_run.is_running", return_value=False),
+            patch("ltvm_pkg.qemu_run._check_memory_for_launch"),
         ):
             with pytest.raises(SystemExit):
                 qemu_run.launch_qemu(vm)
@@ -344,6 +350,7 @@ class TestLaunchQemuCommand:
             patch("ltvm_pkg.qemu_run.run", side_effect=h.run),
             patch("ltvm_pkg.qemu_run.subprocess.run", side_effect=bad_qemu),
             patch("ltvm_pkg.qemu_run.is_running", return_value=False),
+            patch("ltvm_pkg.qemu_run._check_memory_for_launch"),
         ):
             with pytest.raises(SystemExit):
                 qemu_run.launch_qemu(vm)
@@ -356,6 +363,124 @@ class TestLaunchQemuCommand:
         assert len(del_calls) >= 2, (
             f"expected rollback to tear down TAP, saw: {h.run_calls}"
         )
+
+
+# ── memory budget check ──────────────────────────────────
+
+
+class TestMemoryBudgetCheck:
+    """_check_memory_for_launch refuses launches that would exceed the host."""
+
+    def test_passes_when_budget_has_room(self, tmp_vmdir: Path) -> None:
+        """Plenty of host RAM, no other VMs -> check returns silently."""
+        vm = _make_vm(tmp_vmdir, mem=2048)
+        with (
+            patch("ltvm_pkg.qemu_run._read_meminfo_mb", return_value=16384),
+            patch.object(VMInfo, "all_names", return_value=[]),
+        ):
+            qemu_run._check_memory_for_launch(vm)  # no raise
+
+    def test_skips_when_meminfo_unreadable(self, tmp_vmdir: Path) -> None:
+        """If MemTotal can't be read (e.g. non-Linux test host), don't block."""
+        vm = _make_vm(tmp_vmdir, mem=999999)
+        with patch("ltvm_pkg.qemu_run._read_meminfo_mb", return_value=0):
+            qemu_run._check_memory_for_launch(vm)  # no raise
+
+    def test_refuses_when_request_exceeds_empty_host(
+        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """No other VMs running, but the request alone busts the budget."""
+        vm = _make_vm(tmp_vmdir, name="big", mem=8192)
+        with (
+            # 8 GiB host -> reserve = max(1024, 819) = 1024 -> budget 7168
+            patch("ltvm_pkg.qemu_run._read_meminfo_mb", return_value=8192),
+            patch.object(VMInfo, "all_names", return_value=[]),
+        ):
+            with pytest.raises(SystemExit):
+                qemu_run._check_memory_for_launch(vm)
+        err = capsys.readouterr().err
+        assert "not enough host memory" in err
+        assert "big" in err
+        # No running VMs -> guidance is the smaller-mem hint, not the stop list
+        assert "no other VMs are running" in err
+        assert "ltvm stop" not in err
+
+    def test_refuses_and_lists_running_vms(
+        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Other VMs are eating the budget; the error lists them largest-first."""
+        # Build three sibling VMInfo files on disk so all_names() finds them.
+        sib_a = _make_vm(tmp_vmdir, name="co1-mds", mem=4096)
+        sib_a.save()
+        sib_b = _make_vm(tmp_vmdir, name="co1-oss1", mem=2048)
+        sib_b.save()
+        sib_c = _make_vm(tmp_vmdir, name="co1-oss2", mem=2048)
+        sib_c.save()
+
+        new_vm = _make_vm(tmp_vmdir, name="co1-new", mem=4096)
+
+        running_set = {"co1-mds", "co1-oss1", "co1-oss2"}
+
+        def fake_is_running(other: VMInfo) -> bool:
+            return other.name in running_set
+
+        with (
+            # 10 GiB host -> reserve max(1024, 1024) = 1024 -> budget 9216
+            # Committed 4096+2048+2048 = 8192; new wants 4096 -> 12288 > 9216
+            patch("ltvm_pkg.qemu_run._read_meminfo_mb", return_value=10240),
+            patch("ltvm_pkg.qemu_run.is_running", side_effect=fake_is_running),
+        ):
+            with pytest.raises(SystemExit):
+                qemu_run._check_memory_for_launch(new_vm)
+
+        err = capsys.readouterr().err
+        assert "not enough host memory" in err
+        assert "co1-new" in err
+        # Running VMs are listed
+        for name in ("co1-mds", "co1-oss1", "co1-oss2"):
+            assert name in err
+        # Suggests stopping VMs
+        assert "ltvm stop" in err
+        # Largest-first ordering: mds (4096) appears before oss1 (2048)
+        assert err.index("co1-mds") < err.index("co1-oss1")
+
+    def test_excludes_self_from_committed_total(self, tmp_vmdir: Path) -> None:
+        """A re-launch of an existing VM doesn't double-count its own RAM.
+
+        ``launch_qemu`` short-circuits when the VM is already running, but
+        the budget check runs for VMs whose .info file exists with a stale
+        PID -- in that case the VM's own ``mem`` must not be added on top
+        of the requested ``mem``.
+        """
+        vm = _make_vm(tmp_vmdir, name="co1-self", mem=4096)
+        vm.save()
+        # Pretend the saved sibling IS running, but it's the same VM we're
+        # launching -- the check should skip it.
+        with (
+            patch("ltvm_pkg.qemu_run._read_meminfo_mb", return_value=8192),
+            patch("ltvm_pkg.qemu_run.is_running", return_value=True),
+        ):
+            qemu_run._check_memory_for_launch(vm)  # no raise
+
+    def test_read_meminfo_parses_memtotal(self, tmp_path: Path) -> None:
+        """_read_meminfo_mb returns kB-from-meminfo // 1024 for the named key."""
+        meminfo = tmp_path / "meminfo"
+        meminfo.write_text(
+            "MemTotal:       16777216 kB\n"
+            "MemFree:         1048576 kB\n"
+            "MemAvailable:    4194304 kB\n"
+        )
+        real_open = open
+
+        def fake_open(path, *a, **kw):
+            if path == "/proc/meminfo":
+                return real_open(meminfo)
+            return real_open(path, *a, **kw)
+
+        with patch("builtins.open", side_effect=fake_open):
+            assert qemu_run._read_meminfo_mb("MemTotal") == 16384
+            assert qemu_run._read_meminfo_mb("MemAvailable") == 4096
+            assert qemu_run._read_meminfo_mb("Bogus") == 0
 
 
 # ── kill_qemu ────────────────────────────────────────────

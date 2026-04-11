@@ -35,6 +35,89 @@ def die(msg: str, code: int = EXIT_ERROR) -> NoReturn:
     sys.exit(code)
 
 
+def _read_meminfo_mb(key: str) -> int:
+    """Return /proc/meminfo's <key> value in MiB, or 0 if unreadable."""
+    try:
+        with open("/proc/meminfo") as f:
+            for line in f:
+                if line.startswith(key + ":"):
+                    return int(line.split()[1]) // 1024
+    except OSError:
+        pass
+    return 0
+
+
+# Reserve for the host kernel + userspace.  1 GiB or 10% of total RAM,
+# whichever is larger.  Host bookkeeping (page cache, sshd, the QEMU
+# monitor processes themselves) needs slack -- without it, the OOM
+# killer fires on the host instead of refusing the launch up front.
+_HOST_MEM_RESERVE_FLOOR_MB = 1024
+
+
+def _check_memory_for_launch(vm: VMInfo) -> None:
+    """Refuse to launch ``vm`` if the host can't accommodate its RAM.
+
+    /proc/meminfo's MemAvailable alone is not a safe signal: QEMU
+    allocates guest RAM lazily, so a 4 GiB VM that just booted may
+    only show as using ~500 MiB.  A naive "free memory" check would
+    happily green-light a second 4 GiB VM and then OOM the host
+    minutes later when the first VM faulted in the rest of its pages.
+
+    Instead we sum the *committed* memory of all running VMs (each
+    VM's ``-m`` value) and add the new VM, comparing against the
+    host's physical RAM minus a reserve.  Conservative but predictable.
+    """
+    needed_mb = vm.mem
+    host_total_mb = _read_meminfo_mb("MemTotal")
+    if host_total_mb <= 0:
+        # Can't read /proc/meminfo (non-Linux test host?); skip the
+        # check rather than block legitimate launches.
+        return
+
+    reserve_mb = max(_HOST_MEM_RESERVE_FLOOR_MB, host_total_mb // 10)
+    budget_mb = host_total_mb - reserve_mb
+
+    running: list[tuple[str, int]] = []
+    for name in VMInfo.all_names():
+        if name == vm.name:
+            continue
+        try:
+            other = VMInfo.load(name)
+        except VMNotFound:
+            continue
+        if is_running(other):
+            running.append((other.name, other.mem))
+
+    committed_mb = sum(m for _, m in running)
+    if committed_mb + needed_mb <= budget_mb:
+        return
+
+    lines = [
+        f"not enough host memory to start VM '{vm.name}'",
+        f"  requested:    {needed_mb} MiB",
+        f"  already used: {committed_mb} MiB across "
+        f"{len(running)} running VM(s)",
+        f"  host budget:  {budget_mb} MiB "
+        f"(MemTotal {host_total_mb} MiB - {reserve_mb} MiB reserve)",
+        f"  shortfall:    {committed_mb + needed_mb - budget_mb} MiB",
+    ]
+    if running:
+        lines.append("")
+        lines.append("running VMs (largest first):")
+        for name, mb in sorted(running, key=lambda x: (-x[1], x[0])):
+            lines.append(f"  {name:<24} {mb} MiB")
+        lines.append("")
+        lines.append("free memory by stopping one or more:")
+        lines.append("  ltvm stop <name> [<name>...]")
+    else:
+        lines.append("")
+        lines.append(
+            "no other VMs are running -- try a smaller --mem value, "
+            "or free host memory."
+        )
+    die("\n".join(lines))
+
+
 def is_running(vm: VMInfo) -> bool:
     """True iff vm.pid is alive AND points at a qemu process for this VM.
 
@@ -69,6 +152,8 @@ def launch_qemu(vm: VMInfo) -> None:
 
     if not vm.overlay_path.exists():
         die(f"overlay missing for '{vm.name}'")
+
+    _check_memory_for_launch(vm)
 
     # aarch64 virt uses PL011 UART (ttyAMA0); x86 uses 8250 (ttyS0)
     console = "ttyAMA0" if vm.arch == "aarch64" else "ttyS0"
