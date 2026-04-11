@@ -1,4 +1,4 @@
-# lustre-test-vms-v2 -- Agent and Developer Reference
+# lustre-test-vms -- Agent and Developer Reference
 
 Build infrastructure for Lustre development/testing
 QEMU microVMs. Produces three cacheable artifacts per

@@ -37,7 +37,7 @@ EXIT_NOT_FOUND = 2
 # so a fork can use `ltvm fetch` / `ltvm publish` without editing
 # source.
 GITHUB_REPO = os.environ.get(
-    "LTVM_GITHUB_REPO", "lustre-tools/lustre-test-vms-v2"
+    "LTVM_GITHUB_REPO", "lustre-tools/lustre-test-vms"
 )
 
 

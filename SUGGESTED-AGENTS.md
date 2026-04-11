@@ -2,14 +2,14 @@
 
 Copy/adapt these sections into your project's CLAUDE.md
 or AGENTS.md. Replace paths like `~/lustre-release` and
-`~/lustre-test-vms-v2` with your actual locations.
+`~/lustre-test-vms` with your actual locations.
 
 ## Building
 
 ### Quick Start (download pre-built artifacts)
 
 ```bash
-cd ~/lustre-test-vms-v2
+cd ~/lustre-test-vms
 
 # Download pre-built kernel + image + Lustre (~1.4 GB)
 ./ltvm fetch rocky9 --url <tarball-url>
@@ -29,7 +29,7 @@ mounted Lustre filesystem.
 ### Building from Scratch
 
 ```bash
-cd ~/lustre-test-vms-v2
+cd ~/lustre-test-vms
 
 # Build container + kernel + image (~45 min first time)
 ./ltvm build-all rocky9
@@ -71,7 +71,7 @@ build container (cross-OS capable). The container has
 the correct GCC and Whamcloud-patched e2fsprogs.
 
 ```bash
-cd ~/lustre-test-vms-v2
+cd ~/lustre-test-vms
 
 # Build Lustre against the default kernel
 ./ltvm build-lustre rocky9 \

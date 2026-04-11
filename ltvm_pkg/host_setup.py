@@ -304,7 +304,7 @@ def _install_qemu_path_profile() -> None:
 
 # GitHub release tag and asset names for pre-built QEMU binaries
 _QEMU_RELEASE_TAG = f"qemu-{QEMU_VERSION}"
-_QEMU_GITHUB_REPO = "lustre-tools/lustre-test-vms-v2"
+_QEMU_GITHUB_REPO = "lustre-tools/lustre-test-vms"
 
 
 def _fetch_prebuilt_qemu(host: HostInfo) -> bool:

@@ -1,4 +1,4 @@
-# lustre-test-vms-v2
+# lustre-test-vms
 
 Build infrastructure for Lustre development and testing using QEMU microVMs.
 
