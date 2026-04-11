@@ -1,8 +1,92 @@
 # lustre-test-vms -- Agent and Developer Reference
 
-Build infrastructure for Lustre development/testing
+Build infrastructure for Lustre development/testing using
 QEMU microVMs. Produces three cacheable artifacts per
 target OS: build container, kernel, and VM base image.
+
+## LLM: Getting the User Set Up
+
+If the user has just opened this repo, walk them through
+installation proactively. Don't wait for them to ask.
+
+### Step 1 — Install ltvm
+
+Check whether it's already installed:
+
+```bash
+ltvm doctor
+```
+
+If not found, install it:
+
+```bash
+pip install -e .
+# or, if uv is available:
+uv pip install -e .
+```
+
+Then set up the host (installs QEMU, bridge, SSH config).
+Some steps require sudo — run it and handle prompts:
+
+```bash
+ltvm install
+```
+
+### Step 2 — Fetch pre-built artifacts
+
+Unless the user wants to build from source, fetch is
+faster (downloads ~1.4 GB: kernel + VM image):
+
+```bash
+ltvm fetch rocky9
+```
+
+Verify everything landed:
+
+```bash
+ltvm build-status
+```
+
+If they want to build from source instead (e.g. they have
+a custom kernel config), skip fetch and do:
+
+```bash
+ltvm build-all rocky9 --lustre-tree ~/lustre-release
+```
+
+### Step 3 — Find out where their Lustre tree lives
+
+Ask the user: **"Where is your Lustre source checkout?"**
+You'll need that path in the next step.
+
+### Step 4 — Set up their workspace CLAUDE.md
+
+This repo ships a ready-made agent config template at
+`SUGGESTED-AGENTS.md`. Offer to append it to the user's
+Lustre workspace CLAUDE.md (or AGENTS.md), with the
+placeholder paths replaced with their actual locations:
+
+```bash
+# Preview what will be added:
+cat SUGGESTED-AGENTS.md
+```
+
+Before writing, replace:
+- `~/lustre-test-vms` → actual path to this repo
+- `~/lustre-release`  → actual path to their Lustre tree
+
+Then append to their workspace config:
+
+```bash
+cat SUGGESTED-AGENTS.md >> ~/lustre-release/CLAUDE.md
+# or AGENTS.md, whichever they use
+```
+
+Once that's done, when the user opens their Lustre
+workspace, any LLM reading their CLAUDE.md will know
+exactly how to build, deploy, and test Lustre using ltvm.
+
+---
 
 ## Repository Layout
 
