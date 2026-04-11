@@ -16,10 +16,14 @@ from pathlib import Path
 
 # Self-bootstrap into the project venv when invoked via system Python
 # (e.g. `sudo ltvm`, which strips PATH and bypasses any active venv).
-# We resolve symlinks so /usr/local/bin/ltvm -> /path/to/repo/ltvm works.
+# We resolve symlinks on __file__ so /usr/local/bin/ltvm -> repo/ltvm works,
+# but compare _VENV_PY against sys.executable as literal strings -- uv venvs
+# symlink .venv/bin/python to /usr/bin/python3, so .resolve() would make
+# them equal even though running via the venv symlink path causes Python
+# to use the venv's site-packages.
 _REPO_ROOT = Path(__file__).resolve().parent
 _VENV_PY = _REPO_ROOT / ".venv" / "bin" / "python"
-if _VENV_PY.exists() and Path(sys.executable).resolve() != _VENV_PY.resolve():
+if _VENV_PY.exists() and str(_VENV_PY) != sys.executable:
     try:
         import yaml  # noqa: F401
     except ImportError:
