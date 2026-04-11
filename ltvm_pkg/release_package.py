@@ -6,13 +6,20 @@ VMs, build Lustre, and optionally deploy pre-built Lustre:
   - kernels/<kernel-name>/vmlinuz
   - kernels/<kernel-name>/modules/
   - kernels/<kernel-name>/build-tree/
+  - kernels/<kernel-name>/lustre-artifacts/ (optional: prebuilt Lustre
+    modules + binaries built against this kernel; output of
+    `ltvm build-lustre` snapshotted via `snapshot_lustre`)
   - image.ext4 (VM rootfs)
-  - kernels/<kernel-name>/lustre/ (optional: pre-built Lustre)
   - meta.json (version, build info)
 
 Multiple kernels are supported under output/<target>/kernels/.
 Users can replace the kernel later with `ltvm build-kernel`
 if they need custom patches or a different version.
+
+Lustre prebuilds live UNDER each kernel because Lustre modules
+are kernel-version-specific (vermagic check enforces this).  A
+single target may carry several kernels, each paired with its
+own lustre-artifacts/ directory.
 """
 
 from __future__ import annotations
@@ -107,10 +114,11 @@ def _find_artifacts(
             f"Run 'ltvm build-all <target>' to build them"
         )
 
-    # Lustre is optional -- lives under the kernel directory
-    lustre_dir = kernel_dir / "lustre"
-    if lustre_dir.is_dir():
-        required["lustre"] = lustre_dir
+    # Prebuilt Lustre is optional -- lives under the kernel directory
+    # because Lustre modules are kernel-version-specific.
+    lustre_artifacts_dir = kernel_dir / "lustre-artifacts"
+    if lustre_artifacts_dir.is_dir():
+        required["lustre-artifacts"] = lustre_artifacts_dir
 
     return required
 
@@ -124,8 +132,8 @@ def snapshot_lustre(
 
     The staging tree at output/<target>/lustre/staging/ has the DESTDIR
     install layout (usr/, lib/modules/, sbin/) that `ltvm deploy` streams
-    into a VM.  We rsync it under kernels/<kernel>/lustre/ so the tarball
-    pairs each kernel with its matching pre-built Lustre.
+    into a VM.  We rsync it under kernels/<kernel>/lustre-artifacts/ so the
+    tarball pairs each kernel with its matching prebuilt Lustre.
 
     `lustre_tree` is informational (used for the .ltvm-snapshot.json
     commit hash); the actual content comes from the staging directory.
@@ -174,7 +182,7 @@ def snapshot_lustre(
                     f"  Rebuild: ltvm build-lustre <target> --force"
                 )
 
-    dest = kernel_dir / "lustre"
+    dest = kernel_dir / "lustre-artifacts"
     print(f"  Snapshotting Lustre staging tree to {dest}")
     print(f"    Staging: {staging_src}")
     print(f"    Source:  {lustre_tree}")
@@ -329,15 +337,17 @@ def package_target(
     print(f"  Packaging {target_name} (kernel={kernel_name}, arch={arch}) -> {tarball.name}")
     print(f"    Kernel: {artifacts['vmlinux']}")
     print(f"    Image:  {artifacts['image']}")
-    if "lustre" in artifacts:
-        print(f"    Lustre: {artifacts['lustre']}")
+    if "lustre-artifacts" in artifacts:
+        print(f"    Lustre: {artifacts['lustre-artifacts']}")
     size_mb = tarball.stat().st_size / (1024 * 1024)
     print(f"    Size: {size_mb:.0f} MB")
 
     # Read lustre commit from snapshot metadata if present
     lustre_commit = None
-    if "lustre" in artifacts:
-        snap_meta_data = load_meta_safe(artifacts["lustre"] / ".ltvm-snapshot.json")
+    if "lustre-artifacts" in artifacts:
+        snap_meta_data = load_meta_safe(
+            artifacts["lustre-artifacts"] / ".ltvm-snapshot.json"
+        )
         if snap_meta_data is not None:
             lustre_commit = snap_meta_data.get("lustre_commit")
 
@@ -348,7 +358,7 @@ def package_target(
         "kernel_version": version,
         "arch": arch,
         "contents": list(artifacts.keys()),
-        "has_lustre": "lustre" in artifacts,
+        "has_lustre_artifacts": "lustre-artifacts" in artifacts,
         "lustre_commit": lustre_commit,
         "size_bytes": tarball.stat().st_size,
     }
@@ -441,8 +451,8 @@ def fetch_target(
     # Verify the artifacts are there (auto-detect kernel)
     artifacts = _find_artifacts(target_dir)
     print(f"    Artifacts verified in {target_dir}")
-    if "lustre" in artifacts:
-        print("    Includes pre-built Lustre")
+    if "lustre-artifacts" in artifacts:
+        print("    Includes prebuilt Lustre")
 
     return target_dir
 
@@ -516,9 +526,9 @@ def install_target(
 
     installed["image"] = str(image_dest)
 
-    # Note Lustre availability
-    if "lustre" in artifacts:
-        installed["lustre"] = str(artifacts["lustre"])
+    # Note prebuilt Lustre availability
+    if "lustre-artifacts" in artifacts:
+        installed["lustre-artifacts"] = str(artifacts["lustre-artifacts"])
 
     print("  Installed:")
     for k, v in installed.items():

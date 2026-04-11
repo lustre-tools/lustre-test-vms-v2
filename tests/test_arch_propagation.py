@@ -254,7 +254,8 @@ class TestDeployBundledSnapshotPath:
             tc = TargetConfig("rocky9", arch="aarch64")
         except (ValueError, FileNotFoundError):
             pytest.skip("rocky9 target not available in this checkout")
-        # The bundled snapshot lookup is `tc.output_dir / "kernels" / k / "lustre"`
+        # The bundled snapshot lookup is
+        # `tc.output_dir / "kernels" / k / "lustre-artifacts"`.
         # The key property: tc.output_dir is arch-qualified for aarch64.
         assert "aarch64" in tc.output_dir.parts
 

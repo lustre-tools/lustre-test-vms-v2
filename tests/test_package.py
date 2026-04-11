@@ -94,7 +94,7 @@ def _setup_artifacts(
             path.touch()
 
     if with_lustre:
-        (kdir / "lustre").mkdir()
+        (kdir / "lustre-artifacts").mkdir()
 
     return tmp_path
 
@@ -112,12 +112,12 @@ class TestFindArtifacts:
     def test_with_lustre(self, tmp_path: Path) -> None:
         out = _setup_artifacts(tmp_path, with_lustre=True)
         arts = _find_artifacts(out, kernel="test-kernel")
-        assert "lustre" in arts
+        assert "lustre-artifacts" in arts
 
     def test_without_lustre(self, tmp_path: Path) -> None:
         out = _setup_artifacts(tmp_path)
         arts = _find_artifacts(out, kernel="test-kernel")
-        assert "lustre" not in arts
+        assert "lustre-artifacts" not in arts
 
     def test_missing_vmlinux(self, tmp_path: Path) -> None:
         out = _setup_artifacts(tmp_path, missing=["vmlinux"])
@@ -219,7 +219,7 @@ class TestSnapshotLustre:
             (ko_dir / "lustre.ko").write_text("fake ko")
         else:
             staging.mkdir(parents=True)
-        dest = kdir / "lustre"
+        dest = kdir / "lustre-artifacts"
         return tree, output_dir, kdir, dest
 
     def test_missing_staging_raises(self, tmp_path: Path) -> None:
@@ -259,9 +259,9 @@ class TestSnapshotLustre:
         assert len(rsync_calls) == 1
         args = rsync_calls[0][0][0]
         assert str(staging_src) + "/" in args
-        assert str(kdir / "lustre") + "/" in args
+        assert str(kdir / "lustre-artifacts") + "/" in args
 
-        assert result == kdir / "lustre"
+        assert result == kdir / "lustre-artifacts"
 
     def test_snapshot_json_written(self, tmp_path: Path) -> None:
         tree, output_dir, kdir, dest = self._setup(tmp_path)
@@ -311,7 +311,7 @@ def _setup_package_artifacts(
         (kdir / "meta.json").write_text(json.dumps(meta))
 
     if with_lustre:
-        (kdir / "lustre").mkdir()
+        (kdir / "lustre-artifacts").mkdir()
 
     return output_dir
 
@@ -480,7 +480,7 @@ class TestPackageTarget:
         assert manifest["kernel"] == "test-kernel"
         assert manifest["kernel_version"] == "1.0"
         assert "vmlinux" in manifest["contents"]
-        assert isinstance(manifest["has_lustre"], bool)
+        assert isinstance(manifest["has_lustre_artifacts"], bool)
         assert isinstance(manifest["size_bytes"], int)
 
     def test_dest_dir_none_lands_in_output_dir_parent(
@@ -507,7 +507,7 @@ class TestPackageTarget:
 
         assert tarball.parent == output_dir.parent
 
-    def test_manifest_has_lustre_true(self, tmp_path: Path) -> None:
+    def test_manifest_has_lustre_artifacts_true(self, tmp_path: Path) -> None:
         output_dir = _setup_package_artifacts(
             tmp_path, kernel_version="1.0", with_lustre=True
         )
@@ -532,8 +532,8 @@ class TestPackageTarget:
 
         manifest_path = tarball.with_suffix(tarball.suffix + ".json")
         manifest = json.loads(manifest_path.read_text())
-        assert manifest["has_lustre"] is True
-        assert "lustre" in manifest["contents"]
+        assert manifest["has_lustre_artifacts"] is True
+        assert "lustre-artifacts" in manifest["contents"]
 
 
 # ---------------------------------------------------------------------------
@@ -559,7 +559,7 @@ class TestInstallTarget:
         idir.mkdir()
         (idir / "base.ext4").touch()
         if with_lustre:
-            (kdir / "lustre").mkdir()
+            (kdir / "lustre-artifacts").mkdir()
         return output_dir
 
     def test_returns_correct_paths(self, tmp_path: Path) -> None:
@@ -640,7 +640,7 @@ class TestInstallTarget:
         ln_calls = [c for c in calls_made if "ln" in c]
         assert len(ln_calls) == 0
 
-    def test_lustre_key_present_when_lustre_artifact(
+    def test_lustre_artifacts_key_present(
         self, tmp_path: Path
     ) -> None:
         output_dir = self._make_output_dir(tmp_path, with_lustre=True)
@@ -656,9 +656,9 @@ class TestInstallTarget:
                 image_dir=image_dir,
             )
 
-        assert "lustre" in result
+        assert "lustre-artifacts" in result
 
-    def test_no_lustre_key_without_lustre_artifact(
+    def test_no_lustre_artifacts_key_without_lustre_artifact(
         self, tmp_path: Path
     ) -> None:
         output_dir = self._make_output_dir(tmp_path, with_lustre=False)
@@ -674,4 +674,4 @@ class TestInstallTarget:
                 image_dir=image_dir,
             )
 
-        assert "lustre" not in result
+        assert "lustre-artifacts" not in result

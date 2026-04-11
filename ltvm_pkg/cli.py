@@ -1249,7 +1249,9 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         # ltvm_root/output/<target>/ path so the bundled-snapshot lookup
         # honors LTVM_ROOT and the /usr/local/bin/ltvm symlink resolution
         # AND finds the correct arch-qualified subdirectory.
-        packaged = tc.output_dir / "kernels" / resolved_kernel / "lustre"
+        packaged = (
+            tc.output_dir / "kernels" / resolved_kernel / "lustre-artifacts"
+        )
         # A bundled snapshot is identified by the .ltvm-snapshot.json marker
         # written by snapshot_lustre.  It already has DESTDIR layout
         # (usr/, lib/modules/), so we can deploy it directly without
