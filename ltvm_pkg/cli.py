@@ -150,10 +150,20 @@ def _container_status(target_config: TargetConfig) -> dict[str, Any]:
 
 def _artifact_label(status_dict: dict[str, Any]) -> str:
     """Produce a human label like 'current', 'stale (config changed)',
-    or 'not built'."""
+    or 'not built'.
+
+    `stale` may be None for kernel artifacts when called from cmd_status,
+    which has no Lustre tree on hand to recompute the round-17
+    Lustre-inputs hash -- in that case we can't honestly say whether the
+    cached vmlinuz is stale, so we render "built (?)" rather than lying
+    in either direction.
+    """
     if not status_dict.get("built", False):
         return "not built"
-    if status_dict.get("stale", False):
+    stale = status_dict.get("stale", False)
+    if stale is None:
+        return "built (?)"
+    if stale:
         return "stale"
     return "current"
 
@@ -505,27 +515,76 @@ def cmd_package(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------
 
 
-def _gh_api(endpoint: str) -> dict:
-    """Call GitHub API and return parsed JSON."""
-    api = f"https://api.github.com/repos/{GITHUB_REPO}/{endpoint}"
-    r = subprocess.run(
-        ["curl", "-fsSL", "--max-time", "30", api],
-        capture_output=True, text=True, timeout=35,
-    )
-    if r.returncode != 0:
-        raise RuntimeError(
-            f"GitHub API failed (rc={r.returncode}): {api}\n  {r.stderr.strip()}"
+def _gh_api(endpoint: str) -> dict | list:
+    """Call GitHub API and return parsed JSON.
+
+    For list endpoints (e.g. "releases"), follows the Link: rel="next"
+    pagination header so callers see the full result set.  GitHub's
+    default per_page is 30; we ask for 100 to minimize round trips.
+    Without this, anything past the first 30 releases vanished from
+    `ltvm fetch --list` and produced "no release found" for older
+    targets.
+    """
+    sep = "&" if "?" in endpoint else "?"
+    url = f"https://api.github.com/repos/{GITHUB_REPO}/{endpoint}{sep}per_page=100"
+    aggregated: list = []
+    first_result: dict | list | None = None
+
+    while url:
+        # -D - dumps headers to stdout, then \r\n\r\n separates headers from body.
+        r = subprocess.run(
+            ["curl", "-fsSL", "--max-time", "30", "-D", "-", url],
+            capture_output=True, text=True, timeout=35,
         )
-    try:
-        return json.loads(r.stdout)
-    except json.JSONDecodeError as e:
-        # GitHub occasionally serves an HTML status/incident page or a
-        # rate-limit body for a 200 response.  Without this guard the
-        # user gets a Python traceback instead of an actionable error.
-        snippet = r.stdout[:200].replace("\n", " ")
-        raise RuntimeError(
-            f"GitHub API returned non-JSON: {api}\n  {e}\n  body: {snippet}"
-        )
+        if r.returncode != 0:
+            raise RuntimeError(
+                f"GitHub API failed (rc={r.returncode}): {url}\n  {r.stderr.strip()}"
+            )
+        # Split on the first blank line: headers above, body below.
+        # curl -D - prints all headers (including any redirects) before
+        # the body, separated by \r\n\r\n; rsplit takes the LAST split
+        # so we keep the final response only.
+        headers, _, body = r.stdout.rpartition("\r\n\r\n")
+        try:
+            data = json.loads(body)
+        except json.JSONDecodeError as e:
+            snippet = body[:200].replace("\n", " ")
+            raise RuntimeError(
+                f"GitHub API returned non-JSON: {url}\n  {e}\n  body: {snippet}"
+            )
+
+        if first_result is None:
+            first_result = data
+        if isinstance(data, list):
+            aggregated.extend(data)
+        else:
+            # Non-list endpoint -- pagination doesn't apply, return as-is.
+            return data
+
+        url = _gh_next_link(headers)
+
+    return aggregated if isinstance(first_result, list) else (first_result or {})
+
+
+def _gh_next_link(headers: str) -> str | None:
+    """Extract the rel="next" URL from a Link header, or None.
+
+    Link header looks like:
+        Link: <https://api.github.com/...?page=2>; rel="next", <...>; rel="last"
+    """
+    for line in headers.splitlines():
+        if not line.lower().startswith("link:"):
+            continue
+        # Each comma-separated entry: <URL>; rel="..."
+        for entry in line[5:].split(","):
+            entry = entry.strip()
+            if 'rel="next"' not in entry:
+                continue
+            lt = entry.find("<")
+            gt = entry.find(">")
+            if lt != -1 and gt != -1 and gt > lt:
+                return entry[lt + 1 : gt]
+    return None
 
 
 def _find_release_url(
@@ -1224,10 +1283,25 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             )
 
     def _staging_is_fresh(staging: Path, src: Path) -> bool:
-        """Check if the staging dir is newer than all source files."""
+        """Check if the staging dir is newer than all source files.
+
+        Uses an explicit `.ltvm-staging-stamp` file written at the end
+        of a successful build_lustre run as the reference mtime, NOT
+        the staging dir's own mtime: directory mtime only changes when
+        entries are added/removed in that exact directory, so an
+        in-place rewrite of an existing .ko file under
+        lib/modules/.../extra/ leaves the top-level staging mtime
+        unchanged and the freshness check would lie.
+        """
         if not staging.is_dir():
             return False
         if not any(staging.rglob("*.ko")):
+            return False
+        stamp = staging / ".ltvm-staging-stamp"
+        if not stamp.is_file():
+            # Pre-stamp builds (or a build that crashed before writing
+            # the stamp): treat as stale so we rebuild rather than
+            # silently skip.
             return False
         # Staging is outside the source tree so the find exclusions are
         # simpler -- just skip build artifacts and VCS dirs.
@@ -1252,7 +1326,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 "-o", "-name", "config.status",
                 "-o", "-name", ".ltvm-*",
                 ")", "-prune", "-o",
-                "-newer", str(staging), "-print", "-quit",
+                "-newer", str(stamp), "-print", "-quit",
             ],
             capture_output=True, text=True,
         )

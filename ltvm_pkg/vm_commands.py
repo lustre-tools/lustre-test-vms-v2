@@ -1090,6 +1090,33 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
         die(f"snapshot failed: {snapshot_err}")
 
 
+def _parse_snapshot_tags(qemu_img_output: str) -> set[str]:
+    """Extract the TAG column from `qemu-img snapshot -l` output.
+
+    Header looks like:
+        Snapshot list:
+        ID    TAG    VM SIZE   DATE    VM CLOCK   ICOUNT
+        1     foo    0 B  ...
+
+    We skip the first two lines and pull the second whitespace-separated
+    field from each remaining row.  Returns an empty set if the format
+    isn't recognized.
+    """
+    tags: set[str] = set()
+    lines = qemu_img_output.splitlines()
+    in_table = False
+    for line in lines:
+        if not in_table:
+            # The header row contains "TAG" -- next lines are data rows
+            if "TAG" in line and "ID" in line:
+                in_table = True
+            continue
+        parts = line.split()
+        if len(parts) >= 2:
+            tags.add(parts[1])
+    return tags
+
+
 def cmd_restore(args: argparse.Namespace) -> None:
     vm = VMInfo.load(args.name)
 
@@ -1101,9 +1128,14 @@ def cmd_restore(args: argparse.Namespace) -> None:
         )
         return
 
-    # Verify the tag exists before stopping the VM.
+    # Verify the tag exists before stopping the VM.  Parse the
+    # `qemu-img snapshot -l` table and check the TAG column exactly,
+    # not via substring -- a substring check would falsely accept any
+    # string that happens to appear in the table (an integer matching
+    # an ID column, a date fragment, the literal "Snapshot list" header).
     check = run([QEMU_IMG, "snapshot", "-l", "-U", str(vm.overlay_path)])
-    if args.tag not in (check.stdout or ""):
+    tags = _parse_snapshot_tags(check.stdout or "")
+    if args.tag not in tags:
         die(f"restore failed: snapshot '{args.tag}' not found")
 
     was_running = is_running(vm)

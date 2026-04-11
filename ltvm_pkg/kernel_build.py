@@ -704,15 +704,19 @@ def kernel_status(
     meta = json.loads(meta_file.read_text())
     # When the caller has the Lustre-inputs hash, use it -- this is the
     # accurate staleness check from kernel_build's early-return paths.
-    # Otherwise (cmd_status), trust meta.json: build success means the
-    # artifact is consistent with whatever Lustre tree it was built
-    # against, and we can't say more without that tree on hand.
+    # Otherwise (cmd_status), we cannot honestly compute staleness
+    # without the Lustre tree on hand: the round 17 input_hash now
+    # depends on per-patch bytes that target_config can't see.  Return
+    # a tristate (built=True, stale=None) so callers can show "?"
+    # instead of either always-stale (round 17 regression) or
+    # always-not-stale (round 18 over-correction).
+    stale: bool | None
     if extra_hash:
         stale = target_config.is_stale(
             "kernel", kernel=resolved, extra_hash=extra_hash
         )
     else:
-        stale = False
+        stale = None
     return {
         "built": True,
         "stale": stale,

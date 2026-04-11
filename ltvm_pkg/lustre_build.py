@@ -406,6 +406,13 @@ fi""")
     if legacy.exists():
         legacy.unlink()
 
+    # Drop a build stamp at the staging root.  cmd_deploy uses it as
+    # the reference mtime for the source-tree freshness check, so an
+    # in-place rewrite of an existing .ko file under
+    # lib/modules/.../extra/ (which doesn't update the staging dir's
+    # own mtime) still gets a fresh "newer than this" comparison.
+    (host_staging / ".ltvm-staging-stamp").write_text(kver + "\n")
+
     ko_files = list(host_staging.rglob("*.ko"))
     print(f"--- Build complete: {len(ko_files)} kernel modules")
 

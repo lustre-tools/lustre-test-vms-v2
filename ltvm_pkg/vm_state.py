@@ -65,18 +65,11 @@ def qemu_machine_for_arch(arch: str = "x86_64") -> str:
 
 DISK_SIZE_BYTES = 500 * 1024 * 1024  # 500 MiB default
 
-# ltvm repo root — find via LTVM_ROOT env var, /usr/local/bin/ltvm
-# symlink, or fall back to this file's location.
-def _find_ltvm_root() -> Path:
-    env = os.environ.get("LTVM_ROOT")
-    if env:
-        return Path(env)
-    ltvm_link = Path("/usr/local/bin/ltvm")
-    if ltvm_link.is_symlink():
-        return ltvm_link.resolve().parent
-    return Path(__file__).resolve().parent.parent
+# ltvm repo root -- single source of truth in paths.py so target_config
+# (build side) and vm_state (runtime side) cannot drift.
+from .paths import find_ltvm_root
 
-_LTVM_ROOT = _find_ltvm_root()
+_LTVM_ROOT = find_ltvm_root()
 TARGETS_YAML = _LTVM_ROOT / "targets" / "targets.yaml"
 
 

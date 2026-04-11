@@ -348,15 +348,20 @@ class TestKernelStatus:
         assert result["built"] is False
         assert result["stale"] is True
 
-    def test_meta_present_returns_not_stale_without_extra_hash(
+    def test_meta_present_returns_unknown_stale_without_extra_hash(
         self, tmp_targets: Path
     ) -> None:
-        """Without an extra_hash from the caller, kernel_status trusts
-        meta.json existence and reports not stale.  ``cmd_status`` has no
-        Lustre tree on hand to recompute the Lustre-inputs portion of
-        the staleness hash, so it can't legitimately claim staleness;
-        defaulting to not-stale prevents the always-stale regression
-        introduced by the round 17 extra_hash plumbing.
+        """Without an extra_hash from the caller, kernel_status returns
+        ``stale=None`` (tristate "unknown") instead of guessing.
+
+        ``cmd_status`` has no Lustre tree on hand to recompute the
+        round-17 Lustre-inputs portion of the staleness hash.  Round 17
+        accidentally reported every kernel as stale (the recompute
+        without extra_hash never matched the persisted hash).  Round 18
+        over-corrected to always-not-stale, which silently hid genuine
+        staleness from the status table.  The right answer is "unknown"
+        -- the CLI then renders ``built (?)`` so the user knows the
+        check was inconclusive.
         """
         cfg = _make_config(tmp_targets)
         kernel_dir = cfg.kernel_output_dir()
@@ -369,7 +374,7 @@ class TestKernelStatus:
         (kernel_dir / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
         result = kernel_status(cfg)
         assert result["built"] is True
-        assert result["stale"] is False
+        assert result["stale"] is None
         assert result["kernel_version"] == "5.14.0-503.26.1.el9_7"
 
     def test_stale_when_extra_hash_mismatches(

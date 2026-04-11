@@ -89,12 +89,18 @@ def _prebuild_tools_native(
     is injected into the emulated image build via COPY.
     """
     # We deliberately want the NATIVE (host-arch) build container, not
-    # the cross-compile one.  The native tag has no arch suffix; the
-    # cross-compile tag does.  We hardcode the unsuffixed form rather
-    # than calling kernel_build._ensure_container_image (which would
-    # arch-qualify based on target_config.arch).
+    # the cross-compile one.  Build the tag from the *host* arch, not
+    # an "unsuffixed == native" assumption: an aarch64 host has its
+    # native container tagged ltvm-build-<name>-aarch64 (created by
+    # _ensure_container_image with default_arch=x86_64), and the
+    # unsuffixed tag does not exist there.
+    import platform as _platform
     arch = target_config.arch
-    build_tag = f"ltvm-build-{target_config.name}"
+    host_machine = _platform.machine()
+    if host_machine in ("x86_64", "amd64"):
+        build_tag = f"ltvm-build-{target_config.name}"
+    else:
+        build_tag = f"ltvm-build-{target_config.name}-{host_machine}"
 
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -308,7 +314,12 @@ def build_image(target_config: TargetConfig, force: bool = False) -> Path:
                         ["cp", "-a", str(staging_mods) + "/.", str(mod_dest) + "/"],
                         check=True,
                     )
-                lines.append("COPY usr/ /usr/")
+                # Only emit COPY usr/ when we actually populated it.
+                # has_lustre is True when staging has usr/ OR lib/modules,
+                # so a modules-only staging would otherwise emit a COPY
+                # of a non-existent directory and fail the podman build.
+                if (inject_dir / "usr").is_dir():
+                    lines.append("COPY usr/ /usr/")
             # Emit COPY modules/ unconditionally if we ended up with any
             # modules to inject -- previously this was gated on has_modules,
             # so a Lustre-only inject (has_lustre but no kernel modules dir)

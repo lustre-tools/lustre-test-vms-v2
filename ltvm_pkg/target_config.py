@@ -15,23 +15,9 @@ from typing import Any, TypedDict
 
 import yaml
 
-def _find_repo_root() -> Path:
-    """Resolve the ltvm repo root.
+from .paths import find_ltvm_root
 
-    LTVM_ROOT env var > /usr/local/bin/ltvm symlink target's parent >
-    this file's grandparent.  Must agree with vm_state._find_ltvm_root
-    so that build outputs land where the runtime later reads them.
-    """
-    env = os.environ.get("LTVM_ROOT")
-    if env:
-        return Path(env)
-    ltvm_link = Path("/usr/local/bin/ltvm")
-    if ltvm_link.is_symlink():
-        return ltvm_link.resolve().parent
-    return Path(__file__).resolve().parent.parent
-
-
-REPO_ROOT = _find_repo_root()
+REPO_ROOT = find_ltvm_root()
 TARGETS_DIR = REPO_ROOT / "targets"
 OUTPUT_DIR = REPO_ROOT / "output"
 TARGETS_YAML = TARGETS_DIR / "targets.yaml"
