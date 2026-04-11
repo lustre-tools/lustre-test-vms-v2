@@ -401,6 +401,51 @@ class TestDeclaredKernels:
         assert "6.1-rhel9.7" in result
 
 
+class TestLoadMetaSafe:
+    """paths.load_meta_safe tolerates corrupt/missing meta.json so a
+    crashed build can't brick every subsequent status/build command."""
+
+    def test_missing_returns_none(self, tmp_path: Path) -> None:
+        from ltvm_pkg.paths import load_meta_safe
+        assert load_meta_safe(tmp_path / "nope.json") is None
+
+    def test_corrupt_returns_none(self, tmp_path: Path) -> None:
+        from ltvm_pkg.paths import load_meta_safe
+        bad = tmp_path / "bad.json"
+        bad.write_text("{not valid json")
+        assert load_meta_safe(bad) is None
+
+    def test_truncated_returns_none(self, tmp_path: Path) -> None:
+        """A common failure mode is a build that died mid-write,
+        leaving an empty file."""
+        from ltvm_pkg.paths import load_meta_safe
+        empty = tmp_path / "empty.json"
+        empty.write_text("")
+        assert load_meta_safe(empty) is None
+
+    def test_valid_returns_dict(self, tmp_path: Path) -> None:
+        from ltvm_pkg.paths import load_meta_safe
+        good = tmp_path / "good.json"
+        good.write_text('{"input_hash": "abc", "version": "1.0"}')
+        result = load_meta_safe(good)
+        assert result == {"input_hash": "abc", "version": "1.0"}
+
+
+class TestIsStaleCorruption:
+    """is_stale must treat corrupt meta.json as stale so the next
+    build can overwrite it instead of crashing every command."""
+
+    def test_corrupt_meta_treated_as_stale(self, tmp_targets: Path) -> None:
+        tc = _make_config(tmp_targets)
+        tc.write_meta("container")
+        assert tc.is_stale("container") is False
+        # Corrupt the file mid-flight
+        meta_file = tmp_targets / "output" / "rocky9" / "container" / "meta.json"
+        meta_file.write_text("{garbage")
+        # Must not raise
+        assert tc.is_stale("container") is True
+
+
 class TestOutputDirEnvOverride:
     def test_env_var_overrides_default(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path

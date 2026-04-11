@@ -346,26 +346,47 @@ def _fetch_prebuilt_qemu(host: HostInfo) -> bool:
             log.warning("Pre-built QEMU not available for this platform -- will build from source")
             return False
 
-        _run(["tar", "xf", str(tmpdir / asset), "-C", str(tmpdir)], check=True)
-
+        # Tarball is structured as a /opt/qemu overlay: bin/qemu-system-*,
+        # bin/qemu-img, share/qemu/<firmware>.  Extract directly into
+        # QEMU_PREFIX so firmware lands at the path QEMU was configured to
+        # look for it (--prefix=/opt/qemu => looks at /opt/qemu/share/qemu/).
         QEMU_PREFIX.mkdir(parents=True, exist_ok=True)
-        (QEMU_PREFIX / "bin").mkdir(exist_ok=True)
-        for binary in ("qemu-system-x86_64", "qemu-system-aarch64", "qemu-img"):
-            src = tmpdir / binary
-            if src.exists():
-                dst = QEMU_PREFIX / "bin" / binary
-                shutil.copy2(str(src), str(dst))
-                dst.chmod(0o755)
+        _run(
+            ["tar", "xf", str(tmpdir / asset), "-C", str(QEMU_PREFIX)],
+            check=True,
+        )
 
-        # Verify microvm support (x86_64 binary)
+        # Verify the x86_64 binary is present and supports microvm.
         qemu = QEMU_PREFIX / "bin" / "qemu-system-x86_64"
-        if qemu.exists():
-            r = _run_quiet([str(qemu), "-machine", "help"], check=False)
-            if "microvm" not in r.stdout:
-                raise RuntimeError(
-                    "Downloaded pre-built QEMU lacks microvm machine type -- "
-                    "this should not happen; the GitHub release asset may be corrupt"
-                )
+        if not qemu.exists():
+            raise RuntimeError(
+                f"Pre-built QEMU tarball is missing bin/qemu-system-x86_64 -- "
+                f"GitHub release asset {asset} may be malformed"
+            )
+        r = _run_quiet([str(qemu), "-machine", "help"], check=False)
+        if "microvm" not in r.stdout:
+            raise RuntimeError(
+                "Downloaded pre-built QEMU lacks microvm machine type -- "
+                "this should not happen; the GitHub release asset may be corrupt"
+            )
+
+        # Verify firmware files are present.  QEMU was configured with
+        # --prefix=/opt/qemu so it looks for firmware at share/qemu/.  Without
+        # these files, microvm boots fail with cryptic "could not load PC
+        # BIOS 'bios-microvm.bin'" errors at runtime, far from the install.
+        firmware_dir = QEMU_PREFIX / "share" / "qemu"
+        required_firmware = ("bios-microvm.bin", "linuxboot_dma.bin")
+        missing = [
+            f for f in required_firmware if not (firmware_dir / f).exists()
+        ]
+        if missing:
+            raise RuntimeError(
+                f"Pre-built QEMU tarball is missing firmware files: "
+                f"{', '.join(missing)} (expected under {firmware_dir}). "
+                f"The GitHub release asset {asset} was built without running "
+                f"`make install` -- rebuild and re-upload using the updated "
+                f"build instructions in CLAUDE.md."
+            )
 
         log.info("Installed pre-built QEMU %s to %s", QEMU_VERSION, QEMU_PREFIX)
         return True

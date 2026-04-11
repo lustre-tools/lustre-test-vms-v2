@@ -11,6 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .vm_net import run_ssh
 from .vm_state import (
     EXIT_ERROR,
     EXIT_NOT_FOUND,
@@ -19,7 +20,6 @@ from .vm_state import (
     VMNotFound,
     lustre_libdir,
 )
-from .vm_net import run_ssh
 
 
 def deploy_to_vm(
@@ -52,9 +52,14 @@ def deploy_to_vm(
         f"root@{shlex.quote(vm.ip)} "
         f"'tar xf - -C / --keep-directory-symlink --no-same-owner'"
     )
-    r = subprocess.run(
-        ["bash", "-c", tar_cmd], capture_output=True, text=True, timeout=120
-    )
+    try:
+        r = subprocess.run(
+            ["bash", "-c", tar_cmd], capture_output=True, text=True, timeout=120
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(
+            f"tar deploy to {vm.ip} timed out after {e.timeout}s"
+        )
     if r.returncode != 0:
         output = (r.stdout or "") + (r.stderr or "")
         raise RuntimeError(f"tar deploy failed: {output.strip()}")

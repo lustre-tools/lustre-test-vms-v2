@@ -8,7 +8,6 @@ a full build tree (for Lustre module builds), and meta.json.
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import os
 import re
@@ -19,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
+from .paths import load_meta_safe
 from .target_config import TARGETS_DIR
 
 if TYPE_CHECKING:
@@ -148,7 +148,7 @@ def resolve_lustre_files(
 def lustre_inputs_hash(
     lustre_tree: str | Path,
     lustre_target: str,
-    lustre_files: "LustreFiles",
+    lustre_files: LustreFiles,
 ) -> bytes:
     """Hash the Lustre-side inputs that affect a kernel build.
 
@@ -695,13 +695,13 @@ def kernel_status(
     """
     resolved = kernel or target_config.lustre_target
     meta_file = target_config.kernel_output_dir(kernel=resolved) / "meta.json"
-    if not meta_file.exists():
+    meta = load_meta_safe(meta_file)
+    if meta is None:
         return {
             "built": False,
             "stale": True,
         }
 
-    meta = json.loads(meta_file.read_text())
     # When the caller has the Lustre-inputs hash, use it -- this is the
     # accurate staleness check from kernel_build's early-return paths.
     # Otherwise (cmd_status), we cannot honestly compute staleness

@@ -71,6 +71,17 @@ class TestParseNodeSpec:
         with pytest.raises(SystemExit):
             vm_cluster.parse_node_spec("mds:bad name:1")
 
+    def test_non_integer_disk_count_dies_cleanly(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A typo like 'mds:foo:abc' must produce a clean error
+        message via die(), not a raw ValueError traceback."""
+        with pytest.raises(SystemExit):
+            vm_cluster.parse_node_spec("mds:co1-mds:abc")
+        err = capsys.readouterr().err
+        assert "abc" in err
+        assert "integer" in err.lower() or "disk" in err.lower()
+
     def test_role_case_insensitive(self) -> None:
         """Roles are lowercased before comparison."""
         n = vm_cluster.parse_node_spec("MDS:co1-mds:2")

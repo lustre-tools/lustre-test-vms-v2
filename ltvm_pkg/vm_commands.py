@@ -12,6 +12,19 @@ import time
 from pathlib import Path
 from typing import Any
 
+from .paths import load_meta_safe
+from .qemu_run import die, is_running, kill_qemu, launch_qemu, run
+from .vm_net import (
+    _real_user_ssh_dir,
+    alloc_ip,
+    deploy_ssh_key,
+    mac_for_name,
+    register_ssh_name,
+    run_ssh,
+    tap_for_name,
+    unregister_ssh_name,
+    wait_for_ssh,
+)
 from .vm_state import (
     DEFAULT_TARGET,
     DISK_SIZE_BYTES,
@@ -30,18 +43,6 @@ from .vm_state import (
     VMNotFound,
     resolve_os_artifacts,
 )
-from .vm_net import (
-    _real_user_ssh_dir,
-    alloc_ip,
-    deploy_ssh_key,
-    mac_for_name,
-    register_ssh_name,
-    run_ssh,
-    tap_for_name,
-    unregister_ssh_name,
-    wait_for_ssh,
-)
-from .qemu_run import die, is_running, kill_qemu, launch_qemu, run
 
 
 def _seed_kdump_boot(vm: VMInfo) -> None:
@@ -297,8 +298,9 @@ def cmd_create(args: argparse.Namespace) -> None:
     # Read kernel version from meta.json next to the kernel binary
     kver = ""
     kernel_meta = Path(kernel).parent / "meta.json"
-    if kernel_meta.exists():
-        kver = json.loads(kernel_meta.read_text()).get("kernel_version", "")
+    meta = load_meta_safe(kernel_meta)
+    if meta is not None:
+        kver = meta.get("kernel_version", "")
 
     disk_size = _parse_disk_size(getattr(args, "disk_size", None))
 
@@ -819,26 +821,55 @@ def _qmp_nmi(qmp_path: Path) -> None:
     """Send inject-nmi via QMP Unix socket."""
     import socket as _socket
 
+    def _recv_json_line(sock: _socket.socket, buf: bytearray) -> dict[str, Any]:
+        """Read until a newline-terminated JSON object is available.
+
+        QMP frames responses as newline-delimited JSON.  A single recv()
+        is unsafe: the response may be split across reads, multiple
+        responses (or async events) may arrive in one read, or the read
+        may include only a partial frame.  Loop until we have a full
+        line, return the first JSON object, and leave any extra bytes
+        in `buf` for the next call.
+        """
+        while b"\n" not in buf:
+            chunk = sock.recv(4096)
+            if not chunk:
+                raise RuntimeError("QMP socket closed mid-response")
+            buf.extend(chunk)
+        line, _, rest = bytes(buf).partition(b"\n")
+        buf.clear()
+        buf.extend(rest)
+        return json.loads(line)  # type: ignore[no-any-return]
+
     with _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM) as s:
         s.settimeout(5)  # apply to connect() too, not just recv()
         s.connect(str(qmp_path))
         # Drain the greeting (bounded to avoid unbounded growth from
         # a misbehaving QEMU that never sends "QMP").
-        data = b""
-        while b"QMP" not in data:
+        data = bytearray()
+        while b"QMP" not in data or b"\n" not in data:
             chunk = s.recv(4096)
             if not chunk:
                 raise RuntimeError("QMP socket closed before greeting")
-            data += chunk
+            data.extend(chunk)
             if len(data) > 65536:
                 raise RuntimeError("QMP greeting exceeded 64K, giving up")
-        # Negotiate capabilities
-        s.sendall(json.dumps({"execute": "qmp_capabilities"}).encode())
-        s.recv(4096)
+        # Drop the greeting line; keep any trailing bytes for the next
+        # frame so we don't lose data spilled past the newline.
+        _, _, rest = bytes(data).partition(b"\n")
+        buf = bytearray(rest)
+        # Negotiate capabilities and read the response (one full line).
+        s.sendall(json.dumps({"execute": "qmp_capabilities"}).encode() + b"\n")
+        _recv_json_line(s, buf)
         # Inject NMI
-        s.sendall(json.dumps({"execute": "inject-nmi"}).encode())
-        resp = s.recv(4096)
-    result = json.loads(resp)
+        s.sendall(json.dumps({"execute": "inject-nmi"}).encode() + b"\n")
+        # Skip async events (e.g. NMI, RESET) until we get the response
+        # frame for our request.  QMP responses always carry "return" or
+        # "error"; events carry "event" instead.
+        while True:
+            result = _recv_json_line(s, buf)
+            if "return" in result or "error" in result:
+                break
     if "error" in result:
         raise RuntimeError(result["error"].get("desc", str(result["error"])))
 
@@ -908,13 +939,26 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
     print("finding vmcore...")
     # Support both RHEL format (/var/crash/*/vmcore) and
     # Ubuntu kdump-tools format (/var/crash/<ts>/dump.<ts>)
-    r = run_ssh(
-        vm.ip,
-        "find /var/crash -maxdepth 3 -type f"
-        r" \( -name 'vmcore' -o -name 'dump.*' \)"
-        " 2>/dev/null | xargs ls -dt 2>/dev/null | head -1",
-        timeout=10,
-    )
+    try:
+        r = run_ssh(
+            vm.ip,
+            "find /var/crash -maxdepth 3 -type f"
+            r" \( -name 'vmcore' -o -name 'dump.*' \)"
+            " 2>/dev/null | xargs ls -dt 2>/dev/null | head -1",
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as e:
+        die(
+            f"timed out after {e.timeout}s probing /var/crash on '{args.name}'",
+            EXIT_TIMEOUT,
+        )
+    if r.returncode != 0:
+        # SSH failure (host unreachable, key mismatch, etc.) -- surface
+        # the real error rather than the misleading "no vmcore found".
+        die(
+            f"failed to probe /var/crash on '{args.name}' "
+            f"(rc={r.returncode}): {(r.stderr or r.stdout or '').strip()}"
+        )
     vmcore_path = r.stdout.strip()
     if not vmcore_path:
         die("no vmcore found in /var/crash/")
@@ -1187,9 +1231,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print(f"orphan overlay: {oname} ({size}M)")
             issues += 1
             if args.fix:
-                overlay.unlink()
+                overlay.unlink(missing_ok=True)
                 for disk in OVERLAYS.glob(f"{oname}-disk*.img"):
-                    disk.unlink()
+                    disk.unlink(missing_ok=True)
                 print("  fixed: removed")
 
     # Orphan data disks (overlay was removed but disks weren't, e.g.
@@ -1208,7 +1252,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"orphan disk: {disk.name} ({size}M)")
         issues += 1
         if args.fix:
-            disk.unlink()
+            disk.unlink(missing_ok=True)
             print("  fixed: removed")
 
     # Orphan socket-side files (.pid, .log, .qmp, .info.lock) whose

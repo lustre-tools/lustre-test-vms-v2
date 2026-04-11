@@ -126,6 +126,41 @@ class TestVMInfoMetadata:
         assert loaded.kver == "5.14.0-x"
 
 
+class TestVMInfoLoadCorruption:
+    """VMInfo.load tolerates partially-truncated/hand-edited .info files
+    instead of raising ValueError on the int() conversions."""
+
+    def test_empty_pid_field_falls_back_to_default(
+        self, tmp_sockets: Path
+    ) -> None:
+        info = tmp_sockets / "broken.info"
+        info.write_text(
+            "NAME=broken\n"
+            "IP=192.168.100.99\n"
+            "PID=\n"  # truncated mid-write
+            "TAP=tap-broken\n"
+            "MAC=AA:00:00:00:00:99\n"
+        )
+        vm = VMInfo.load("broken")
+        assert vm.pid == 0
+        assert vm.name == "broken"
+
+    def test_garbage_int_field_falls_back(self, tmp_sockets: Path) -> None:
+        info = tmp_sockets / "weird.info"
+        info.write_text(
+            "NAME=weird\n"
+            "IP=192.168.100.99\n"
+            "PID=12345\n"
+            "VCPUS=not-a-number\n"
+            "MEM=4096\n"
+            "TAP=tap-weird\n"
+            "MAC=AA:00:00:00:00:98\n"
+        )
+        vm = VMInfo.load("weird")
+        assert vm.vcpus == 2  # default
+        assert vm.mem == 4096
+
+
 class TestVMInfoLoadNotFound:
     """VMNotFound raised for missing VMs."""
 

@@ -23,6 +23,8 @@ import subprocess
 import tempfile
 from pathlib import Path
 
+from .paths import load_meta_safe
+
 
 def _resolve_kernel(output_dir: Path, kernel: str | None) -> tuple[str, Path]:
     """Resolve kernel name and directory.
@@ -154,8 +156,8 @@ def snapshot_lustre(
 
     # Verify the staging modules match the target kernel
     meta_file = kernel_dir / "meta.json"
-    if meta_file.exists():
-        meta = json.loads(meta_file.read_text())
+    meta = load_meta_safe(meta_file)
+    if meta is not None:
         expected_kver = meta.get("kernel_version", "")
         if expected_kver:
             sample = ko_files[0]
@@ -266,12 +268,12 @@ def package_target(
 
     # Read version from kernel meta
     kernel_meta = kernel_dir / "meta.json"
-    if not kernel_meta.exists():
+    meta = load_meta_safe(kernel_meta)
+    if meta is None:
         raise RuntimeError(
-            f"kernel meta.json not found at {kernel_meta} -- "
+            f"kernel meta.json missing or unreadable at {kernel_meta} -- "
             f"build the kernel before packaging"
         )
-    meta = json.loads(kernel_meta.read_text())
     version = meta.get("kernel_version")
     if not version:
         raise RuntimeError(
@@ -335,9 +337,9 @@ def package_target(
     # Read lustre commit from snapshot metadata if present
     lustre_commit = None
     if "lustre" in artifacts:
-        snap_meta = artifacts["lustre"] / ".ltvm-snapshot.json"
-        if snap_meta.exists():
-            lustre_commit = json.loads(snap_meta.read_text()).get("lustre_commit")
+        snap_meta_data = load_meta_safe(artifacts["lustre"] / ".ltvm-snapshot.json")
+        if snap_meta_data is not None:
+            lustre_commit = snap_meta_data.get("lustre_commit")
 
     # Write a manifest alongside the tarball
     manifest = {
@@ -385,15 +387,20 @@ def fetch_target(
         #   --connect-timeout: fail fast if GitHub is unreachable
         #   --max-time: overall ceiling; large tarballs on slow links still
         #               need a generous value, so 10 minutes.
-        r = subprocess.run(
-            [
-                "curl", "-fSL", "--progress-bar",
-                "--connect-timeout", "15",
-                "--max-time", "600",
-                "-o", tmp_path, url,
-            ],
-            check=False,
-        )
+        try:
+            r = subprocess.run(
+                [
+                    "curl", "-fSL", "--progress-bar",
+                    "--connect-timeout", "15",
+                    "--max-time", "600",
+                    "-o", tmp_path, url,
+                ],
+                check=False,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "curl not found -- install curl or run `ltvm install`"
+            )
         if r.returncode != 0:
             raise RuntimeError(f"Download failed (rc={r.returncode}): {url}")
 
@@ -404,11 +411,16 @@ def fetch_target(
         # local tree can be replaced cleanly; --no-same-owner so files
         # land owned by the running user instead of root from the tar.
         print(f"    Extracting to {output_base}/...")
-        subprocess.run(
-            ["tar", "-xf", tmp_path, "-C", str(output_base),
-             "--overwrite", "--no-same-owner"],
-            check=True,
-        )
+        try:
+            subprocess.run(
+                ["tar", "-xf", tmp_path, "-C", str(output_base),
+                 "--overwrite", "--no-same-owner"],
+                check=True,
+            )
+        except FileNotFoundError:
+            raise RuntimeError(
+                "tar not found -- install tar or run `ltvm install`"
+            )
 
     finally:
         os.unlink(tmp_path)

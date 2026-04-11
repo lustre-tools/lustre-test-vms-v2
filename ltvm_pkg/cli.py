@@ -17,16 +17,17 @@ from pathlib import Path
 from typing import Any
 
 from ltvm_pkg import host_setup
-from ltvm_pkg.target_config import TargetConfig, list_targets
 from ltvm_pkg.deploy import deploy_to_vm, lustre_mount_vm
 from ltvm_pkg.image_build import build_image, image_status
 from ltvm_pkg.kernel_build import build_kernel, kernel_status
 from ltvm_pkg.lustre_build import build_lustre
+from ltvm_pkg.paths import load_meta_safe
 from ltvm_pkg.release_package import (
     fetch_target,
     package_target,
     snapshot_lustre,
 )
+from ltvm_pkg.target_config import TargetConfig, list_targets
 
 # Exit codes
 EXIT_OK = 0
@@ -140,10 +141,9 @@ def _load_target(
 def _container_status(target_config: TargetConfig) -> dict[str, Any]:
     """Return status dict for the build container artifact."""
     meta_file = target_config.container_output_dir() / "meta.json"
-    if not meta_file.exists():
+    meta = load_meta_safe(meta_file)
+    if meta is None:
         return {"built": False, "stale": True}
-
-    meta = json.loads(meta_file.read_text())
     stale = target_config.is_stale("container")
     return {"built": True, "stale": stale, **meta}
 
@@ -742,7 +742,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         arch_flag = f" --arch {arch}" if arch != "x86_64" else ""
         print(f"  sudo ltvm create co1-test --os {target}{arch_flag} "
               f"--vcpus 2 --mem 2048 --mdt-disks 1 --ost-disks 2")
-        print(f"  sudo ltvm deploy co1-test --mount")
+        print("  sudo ltvm deploy co1-test --mount")
 
     return EXIT_OK
 
@@ -809,22 +809,29 @@ def cmd_publish(args: argparse.Namespace) -> int:
     # fatal -- previously the return code was completely unchecked,
     # so an auth error would silently produce a confusing upload
     # failure two lines down.
-    create = subprocess.run(
-        [
-            "gh",
-            "release",
-            "create",
-            tag,
-            "--repo",
-            GITHUB_REPO,
-            "--title",
-            tag,
-            "--notes",
-            f"Pre-built artifacts for {args.target}",
-        ],
-        capture_output=True,
-        text=True,
-    )
+    try:
+        create = subprocess.run(
+            [
+                "gh",
+                "release",
+                "create",
+                tag,
+                "--repo",
+                GITHUB_REPO,
+                "--title",
+                tag,
+                "--notes",
+                f"Pre-built artifacts for {args.target}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+    except FileNotFoundError:
+        return _error(
+            "gh CLI not found",
+            use_json,
+            hint="install GitHub CLI: https://cli.github.com/",
+        )
     if create.returncode != 0:
         err = (create.stderr or "") + (create.stdout or "")
         if "already exists" not in err:
@@ -835,18 +842,25 @@ def cmd_publish(args: argparse.Namespace) -> int:
             )
 
     # Upload asset
-    r = subprocess.run(
-        [
-            "gh",
-            "release",
-            "upload",
-            tag,
-            str(tarball),
-            "--repo",
-            GITHUB_REPO,
-            "--clobber",
-        ],
-    )
+    try:
+        r = subprocess.run(
+            [
+                "gh",
+                "release",
+                "upload",
+                tag,
+                str(tarball),
+                "--repo",
+                GITHUB_REPO,
+                "--clobber",
+            ],
+        )
+    except FileNotFoundError:
+        return _error(
+            "gh CLI not found",
+            use_json,
+            hint="install GitHub CLI: https://cli.github.com/",
+        )
     if r.returncode != 0:
         return _error(
             f"Upload failed (rc={r.returncode})",
@@ -900,9 +914,16 @@ def cmd_build_shell(args: argparse.Namespace) -> int:
         return _error(f"Mount path not found: {mount_path}", use_json)
 
     # Check container image exists
-    result = subprocess.run(
-        ["podman", "image", "exists", tag], capture_output=True
-    )
+    try:
+        result = subprocess.run(
+            ["podman", "image", "exists", tag], capture_output=True
+        )
+    except FileNotFoundError:
+        return _error(
+            "podman not found",
+            use_json,
+            hint="install podman or run `ltvm install` to set up the host",
+        )
     if result.returncode != 0:
         return _error(
             f"Container image {tag} not found",
@@ -1237,7 +1258,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             bundled_snapshot = packaged
             build_path = packaged
             if not use_json:
-                print(f"  Using bundled Lustre (from ltvm fetch)")
+                print("  Using bundled Lustre (from ltvm fetch)")
         else:
             build_path = Path(".").resolve()
 
@@ -1353,7 +1374,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 use_json,
             )
         if not use_json:
-            print(f"  Userspace-only deploy (skipping kernel modules)")
+            print("  Userspace-only deploy (skipping kernel modules)")
     elif bundled_snapshot is not None:
         # Bundled snapshot: staging was either just mirrored or already
         # populated.  Don't run _staging_is_fresh -- build_path here is
@@ -1361,13 +1382,13 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         # falling through to `ltvm build-lustre --lustre-tree <snapshot>`
         # would error out with "not a Lustre source tree".
         if not use_json:
-            print(f"  Using bundled staging, skipping source build")
+            print("  Using bundled staging, skipping source build")
     else:
         staging_fresh = _staging_is_fresh(staging, build_path)
 
         if staging_fresh:
             if not use_json:
-                print(f"  Staging up to date, skipping build")
+                print("  Staging up to date, skipping build")
         else:
             build_cmd = ["ltvm", "build-lustre", target, "--lustre-tree", str(build_path)]
             # Forward the VM's actual kernel to build-lustre.  Without
@@ -1479,12 +1500,24 @@ def cmd_cluster(args: argparse.Namespace) -> int:
 
     from ltvm_pkg.vm_cluster import (
         cmd_cluster_create as _qc_create,
-        cmd_cluster_destroy as _qc_destroy,
+    )
+    from ltvm_pkg.vm_cluster import (
         cmd_cluster_deploy as _qc_deploy,
-        cmd_cluster_status as _qc_status,
+    )
+    from ltvm_pkg.vm_cluster import (
+        cmd_cluster_destroy as _qc_destroy,
+    )
+    from ltvm_pkg.vm_cluster import (
         cmd_cluster_exec as _qc_exec,
+    )
+    from ltvm_pkg.vm_cluster import (
         cmd_cluster_list as _qc_list,
+    )
+    from ltvm_pkg.vm_cluster import (
         cmd_cluster_ssh as _qc_ssh,
+    )
+    from ltvm_pkg.vm_cluster import (
+        cmd_cluster_status as _qc_status,
     )
 
     def _call(fn, ns):

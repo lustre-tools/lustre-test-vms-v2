@@ -443,7 +443,7 @@ class TestPackageTarget:
             return result
 
         with patch("subprocess.run", side_effect=mock_run):
-            with pytest.raises(RuntimeError, match="meta.json not found"):
+            with pytest.raises(RuntimeError, match="meta.json missing or unreadable"):
                 package_target(
                     "my-target",
                     output_dir,

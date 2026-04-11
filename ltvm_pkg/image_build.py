@@ -7,7 +7,6 @@ raw ext4.
 
 from __future__ import annotations
 
-import json
 import logging
 import os
 import re
@@ -20,6 +19,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from .paths import load_meta_safe
 from .target_config import TARGETS_DIR
 
 if TYPE_CHECKING:
@@ -532,9 +532,7 @@ def image_status(
             "path": None,
         }
 
-    meta = {}
-    if meta_path.exists():
-        meta = json.loads(meta_path.read_text())
+    meta = load_meta_safe(meta_path) or {}
 
     size_mb = image_path.stat().st_size / (1024 * 1024)
     stale = target_config.is_stale("image")

@@ -389,14 +389,22 @@ When reviewing or auditing this codebase, watch for:
 ## Rebuilding Pre-built QEMU Binaries
 
 Rocky Linux ships QEMU without microvm support, so we publish
-pre-built binaries to GitHub. `ltvm install` downloads these
-automatically. To rebuild:
+pre-built binaries to GitHub.  `ltvm install` downloads these
+automatically and extracts them as a `/opt/qemu` overlay.
+
+The tarball must contain `bin/qemu-system-x86_64`, `bin/qemu-img`,
+and `share/qemu/<firmware files>` (bios-microvm.bin, linuxboot_dma.bin,
+etc.).  `_fetch_prebuilt_qemu` validates that the firmware files are
+present after extract; if they're missing, microvm boots fail at
+runtime with cryptic "could not load PC BIOS" errors.
+
+To rebuild:
 
 ```bash
 # Build in each target's container
 for target in rocky9 rocky10; do
     suffix="el${target#rocky}"
-    mkdir -p /tmp/qemu-out
+    rm -rf /tmp/qemu-out && mkdir -p /tmp/qemu-out
     podman run --rm -v /tmp/qemu-out:/output:Z ltvm-build-${target} -c '
         dnf -y install glib2-devel pixman-devel flex bison ninja-build \
             python3-pip xz pkg-config
@@ -409,11 +417,13 @@ for target in rocky9 rocky10; do
             --disable-libssh --disable-capstone --disable-dbus-display \
             --prefix=/opt/qemu
         make -j$(nproc)
-        cp build/qemu-system-x86_64 build/qemu-img /output/
+        # `make install DESTDIR=...` lays out bin/, share/qemu/<firmware>,
+        # libexec/, etc. under DESTDIR/opt/qemu/.  We then tar from there
+        # so the resulting archive is a /opt/qemu overlay.
+        make install DESTDIR=/output/install
     '
-    cd /tmp && tar cf - -C qemu-out qemu-system-x86_64 qemu-img \
-        | gzip -9 > "qemu-9.2.2-${suffix}.tar.gz"
-    rm -rf /tmp/qemu-out/*
+    tar czf "/tmp/qemu-9.2.2-${suffix}.tar.gz" \
+        -C /tmp/qemu-out/install/opt/qemu bin share
 done
 
 # Publish (updates existing release)
@@ -425,6 +435,9 @@ Notes:
 - Rocky 8 needs `dnf install python38` (system python is too old)
 - Ubuntu uses the system QEMU package (has microvm)
 - Bump `QEMU_VERSION` in `ltvm_pkg/host_setup.py` when updating
+- The tarball MUST include the `share/qemu/` firmware files; just
+  copying the binaries (the old approach) leaves microvm boots
+  broken at runtime.
 
 ## Issue Tracking
 

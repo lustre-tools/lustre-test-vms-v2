@@ -9,10 +9,11 @@ import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
+from .qemu_run import die, is_running, kill_qemu, run
+from .vm_net import run_ssh, unregister_ssh_name
 from .vm_state import (
     DEFAULT_TARGET,
     EXIT_TIMEOUT,
-    OVERLAYS,
     ROOT_PASSWORD,
     SOCKETS,
     ClusterInfo,
@@ -22,8 +23,6 @@ from .vm_state import (
     VMNotFound,
     lustre_libdir,
 )
-from .vm_net import run_ssh, unregister_ssh_name
-from .qemu_run import die, is_running, kill_qemu, run
 
 
 def parse_node_spec(spec: str) -> ClusterNode:
@@ -42,7 +41,16 @@ def parse_node_spec(spec: str) -> ClusterNode:
     # SSH config / hostname / fc_name= cmdline.
     from .vm_commands import _validate_vm_name
     _validate_vm_name(name)
-    disk_count = int(parts[2]) if len(parts) > 2 else 0
+    if len(parts) > 2:
+        try:
+            disk_count = int(parts[2])
+        except ValueError:
+            die(
+                f"invalid disk count '{parts[2]}' in spec '{spec}': "
+                f"must be a non-negative integer (format: roles:name[:disks])"
+            )
+    else:
+        disk_count = 0
 
     roles = roles_str.lower().split("+")
     for r in roles:
@@ -214,7 +222,13 @@ def _create_one_node(
     # 300s: cold boot + disk creation + first-boot SSH wait (the inner
     # `ltvm create` already enforces SSH_TIMEOUT, but we leave headroom
     # for slow hosts and large disk allocations).
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired as e:
+        # See _write_cluster_local_sh: don't propagate out of the parallel
+        # executor; report the failure via the (name, rc, output) tuple
+        # so the cluster create driver can summarise per-node failures.
+        return node.name, 1, f"create timed out after {e.timeout}s"
     combined = r.stdout
     if r.stderr:
         combined = combined + r.stderr if combined else r.stderr
@@ -331,8 +345,8 @@ def _deploy_one_node(
 
     Returns (node_name, returncode, output_message).
     """
-    from ltvm_pkg.lustre_build import staging_path as _staging_path
     from ltvm_pkg.deploy import deploy_to_vm
+    from ltvm_pkg.lustre_build import staging_path as _staging_path
 
     vm = VMInfo.load(node_name)
     target = vm.os_id or DEFAULT_TARGET
@@ -355,18 +369,25 @@ def _write_cluster_local_sh(
     """
     lustre_dir = lustre_libdir(os_family)
     cfg_path = f"{lustre_dir}/tests/cfg/local.sh"
-    r = subprocess.run(
-        ["sshpass", "-p", ROOT_PASSWORD, "ssh"]
-        + ssh_opts
-        + [
-            f"root@{node_ip}",
-            f"mkdir -p {lustre_dir}/tests/cfg && cat > {cfg_path}",
-        ],
-        input=local_sh,
-        capture_output=True,
-        text=True,
-        timeout=10,
-    )
+    try:
+        r = subprocess.run(
+            ["sshpass", "-p", ROOT_PASSWORD, "ssh"]
+            + ssh_opts
+            + [
+                f"root@{node_ip}",
+                f"mkdir -p {lustre_dir}/tests/cfg && cat > {cfg_path}",
+            ],
+            input=local_sh,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as e:
+        # Don't propagate out of the parallel executor; the caller checks
+        # the returncode field and reports per-node failures.  Without
+        # this catch, one stalled node tracebacks out of future.result()
+        # and aborts the cluster config rollout mid-flight.
+        return node_name, 1, f"timed out after {e.timeout}s writing {cfg_path}"
     combined = r.stdout
     if r.stderr:
         combined = combined + r.stderr if combined else r.stderr
@@ -546,13 +567,20 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
             mount_cmd += " --server-only"
 
         print(f"Running llmount.sh from {mgs.name}...")
-        r = run(
-            ["sshpass", "-p", ROOT_PASSWORD, "ssh"]
-            + ssh_opts
-            + [f"root@{mgs_vm.ip}", mount_cmd],
-            capture_output=False,
-            timeout=300,
-        )
+        try:
+            r = run(
+                ["sshpass", "-p", ROOT_PASSWORD, "ssh"]
+                + ssh_opts
+                + [f"root@{mgs_vm.ip}", mount_cmd],
+                capture_output=False,
+                timeout=300,
+            )
+        except subprocess.TimeoutExpired as e:
+            die(
+                f"llmount.sh timed out after {e.timeout}s on {mgs.name}\n"
+                f"  modules are deployed; check `ltvm dmesg {mgs.name}` and "
+                f"`ltvm cluster exec {cluster.name} mds 'lctl dl'`"
+            )
         if r.returncode != 0:
             die("llmount.sh failed")
         print("=== Lustre mounted ===")

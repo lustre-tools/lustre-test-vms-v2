@@ -395,22 +395,32 @@ class VMInfo:
             if "=" in line:
                 k, v = line.split("=", 1)
                 vals[k] = v
+
+        def _int(key: str, default: int) -> int:
+            """Tolerate truncated/empty fields in a hand-edited or
+            partially-written .info file: fall back to the default
+            instead of raising ValueError."""
+            try:
+                return int(vals.get(key, default))
+            except (ValueError, TypeError):
+                return default
+
         return VMInfo(
             name=vals.get("NAME", name),
             ip=vals.get("IP", ""),
-            pid=int(vals.get("PID", 0)),
+            pid=_int("PID", 0),
             tap=vals.get("TAP", ""),
             mac=vals.get("MAC", ""),
-            vcpus=int(vals.get("VCPUS", 2)),
-            mem=int(vals.get("MEM", 2048)),
-            mdt_disks=int(vals.get("MDT_DISKS", 0)),
-            ost_disks=int(vals.get("OST_DISKS", 0)),
-            disk_size=int(vals.get("DISK_SIZE", DISK_SIZE_BYTES)),
+            vcpus=_int("VCPUS", 2),
+            mem=_int("MEM", 2048),
+            mdt_disks=_int("MDT_DISKS", 0),
+            ost_disks=_int("OST_DISKS", 0),
+            disk_size=_int("DISK_SIZE", DISK_SIZE_BYTES),
             image=vals.get("IMAGE", ""),
             kernel=vals.get("KERNEL", ""),
-            created=int(vals.get("CREATED", 0)),
-            last_boot=int(vals.get("LAST_BOOT", 0)),
-            last_deploy=int(vals.get("LAST_DEPLOY", 0)),
+            created=_int("CREATED", 0),
+            last_boot=_int("LAST_BOOT", 0),
+            last_deploy=_int("LAST_DEPLOY", 0),
             build_path=vals.get("BUILD_PATH", ""),
             kver=vals.get("KVER", ""),
             base_image=vals.get("BASE_IMAGE", ""),
@@ -500,7 +510,16 @@ class ClusterInfo:
         path = SOCKETS / f"{name}.cluster"
         if not path.exists():
             raise ClusterNotFound(name)
-        data = json.loads(path.read_text())
+        try:
+            data = json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            # Corrupt cluster state file -- surface a clean error instead
+            # of a raw JSONDecodeError traceback so the user can see what
+            # to do (delete or restore the file).
+            raise RuntimeError(
+                f"corrupt cluster state at {path}: {e}\n"
+                f"  remove the file and recreate the cluster with `ltvm cluster create`"
+            )
         return ClusterInfo(name=data["name"], nodes=data["nodes"])
 
     @staticmethod

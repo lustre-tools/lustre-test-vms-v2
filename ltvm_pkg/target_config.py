@@ -11,11 +11,11 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Any, TypedDict
+from typing import Any
 
 import yaml
 
-from .paths import find_ltvm_root
+from .paths import find_ltvm_root, load_meta_safe
 
 REPO_ROOT = find_ltvm_root()
 TARGETS_DIR = REPO_ROOT / "targets"
@@ -400,15 +400,12 @@ class TargetConfig:
                 / self.resolve_kernel()
                 / "meta.json"
             )
-            if kernel_meta.exists():
-                try:
-                    km = json.loads(kernel_meta.read_text())
-                    kh = km.get("input_hash")
-                    if isinstance(kh, str) and kh:
-                        h.update(b"kernel:")
-                        h.update(kh.encode())
-                except (json.JSONDecodeError, OSError):
-                    pass
+            km = load_meta_safe(kernel_meta)
+            if km is not None:
+                kh = km.get("input_hash")
+                if isinstance(kh, str) and kh:
+                    h.update(b"kernel:")
+                    h.update(kh.encode())
             staging_stamp = (
                 self.output_dir / "lustre" / "staging" / ".ltvm-staging-stamp"
             )
@@ -444,9 +441,12 @@ class TargetConfig:
             meta_file = self._kernel_meta_file(kernel)
         else:
             meta_file = self.output_dir / artifact / "meta.json"
-        if not meta_file.exists():
+        meta = load_meta_safe(meta_file)
+        if meta is None:
+            # Missing or corrupt meta -- treat as stale so the next
+            # build overwrites it cleanly rather than crashing every
+            # subsequent status/build command on the parse error.
             return True
-        meta = json.loads(meta_file.read_text())
         return bool(
             meta.get("input_hash")
             != self.input_hash(artifact, kernel=kernel, extra=extra_hash)

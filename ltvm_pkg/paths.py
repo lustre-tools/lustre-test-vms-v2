@@ -13,8 +13,34 @@ in by every other module without circular-import risk.
 
 from __future__ import annotations
 
+import json
+import logging
 import os
 from pathlib import Path
+from typing import Any
+
+log = logging.getLogger("ltvm")
+
+
+def load_meta_safe(meta_file: Path) -> dict[str, Any] | None:
+    """Read and parse a meta.json file, tolerating corruption.
+
+    Returns the parsed dict on success, or None if the file is missing,
+    unreadable, or contains invalid JSON.  A corrupt meta.json (e.g. from
+    a build that crashed mid-write, or a partially-truncated artifact)
+    must NOT brick subsequent commands -- callers should treat None as
+    'no meta' (typically: stale / needs rebuild).
+
+    A warning is logged on parse failure so the user can investigate
+    rather than silently re-running the build.
+    """
+    try:
+        return json.loads(meta_file.read_text())  # type: ignore[no-any-return]
+    except FileNotFoundError:
+        return None
+    except (json.JSONDecodeError, OSError, UnicodeDecodeError) as e:
+        log.warning("ignoring corrupt meta file %s: %s", meta_file, e)
+        return None
 
 
 def find_ltvm_root() -> Path:
