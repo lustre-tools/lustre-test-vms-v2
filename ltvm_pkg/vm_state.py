@@ -261,6 +261,7 @@ class VMInfo:
     base_image: str = ""  # base image name (e.g. rocky9-base.ext4)
     os_id: str = ""  # OS identifier (e.g. rocky9, ubuntu24)
     arch: str = "x86_64"  # CPU architecture (x86_64, aarch64)
+    creator: str = ""  # username that created the VM (SUDO_USER, or "" for legacy)
 
     @property
     def info_path(self) -> Path:
@@ -310,6 +311,7 @@ class VMInfo:
             f"BASE_IMAGE={self.base_image}\n"
             f"OS_ID={self.os_id}\n"
             f"ARCH={self.arch}\n"
+            f"CREATOR={self.creator}\n"
         )
         self.info_path.parent.mkdir(parents=True, exist_ok=True)
         fd, tmp_str = tempfile.mkstemp(
@@ -448,6 +450,7 @@ class VMInfo:
             base_image=vals.get("BASE_IMAGE", ""),
             os_id=vals.get("OS_ID", ""),
             arch=vals.get("ARCH", "x86_64"),
+            creator=vals.get("CREATOR", ""),
         )
 
     @staticmethod

@@ -342,6 +342,12 @@ def cmd_create(args: argparse.Namespace) -> None:
             os_id=os_id,
             kver=kver,
             arch=os_arts.arch,
+            # Track the human who ran `sudo ltvm create`.  SUDO_USER
+            # is set when invoked via sudo (the normal path); fall
+            # back to "root" if invoked as root directly.  Surfaced
+            # in `ltvm list` so a shared host can show whose VM is
+            # whose without forcing per-user namespaces.
+            creator=os.environ.get("SUDO_USER", "") or "root",
         )
 
         # Create overlay + backing disks.  If any step fails partway,
@@ -754,6 +760,7 @@ def cmd_list(args: argparse.Namespace) -> None:
                 "build_path": vm.build_path,
                 "kver": vm.kver,
                 "os_id": vm.os_id,
+                "creator": vm.creator,
             }
         )
 
@@ -793,10 +800,13 @@ def cmd_list(args: argparse.Namespace) -> None:
             deploy = _ago(e["last_deploy"]) if e["last_deploy"] else "-"
             boot = _ago(e["last_boot"]) if e["last_boot"] else "-"
             os_id = e.get("os_id") or "-"
+            # `by=` shows who created the VM (SUDO_USER at create time);
+            # legacy VMs from before this field existed show `by=-`.
+            creator = e.get("creator") or "-"
             print(
                 f"{e['name']:<20} {e['ip']:<18} {e['status']:<8} "
                 f"{os_id:<8} {disks:<14} "
-                f"boot={boot:<10} deploy={deploy}"
+                f"boot={boot:<10} deploy={deploy:<10} by={creator}"
             )
         print("---")
         print(

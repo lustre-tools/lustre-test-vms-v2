@@ -40,6 +40,7 @@ class TestVMInfoMetadata:
             kver="5.14.0-test.x86_64",
             base_image="rocky9-base.ext4",
             os_id="rocky9",
+            creator="alice",
         )
         vm.save()
         loaded = VMInfo.load("test-vm")
@@ -51,6 +52,7 @@ class TestVMInfoMetadata:
         assert loaded.kver == "5.14.0-test.x86_64"
         assert loaded.base_image == "rocky9-base.ext4"
         assert loaded.os_id == "rocky9"
+        assert loaded.creator == "alice"
 
     def test_load_missing_metadata_defaults(self, tmp_sockets: Path) -> None:
         """Loading an old info file (no metadata) yields zero/empty defaults."""
@@ -76,6 +78,10 @@ class TestVMInfoMetadata:
         assert vm.kver == ""
         assert vm.base_image == ""
         assert vm.os_id == ""
+        # Legacy info file with no CREATOR= line: load() falls back
+        # to the default ("") so old VMs show `by=-` in `ltvm list`
+        # and don't crash anyone's existing tooling.
+        assert vm.creator == ""
 
     def test_update_field_adds_missing(self, tmp_sockets: Path) -> None:
         """_update_field adds a field that doesn't exist yet."""
