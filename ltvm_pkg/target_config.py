@@ -228,7 +228,7 @@ class TargetConfig:
         Matches against the declared short names in targets.yaml, so any
         name already in short form passes through unchanged.
         """
-        available = self._kernels.get("available", [])
+        available: list[str] = self._kernels.get("available", [])
         for short in available:
             if name == short or name.startswith(short + "-"):
                 return short

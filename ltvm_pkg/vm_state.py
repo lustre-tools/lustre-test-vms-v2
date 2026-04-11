@@ -7,6 +7,7 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
@@ -121,8 +122,8 @@ def resolve_os_artifacts(os_name: str, arch: str = "x86_64") -> OSArtifacts:
             output_dir = arch_dir
 
     # Find image in output/<os>[/<arch>]/image/
-    img = output_dir / "image" / "base.ext4"
-    if not img.exists():
+    img: Path | None = output_dir / "image" / "base.ext4"
+    if img is not None and not img.exists():
         img = None
     if not img:
         arch_hint = (
@@ -332,7 +333,7 @@ class VMInfo:
         return SOCKETS / f".{self.name}.info.lock"
 
     @contextmanager
-    def _info_lock(self):
+    def _info_lock(self) -> Iterator[None]:
         """Per-VM exclusive lock for read-modify-write of the .info file.
 
         Two processes can call e.g. update_pid() and update_deploy() concurrently

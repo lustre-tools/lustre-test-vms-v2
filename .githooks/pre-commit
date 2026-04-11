@@ -16,6 +16,6 @@ echo "pre-commit: ruff format..."
 uv run ruff format --check .
 
 echo "pre-commit: mypy..."
-uv run mypy ltvm lib/
+uv run mypy ltvm
 
 echo "pre-commit: all checks passed"

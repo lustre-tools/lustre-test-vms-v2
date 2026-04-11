@@ -9,6 +9,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -20,7 +21,7 @@ _HOSTS_LOCK_PATH = VM_DIR / ".hosts.lock"
 
 
 @contextmanager
-def _ip_alloc_lock():
+def _ip_alloc_lock() -> Iterator[None]:
     """Exclusive file lock serialising IP allocation across concurrent creates."""
     _IP_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
     with open(_IP_LOCK_PATH, "w") as fh:
@@ -32,7 +33,7 @@ def _ip_alloc_lock():
 
 
 @contextmanager
-def _hosts_lock():
+def _hosts_lock() -> Iterator[None]:
     """Exclusive file lock serialising /etc/hosts and ~/.ssh/config edits.
 
     `cmd_cluster_create` spawns N parallel `sudo ltvm create` subprocesses,
@@ -92,7 +93,7 @@ def _used_ips(exclude_name: str) -> set[str]:
 
 
 @contextmanager
-def alloc_ip(name: str, explicit_ip: str | None = None):
+def alloc_ip(name: str, explicit_ip: str | None = None) -> Iterator[str]:
     """Context manager that allocates a unique IP for *name* under an exclusive
     lock held until the ``with`` block exits (i.e. until VMInfo.save() returns).
 

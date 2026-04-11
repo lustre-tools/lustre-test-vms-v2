@@ -38,10 +38,12 @@ if _VENV_PY.exists() and str(_VENV_PY) != sys.executable:
 # E402 (module level import not at top) is suppressed for that reason.
 import argparse  # noqa: E402
 import logging  # noqa: E402
+from typing import Any  # noqa: E402
 
 # Ensure repo root is importable
 sys.path.insert(0, str(_REPO_ROOT))
 
+from ltvm_pkg import __version__ as LTVM_VERSION  # noqa: E402
 from ltvm_pkg.cli import (  # noqa: E402
     EXIT_ERROR,
     cmd_build_all,
@@ -69,6 +71,7 @@ from ltvm_pkg.cli import (  # noqa: E402
     cmd_setup,
     cmd_snapshot,
     cmd_status,
+    cmd_update,
     cmd_vm_ssh,
     cmd_vm_start,
     cmd_vm_stop,
@@ -90,7 +93,9 @@ class _HideSuppressedSubcommands(argparse.HelpFormatter):
             return ""
         return super()._format_action(action)
 
-    def _metavar_formatter(self, action: argparse.Action, default_metavar: str):
+    def _metavar_formatter(
+        self, action: argparse.Action, default_metavar: str
+    ) -> Any:
         # For subparser actions, strip suppressed choices from the metavar.
         if hasattr(action, "_name_parser_map"):
             # Aliases point to the same parser instance as the canonical
@@ -108,7 +113,7 @@ class _HideSuppressedSubcommands(argparse.HelpFormatter):
                 seen.add(id(sp))
                 visible.append(name)
 
-            def fmt(tuple_size: int):
+            def fmt(tuple_size: int) -> tuple[Any, ...]:
                 if tuple_size != 1:
                     return (tuple(visible),)
                 return ("{" + ",".join(visible) + "}",)
@@ -151,6 +156,11 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         formatter_class=_HideSuppressedSubcommands,
     )
+    p.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {LTVM_VERSION}",
+    )
 
     sub = p.add_subparsers(dest="command")
 
@@ -191,6 +201,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bridge subnet (default: 192.168.100)",
     )
     sp.set_defaults(func=cmd_setup)
+
+    # -- update --
+    sp = sub.add_parser(
+        "update",
+        parents=[common],
+        help="Pull the latest ltvm from GitHub (git fast-forward)",
+    )
+    sp.add_argument(
+        "--check",
+        action="store_true",
+        help="Check whether an update is available without pulling",
+    )
+    sp.add_argument(
+        "--force",
+        action="store_true",
+        help="Update even if the working tree has local changes",
+    )
+    sp.set_defaults(func=cmd_update)
 
     # -- build-all --
     sp = sub.add_parser(

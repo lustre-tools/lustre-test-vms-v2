@@ -577,7 +577,7 @@ def fetch_target(
     container_image = artifacts["container"]
     print(f"    Loading build container from {container_image}")
     try:
-        r = subprocess.run(
+        load = subprocess.run(
             ["podman", "load", "-i", str(container_image)],
             capture_output=True,
             text=True,
@@ -586,15 +586,19 @@ def fetch_target(
         raise RuntimeError(
             "podman not found -- install podman to load fetched build container"
         )
-    if r.returncode != 0:
+    if load.returncode != 0:
         raise RuntimeError(
-            f"podman load failed (rc={r.returncode}) for {container_image}: "
-            f"{r.stderr.strip()}"
+            f"podman load failed (rc={load.returncode}) for {container_image}: "
+            f"{load.stderr.strip()}"
         )
     # podman load prints "Loaded image: <repo>:<tag>" on success
     loaded_line = next(
-        (ln for ln in r.stdout.splitlines() if ln.startswith("Loaded image")),
-        r.stdout.strip().splitlines()[-1] if r.stdout.strip() else "",
+        (
+            ln
+            for ln in load.stdout.splitlines()
+            if ln.startswith("Loaded image")
+        ),
+        load.stdout.strip().splitlines()[-1] if load.stdout.strip() else "",
     )
     if loaded_line:
         print(f"    {loaded_line}")

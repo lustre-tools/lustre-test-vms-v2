@@ -488,7 +488,17 @@ def _build_kernel_deb(
         "vmlinuz_bytes": vmlinuz_size,
         "built_at": datetime.now(timezone.utc).isoformat(),
     }
-    target_config.write_meta("kernel", kernel=full_name, **meta)
+    target_config.write_meta(
+        "kernel",
+        kernel=full_name,
+        kernel_version=krelease,
+        deb_source=deb_source,
+        lustre_target=lustre_target,
+        patches_applied=0,
+        vmlinux_bytes=vmlinux_size,
+        vmlinuz_bytes=vmlinuz_size,
+        built_at=meta["built_at"],
+    )
 
     log.info("Kernel build complete")
     return meta
