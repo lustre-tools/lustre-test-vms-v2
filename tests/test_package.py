@@ -75,7 +75,7 @@ def _setup_artifacts(
 
     kdir = tmp_path / "kernels" / kernel
     kdir.mkdir(parents=True)
-    idir = tmp_path / "image"
+    idir = tmp_path / "images" / kernel
     idir.mkdir(parents=True)
     cdir = tmp_path / "container"
     cdir.mkdir(parents=True)
@@ -141,8 +141,8 @@ class TestFindArtifacts:
     def test_img_extension(self, tmp_path: Path) -> None:
         """Image with .img extension works too."""
         out = _setup_artifacts(tmp_path, missing=["image"])
-        idir = tmp_path / "image"
-        idir.mkdir(exist_ok=True)
+        idir = tmp_path / "images" / "test-kernel"
+        idir.mkdir(parents=True, exist_ok=True)
         (idir / "base.img").touch()
         arts = _find_artifacts(out, kernel="test-kernel")
         assert "image" in arts
@@ -280,7 +280,9 @@ class TestSnapshotLustre:
         kdir = output_dir / "kernels" / "test-kernel"
         kdir.mkdir(parents=True)
         (kdir / "vmlinux").touch()
-        staging = tree / ".ltvm-staging" / self.TARGET / "x86_64"
+        staging = (
+            tree / ".ltvm-staging" / self.TARGET / "x86_64" / "test-kernel"
+        )
         if with_staging_ko:
             ko_dir = staging / "lib" / "modules" / "fake-kver" / "extra"
             ko_dir.mkdir(parents=True)
@@ -313,7 +315,9 @@ class TestSnapshotLustre:
 
     def test_with_staging_calls_rsync(self, tmp_path: Path) -> None:
         tree, output_dir, kdir, dest = self._setup(tmp_path)
-        staging_src = tree / ".ltvm-staging" / self.TARGET / "x86_64"
+        staging_src = (
+            tree / ".ltvm-staging" / self.TARGET / "x86_64" / "test-kernel"
+        )
 
         with (
             patch(
@@ -378,8 +382,8 @@ def _setup_package_artifacts(
     (kdir / "vmlinuz").touch()
     (kdir / "build-tree").mkdir()
     (kdir / "modules").mkdir()
-    idir = output_dir / "image"
-    idir.mkdir()
+    idir = output_dir / "images" / kernel
+    idir.mkdir(parents=True)
     (idir / "base.ext4").touch()
     cdir = output_dir / "container"
     cdir.mkdir()
@@ -650,8 +654,8 @@ class TestInstallTarget:
         (kdir / "vmlinuz").touch()
         (kdir / "build-tree").mkdir()
         (kdir / "modules").mkdir()
-        idir = output_dir / "image"
-        idir.mkdir()
+        idir = output_dir / "images" / kernel
+        idir.mkdir(parents=True)
         (idir / "base.ext4").touch()
         cdir = output_dir / "container"
         cdir.mkdir()
