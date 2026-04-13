@@ -581,9 +581,15 @@ def cmd_package(args: argparse.Namespace) -> int:
                 ),
             )
         assert lustre_path is not None
-        _gate_lustre_validation(
-            tc, lustre_path, force=getattr(args, "force_compat", False)
-        )
+        # Deb-based targets (Ubuntu) have no .target.in in Lustre's
+        # kernel_patches/, so the compat gate can't parse a target
+        # file and always returns status=error, which --force-compat
+        # doesn't override.  Skip the gate for those, matching
+        # cmd_build_kernel.
+        if not tc.kernel_deb_source:
+            _gate_lustre_validation(
+                tc, lustre_path, force=getattr(args, "force_compat", False)
+            )
         if not use_json:
             print(f"Snapshotting Lustre tree from {lustre_path}...")
         try:
@@ -1279,7 +1285,14 @@ def _gate_lustre_validation(
                    force is True (then print override line, pass)
       error        print message; raise SystemExit(EXIT_ERROR) regardless
                    of force -- parse/IO failures are not overridable
+
+    Deb-based targets have no .target.in in Lustre's kernel_patches/,
+    so the gate always returns status=error -- skip it entirely; the
+    kernel build for those targets uses the distro's source packages
+    rather than Lustre's RHEL-style SRPM flow.
     """
+    if tc.kernel_deb_source:
+        return
     result = validate_target(tc, lustre_tree)
     if result.status == "ok":
         return
@@ -1435,7 +1448,15 @@ def cmd_snapshot(args: argparse.Namespace) -> int:
         return err
     from ltvm_pkg.vm_commands import cmd_snapshot as _snapshot
 
-    return _vm_call(_snapshot, _qemu_ns(name=args.name, tag=args.tag), use_json)
+    return _vm_call(
+        _snapshot,
+        _qemu_ns(
+            name=args.name,
+            tag=args.tag,
+            delete=getattr(args, "delete", None),
+        ),
+        use_json,
+    )
 
 
 def cmd_restore(args: argparse.Namespace) -> int:
