@@ -20,7 +20,7 @@ from ltvm_pkg import host_setup
 from ltvm_pkg.deploy import deploy_to_vm, lustre_mount_vm
 from ltvm_pkg.image_build import build_image, image_status
 from ltvm_pkg.kernel_build import build_kernel, kernel_status
-from ltvm_pkg.lustre_build import build_lustre
+from ltvm_pkg.lustre_build import build_lustre, staging_path
 from ltvm_pkg.lustre_compat import ValidationResult, validate_target
 from ltvm_pkg.paths import load_meta_safe
 from ltvm_pkg.release_package import (
@@ -390,7 +390,20 @@ def cmd_build_image(args: argparse.Namespace) -> int:
 
     kernel = getattr(args, "kernel", None)
     resolved_kernel = tc.resolve_kernel(kernel)
-    with_lustre = getattr(args, "with_lustre", None)
+
+    with_lustre: str | None = None
+    if not args.no_lustre:
+        lustre_tree = Path(args.lustre_tree) if args.lustre_tree else Path(os.getcwd())
+        candidate = staging_path(lustre_tree, args.target, arch=tc.arch, kernel=resolved_kernel)
+        if candidate.exists():
+            with_lustre = str(lustre_tree)
+        else:
+            print(
+                f"warning: no Lustre staging at {candidate}; image will not "
+                f"contain Lustre (run `ltvm build-lustre {args.target} "
+                f"--kernel {resolved_kernel}` or pass --no-lustre to silence)",
+                file=sys.stderr,
+            )
 
     if not use_json:
         extra = f" +lustre={with_lustre}" if with_lustre else ""

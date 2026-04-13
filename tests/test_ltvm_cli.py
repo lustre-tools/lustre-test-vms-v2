@@ -1389,7 +1389,76 @@ class TestKernelArgPropagation:
         _, kwargs = mock_bi.call_args
         assert kwargs.get("kernel") == "5.14-rhel9.5"
 
-    def test_build_image_with_lustre_forwarded(
+    def test_build_image_auto_bakes_lustre_when_staging_present(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        tmp_path: Path,
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        lt = tmp_path / "tree"
+        resolved = tc.resolve_kernel("5.14-rhel9.7")
+        staging = lt / ".ltvm-staging" / "rocky9" / "x86_64" / resolved
+        staging.mkdir(parents=True)
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(cli_mod, "build_image") as mock_bi,
+        ):
+            mock_bi.return_value = Path("/fake/base.ext4")
+            rc = _run_main(
+                [
+                    "build-image",
+                    "rocky9",
+                    "--kernel",
+                    "5.14-rhel9.7",
+                    "--lustre-tree",
+                    str(lt),
+                ],
+                capsys,
+            )
+
+        assert rc == EXIT_OK
+        mock_bi.assert_called_once()
+        _, kwargs = mock_bi.call_args
+        assert kwargs.get("kernel") == "5.14-rhel9.7"
+        assert kwargs.get("with_lustre") == str(lt)
+
+    def test_build_image_no_lustre_skips_bake(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        tmp_path: Path,
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        lt = tmp_path / "tree"
+        resolved = tc.resolve_kernel(None)
+        staging = lt / ".ltvm-staging" / "rocky9" / "x86_64" / resolved
+        staging.mkdir(parents=True)
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(cli_mod, "build_image") as mock_bi,
+        ):
+            mock_bi.return_value = Path("/fake/base.ext4")
+            rc = _run_main(
+                [
+                    "build-image",
+                    "rocky9",
+                    "--lustre-tree",
+                    str(lt),
+                    "--no-lustre",
+                ],
+                capsys,
+            )
+
+        assert rc == EXIT_OK
+        _, kwargs = mock_bi.call_args
+        assert kwargs.get("with_lustre") is None
+
+    def test_build_image_missing_staging_warns_and_skips(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_targets: Path,
@@ -1406,41 +1475,15 @@ class TestKernelArgPropagation:
         ):
             mock_bi.return_value = Path("/fake/base.ext4")
             rc = _run_main(
-                [
-                    "build-image",
-                    "rocky9",
-                    "--kernel",
-                    "5.14-rhel9.7",
-                    "--with-lustre",
-                    str(lt),
-                ],
+                ["build-image", "rocky9", "--lustre-tree", str(lt)],
                 capsys,
             )
 
         assert rc == EXIT_OK
-        mock_bi.assert_called_once()
-        _, kwargs = mock_bi.call_args
-        assert kwargs.get("kernel") == "5.14-rhel9.7"
-        assert kwargs.get("with_lustre") == str(lt)
-
-    def test_build_image_without_with_lustre_is_none(
-        self,
-        capsys: pytest.CaptureFixture[str],
-        tmp_targets: Path,
-    ) -> None:
-        from ltvm_pkg import cli as cli_mod
-
-        tc = self._tc(tmp_targets)
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch.object(cli_mod, "build_image") as mock_bi,
-        ):
-            mock_bi.return_value = Path("/fake/base.ext4")
-            rc = _run_main(["build-image", "rocky9"], capsys)
-
-        assert rc == EXIT_OK
         _, kwargs = mock_bi.call_args
         assert kwargs.get("with_lustre") is None
+        captured = capsys.readouterr()
+        assert "no Lustre staging" in captured.err
 
     def test_build_all_kernel_reaches_image_builder(
         self,
