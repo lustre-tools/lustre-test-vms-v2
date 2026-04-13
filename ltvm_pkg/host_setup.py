@@ -172,7 +172,6 @@ def check_prerequisites(host: HostInfo) -> None:
         "tar": "tar",
         "make": "make",
         "gcc": "gcc",
-        "zstd": "zstd",
         "ip": "iproute2" if host.pkg_mgr == "apt" else "iproute",
     }
     missing = []

@@ -720,7 +720,7 @@ def _find_release_url(
     matching asset's download URL.
 
     Asset filenames always contain '-<arch>-' (e.g.
-    rocky9-x86_64-5.14.0_lustre.tar.zst).  We match on that substring
+    rocky9-x86_64-5.14.0_lustre.tar.gz).  We match on that substring
     so an x86_64 fetch never picks up an aarch64 asset and vice versa.
     """
     releases = _gh_api("releases")
@@ -739,7 +739,7 @@ def _find_release_url(
             continue
         for asset in rel.get("assets", []):
             name = asset.get("name", "")
-            if not name.endswith((".tar.zst", ".tar.gz")):
+            if not name.endswith(".tar.gz"):
                 continue
             if arch_match not in name:
                 continue
@@ -767,7 +767,7 @@ def _list_releases(target: str | None = None) -> list[dict]:
         assets = [
             a["name"]
             for a in rel.get("assets", [])
-            if a["name"].endswith((".tar.zst", ".tar.gz"))
+            if a["name"].endswith(".tar.gz")
         ]
         size_mb = sum(a.get("size", 0) for a in rel.get("assets", [])) / (
             1024 * 1024
@@ -900,9 +900,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
         candidates = [
             c
             for c in sorted(tarball_root.glob(pattern))
-            if c.suffix in (".gz", ".zst")
-            or c.name.endswith(".tar.gz")
-            or c.name.endswith(".tar.zst")
+            if c.name.endswith(".tar.gz")
         ]
         if kernel:
             candidates = [c for c in candidates if kernel in c.name]
@@ -917,7 +915,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
     if not use_json:
         print(f"Publishing {tarball.name}...")
 
-    # Generate tag if not provided.  For "foo.tar.zst" / "foo.tar.gz",
+    # Generate tag if not provided.  For "foo.tar.gz",
     # tarball.stem is "foo.tar", so .replace(".tar", "") is enough --
     # the suffix is already gone by the time we look at the stem.
     if not tag:

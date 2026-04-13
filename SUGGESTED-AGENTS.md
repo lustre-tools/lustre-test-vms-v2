@@ -89,7 +89,7 @@ ltvm build-lustre rocky9 ~/lustre-release --force-compat
 
 ```bash
 # Bundle kernel + image + Lustre into a tarball (per kernel,
-# named <target>-<kver>_lustre.tar.zst)
+# named <target>-<kver>_lustre.tar.gz)
 ltvm package rocky9
 
 # Publish to GitHub releases (tag derived from tarball name)

@@ -413,25 +413,6 @@ class TestPackageTarget:
             m.return_value = Path("/fake/container/image.tar")
             yield m
 
-    def _make_mock_run(self, fail_zstd: bool = False):
-        """Return a subprocess.run mock; first call fails if fail_zstd."""
-        call_count = [0]
-
-        def side_effect(cmd, *args, **kwargs):
-            call_count[0] += 1
-            result = MagicMock()
-            if fail_zstd and call_count[0] == 1:
-                result.returncode = 1
-                result.stdout = ""
-                result.stderr = "zstd not available"
-            else:
-                result.returncode = 0
-                result.stdout = ""
-                result.stderr = ""
-            return result
-
-        return side_effect
-
     def _touch_tarball(self, dest_dir: Path, pattern: str) -> None:
         """Create a fake tarball so stat().st_size works."""
         for p in dest_dir.iterdir():
@@ -441,7 +422,7 @@ class TestPackageTarget:
         # Create one matching the pattern
         (dest_dir / pattern).write_bytes(b"fake tarball data" * 100)
 
-    def test_creates_tarball_zstd(self, tmp_path: Path) -> None:
+    def test_creates_tarball_gz(self, tmp_path: Path) -> None:
         output_dir = _setup_package_artifacts(tmp_path, kernel_version="5.14.0")
         dest_dir = tmp_path / "dest"
         dest_dir.mkdir()
@@ -449,9 +430,8 @@ class TestPackageTarget:
         def mock_run(cmd, *args, **kwargs):
             result = MagicMock()
             result.returncode = 0
-            # Create the tarball file so stat works
             for arg in cmd:
-                if arg.endswith(".tar.zst"):
+                if arg.endswith(".tar.gz"):
                     Path(arg).write_bytes(b"x" * 1024)
             return result
 
@@ -463,42 +443,9 @@ class TestPackageTarget:
                 dest_dir=dest_dir,
             )
 
-        assert tarball.suffix == ".zst"
+        assert tarball.name.endswith(".tar.gz")
         assert "my-target" in tarball.name
         assert "5.14.0" in tarball.name
-
-    def test_falls_back_to_gzip(self, tmp_path: Path) -> None:
-        output_dir = _setup_package_artifacts(tmp_path, kernel_version="5.14.0")
-        dest_dir = tmp_path / "dest"
-        dest_dir.mkdir()
-
-        call_count = [0]
-
-        def mock_run(cmd, *args, **kwargs):
-            call_count[0] += 1
-            result = MagicMock()
-            if call_count[0] == 1:
-                # zstd fails
-                result.returncode = 1
-                result.stdout = ""
-                result.stderr = "zstd not found"
-            else:
-                # gzip succeeds; create the tarball
-                result.returncode = 0
-                for arg in cmd:
-                    if arg.endswith(".tar.gz"):
-                        Path(arg).write_bytes(b"x" * 1024)
-            return result
-
-        with patch("subprocess.run", side_effect=mock_run):
-            tarball = package_target(
-                "my-target",
-                output_dir,
-                kernel="test-kernel",
-                dest_dir=dest_dir,
-            )
-
-        assert tarball.name.endswith(".tar.gz")
 
     def test_version_from_meta_json(self, tmp_path: Path) -> None:
         output_dir = _setup_package_artifacts(
@@ -667,7 +614,7 @@ class TestTarballLayout:
     """Verify the tar paths passed to the tar command reflect the new layout.
 
     We intercept subprocess.run and inspect the path arguments so the test
-    stays hermetic (no real tar/zstd required) while still catching
+    stays hermetic (no real tar required) while still catching
     regressions in path construction.
     """
 

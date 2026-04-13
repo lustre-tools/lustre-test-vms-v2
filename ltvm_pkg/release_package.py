@@ -397,30 +397,11 @@ def package_target(
     container_dir = output_dir / "container"
     tar_paths.append(str(container_dir.relative_to(tar_base)))
 
-    # Try zstd first (smaller + faster), fall back to gzip
-    tarball_zst = dest_dir / f"{base_name}.tar.zst"
-    tarball_gz = dest_dir / f"{base_name}.tar.gz"
-    r = subprocess.run(
-        [
-            "tar",
-            "--use-compress-program=zstd",
-            "-cf",
-            str(tarball_zst),
-            "-C",
-            str(tar_base),
-        ]
-        + tar_paths,
-        capture_output=True,
+    tarball = dest_dir / f"{base_name}.tar.gz"
+    subprocess.run(
+        ["tar", "-czf", str(tarball), "-C", str(tar_base)] + tar_paths,
+        check=True,
     )
-    if r.returncode == 0:
-        tarball = tarball_zst
-    else:
-        tarball_zst.unlink(missing_ok=True)  # remove any partial file
-        subprocess.run(
-            ["tar", "-czf", str(tarball_gz), "-C", str(tar_base)] + tar_paths,
-            check=True,
-        )
-        tarball = tarball_gz
 
     print(
         f"  Packaging {target_name} (kernel={kernel_name}, arch={arch}) -> {tarball.name}"
