@@ -46,11 +46,15 @@ from .vm_state import (
 
 
 def _seed_kdump_boot(vm: VMInfo) -> None:
-    """Copy vmlinuz into /boot inside the VM and regenerate the kdump initramfs.
+    """Ensure /boot has vmlinuz + kdump initramfs for kexec-on-panic.
 
-    QEMU passes the kernel externally via -kernel, so the VM image has no
-    /boot/vmlinuz or initramfs.  kexec-tools (kdump) needs both to load the
-    crash kernel after a panic.  This runs once after VM creation.
+    QEMU passes the kernel externally via -kernel, so the VM image has
+    no /boot/vmlinuz or initramfs unless image_build baked them in.
+    As of the per-kernel image refactor, fresh images ship with both
+    pre-built, and this function is a fast no-op that just (re)loads
+    the kdump service.  For older images that predate the bake, or
+    custom images without kdump artifacts, we fall back to scp'ing
+    the vmlinuz and running dracut/update-initramfs at runtime.
     """
     if not vm.kernel:
         return
@@ -64,6 +68,51 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
             )
             return
         kver = r.stdout.strip()
+
+    # Determine OS family from target config.  Catch only the narrow
+    # cases where the target config is genuinely missing/broken
+    # (ValueError: unknown target / bad schema, FileNotFoundError:
+    # targets.yaml gone).  A blanket `except Exception: pass` would
+    # silently fall back to "rhel" for a Debian VM and run dracut
+    # against an apt-based system.
+    os_family = "rhel"
+    if vm.os_id:
+        try:
+            from .target_config import TargetConfig
+
+            os_family = TargetConfig(vm.os_id).os_family
+        except (ValueError, FileNotFoundError) as e:
+            print(
+                f"warning: cannot resolve target {vm.os_id!r}, "
+                f"defaulting to rhel kdump path: {e}",
+                file=sys.stderr,
+            )
+
+    # Fast path: image was built with kdump baked in.  Probe for both
+    # the kernel and the initramfs; if present, just make sure the
+    # kdump service is (re)loaded for this kernel.
+    if os_family == "debian":
+        initrd_path = f"/var/lib/kdump/initrd.img-{kver}"
+        reload_cmd = (
+            "kdump-config load 2>&1; systemctl restart kdump-tools 2>&1"
+        )
+    else:
+        initrd_path = f"/boot/initramfs-{kver}.img"
+        reload_cmd = "systemctl restart kdump 2>&1"
+
+    probe = run_ssh(
+        vm.ip,
+        f"test -f /boot/vmlinuz-{kver} && test -f {initrd_path}",
+        timeout=10,
+    )
+    if probe.returncode == 0:
+        run_ssh(vm.ip, reload_cmd, timeout=30)
+        return
+
+    print(
+        "warning: kdump boot artifacts missing from image; "
+        "falling back to runtime seeding"
+    )
 
     # Prefer the bzImage for kdump; fall back to vmlinux if that's all we have.
     kernel_host = Path(vm.kernel)
@@ -93,25 +142,6 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
     )
     if r.returncode != 0:
         die(f"failed to copy vmlinuz into VM /boot: {r.stderr.strip()}")
-
-    # Determine OS family from target config.  Catch only the narrow
-    # cases where the target config is genuinely missing/broken
-    # (ValueError: unknown target / bad schema, FileNotFoundError:
-    # targets.yaml gone).  A blanket `except Exception: pass` would
-    # silently fall back to "rhel" for a Debian VM and run dracut
-    # against an apt-based system.
-    os_family = "rhel"
-    if vm.os_id:
-        try:
-            from .target_config import TargetConfig
-
-            os_family = TargetConfig(vm.os_id).os_family
-        except (ValueError, FileNotFoundError) as e:
-            print(
-                f"warning: cannot resolve target {vm.os_id!r}, "
-                f"defaulting to rhel kdump path: {e}",
-                file=sys.stderr,
-            )
 
     if os_family == "debian":
         print("generating kdump initramfs (update-initramfs)...")
