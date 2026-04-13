@@ -597,6 +597,547 @@ class TestVmSubcommands:
 
 
 # ---------------------------------------------------------------------------
+# Lustre-tree validation gating in build/package/deploy commands
+# ---------------------------------------------------------------------------
+
+
+class TestValidationGating:
+    """Stub validate_target and verify each gated command honors it."""
+
+    def _vr(self, status: str, message: str = "stub-msg") -> Any:
+        from ltvm_pkg.lustre_compat import ValidationResult
+
+        return ValidationResult(
+            status=status,  # type: ignore[arg-type]
+            mode=None,
+            kernel_version=None,
+            matched_in=None,
+            message=message,
+        )
+
+    def _tc(self, tmp_targets: Path) -> Any:
+        import ltvm_pkg.target_config as cfg
+
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+        ):
+            return cfg.TargetConfig("rocky9")
+
+    # --- gate helper directly ----------------------------------------
+
+    def test_gate_ok_silent(
+        self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        with patch.object(
+            cli_mod, "validate_target", return_value=self._vr("ok")
+        ):
+            cli_mod._gate_lustre_validation(
+                tc, Path("/x"), force=False
+            )  # returns None
+        cap = capsys.readouterr()
+        assert cap.err == ""
+
+    def test_gate_best_effort_warns(
+        self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        with patch.object(
+            cli_mod,
+            "validate_target",
+            return_value=self._vr("best_effort", "close but not exact"),
+        ):
+            cli_mod._gate_lustre_validation(tc, Path("/x"), force=False)
+        err = capsys.readouterr().err
+        assert "best_effort" in err
+        assert "close but not exact" in err
+
+    def test_gate_refuse_raises(
+        self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        with patch.object(
+            cli_mod,
+            "validate_target",
+            return_value=self._vr("refuse", "no match"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli_mod._gate_lustre_validation(tc, Path("/x"), force=False)
+        assert exc.value.code == EXIT_ERROR
+        err = capsys.readouterr().err
+        assert "refuse" in err
+
+    def test_gate_refuse_force_passes(
+        self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        with patch.object(
+            cli_mod,
+            "validate_target",
+            return_value=self._vr("refuse", "no match"),
+        ):
+            cli_mod._gate_lustre_validation(tc, Path("/x"), force=True)
+        err = capsys.readouterr().err
+        assert "overriding refusal" in err
+
+    def test_gate_error_raises_even_with_force(
+        self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        with patch.object(
+            cli_mod,
+            "validate_target",
+            return_value=self._vr("error", "parse failure"),
+        ):
+            with pytest.raises(SystemExit) as exc:
+                cli_mod._gate_lustre_validation(tc, Path("/x"), force=True)
+        assert exc.value.code == EXIT_ERROR
+        err = capsys.readouterr().err
+        assert "parse failure" in err
+
+    # --- per-command gating ------------------------------------------
+
+    def _common_patches(self, tmp_targets: Path, lustre_tree: Path) -> Any:
+        """Patch context for running build/package commands without real work."""
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        return cli_mod, tc
+
+    def test_build_all_ok_proceeds(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+    ) -> None:
+        cli_mod, tc = self._common_patches(tmp_targets, lustre_tree)
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                cli_mod, "validate_target", return_value=self._vr("ok")
+            ),
+            patch.object(cli_mod, "_do_build_container"),
+            patch.object(
+                cli_mod, "build_kernel", return_value={"ok": True}
+            ) as bk,
+            patch.object(cli_mod, "build_image"),
+        ):
+            rc = _run_main(
+                [
+                    "build-all",
+                    "rocky9",
+                    "--lustre-tree",
+                    str(lustre_tree),
+                ],
+                capsys,
+            )
+        assert rc == EXIT_OK
+        assert bk.called
+
+    def test_build_all_refuse_aborts(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+    ) -> None:
+        cli_mod, tc = self._common_patches(tmp_targets, lustre_tree)
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                cli_mod,
+                "validate_target",
+                return_value=self._vr("refuse", "won't build"),
+            ),
+            patch.object(cli_mod, "_do_build_container") as dc,
+            patch.object(cli_mod, "build_kernel") as bk,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _run_main(
+                    [
+                        "build-all",
+                        "rocky9",
+                        "--lustre-tree",
+                        str(lustre_tree),
+                    ],
+                    capsys,
+                )
+        assert exc.value.code == EXIT_ERROR
+        assert not dc.called
+        assert not bk.called
+        assert "refuse" in capsys.readouterr().err
+
+    def test_build_all_refuse_force_compat_proceeds(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+    ) -> None:
+        cli_mod, tc = self._common_patches(tmp_targets, lustre_tree)
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                cli_mod,
+                "validate_target",
+                return_value=self._vr("refuse", "won't build"),
+            ),
+            patch.object(cli_mod, "_do_build_container"),
+            patch.object(cli_mod, "build_kernel", return_value={}),
+            patch.object(cli_mod, "build_image"),
+        ):
+            rc = _run_main(
+                [
+                    "build-all",
+                    "rocky9",
+                    "--lustre-tree",
+                    str(lustre_tree),
+                    "--force-compat",
+                ],
+                capsys,
+            )
+        assert rc == EXIT_OK
+        assert "overriding refusal" in capsys.readouterr().err
+
+    def test_build_all_best_effort_proceeds_with_warning(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+    ) -> None:
+        cli_mod, tc = self._common_patches(tmp_targets, lustre_tree)
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                cli_mod,
+                "validate_target",
+                return_value=self._vr("best_effort", "close enough"),
+            ),
+            patch.object(cli_mod, "_do_build_container"),
+            patch.object(cli_mod, "build_kernel", return_value={}),
+            patch.object(cli_mod, "build_image"),
+        ):
+            rc = _run_main(
+                [
+                    "build-all",
+                    "rocky9",
+                    "--lustre-tree",
+                    str(lustre_tree),
+                ],
+                capsys,
+            )
+        assert rc == EXIT_OK
+        assert "best_effort" in capsys.readouterr().err
+
+    def test_build_all_error_aborts_even_with_force(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+    ) -> None:
+        cli_mod, tc = self._common_patches(tmp_targets, lustre_tree)
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                cli_mod,
+                "validate_target",
+                return_value=self._vr("error", "parse bang"),
+            ),
+            patch.object(cli_mod, "_do_build_container") as dc,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _run_main(
+                    [
+                        "build-all",
+                        "rocky9",
+                        "--lustre-tree",
+                        str(lustre_tree),
+                        "--force-compat",
+                    ],
+                    capsys,
+                )
+        assert exc.value.code == EXIT_ERROR
+        assert not dc.called
+
+    def test_build_kernel_refuse_aborts(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                cli_mod,
+                "validate_target",
+                return_value=self._vr("refuse", "nope"),
+            ),
+            patch.object(cli_mod, "build_kernel") as bk,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _run_main(
+                    [
+                        "build-kernel",
+                        "rocky9",
+                        "--lustre-tree",
+                        str(lustre_tree),
+                    ],
+                    capsys,
+                )
+        assert exc.value.code == EXIT_ERROR
+        assert not bk.called
+
+    def test_build_kernel_ok_proceeds(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                cli_mod, "validate_target", return_value=self._vr("ok")
+            ),
+            patch.object(
+                cli_mod, "build_kernel", return_value={"ok": True}
+            ) as bk,
+        ):
+            rc = _run_main(
+                [
+                    "build-kernel",
+                    "rocky9",
+                    "--lustre-tree",
+                    str(lustre_tree),
+                ],
+                capsys,
+            )
+        assert rc == EXIT_OK
+        assert bk.called
+
+    def test_build_lustre_refuse_aborts(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                cli_mod,
+                "validate_target",
+                return_value=self._vr("refuse", "no"),
+            ),
+            patch.object(cli_mod, "build_lustre") as bl,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _run_main(
+                    [
+                        "build-lustre",
+                        "rocky9",
+                        str(lustre_tree),
+                    ],
+                    capsys,
+                )
+        assert exc.value.code == EXIT_ERROR
+        assert not bl.called
+
+    def test_build_lustre_refuse_force_compat_proceeds(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+    ) -> None:
+        """--force-compat overrides gating; existing --force is unrelated."""
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        # Create build-tree so the pre-flight check passes.
+        bt = tc.kernel_output_dir() / "build-tree"
+        bt.mkdir(parents=True, exist_ok=True)
+
+        ok_proc = MagicMock()
+        ok_proc.returncode = 0
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                cli_mod,
+                "validate_target",
+                return_value=self._vr("refuse", "no"),
+            ),
+            patch("subprocess.run", return_value=ok_proc),
+            patch.object(
+                cli_mod, "build_lustre", return_value={"ok": True}
+            ) as bl,
+        ):
+            rc = _run_main(
+                [
+                    "build-lustre",
+                    "rocky9",
+                    str(lustre_tree),
+                    "--force-compat",
+                ],
+                capsys,
+            )
+        assert rc == EXIT_OK
+        assert bl.called
+
+    def test_package_refuse_aborts(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                cli_mod,
+                "validate_target",
+                return_value=self._vr("refuse", "nope"),
+            ),
+            patch.object(cli_mod, "snapshot_lustre") as snap,
+            patch.object(cli_mod, "package_target") as pt,
+        ):
+            with pytest.raises(SystemExit) as exc:
+                _run_main(
+                    [
+                        "package",
+                        "rocky9",
+                        "--lustre-tree",
+                        str(lustre_tree),
+                    ],
+                    capsys,
+                )
+        assert exc.value.code == EXIT_ERROR
+        assert not snap.called
+        assert not pt.called
+
+    def test_package_ok_proceeds(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+        tmp_path: Path,
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        tc = self._tc(tmp_targets)
+        tarball = tmp_path / "out.tar.gz"
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                cli_mod, "validate_target", return_value=self._vr("ok")
+            ),
+            patch.object(cli_mod, "snapshot_lustre") as snap,
+            patch.object(
+                cli_mod, "package_target", return_value=tarball
+            ) as pt,
+        ):
+            rc = _run_main(
+                [
+                    "package",
+                    "rocky9",
+                    "--lustre-tree",
+                    str(lustre_tree),
+                ],
+                capsys,
+            )
+        assert rc == EXIT_OK
+        assert snap.called
+        assert pt.called
+
+    def test_deploy_refuse_aborts(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        tmp_path: Path,
+    ) -> None:
+        """cmd_deploy gate fires when --build triggers a rebuild."""
+        import argparse as ap
+
+        from ltvm_pkg import cli as cli_mod
+        from ltvm_pkg.vm_state import VMInfo
+
+        sockets_dir = tmp_path / "sockets"
+        sockets_dir.mkdir()
+        build_path = tmp_path / "lustre-release"
+        (build_path / "lustre").mkdir(parents=True)
+        (build_path / "lnet").mkdir()
+        (build_path / "configure.ac").write_text("")
+
+        tc = self._tc(tmp_targets)
+
+        with patch("ltvm_pkg.vm_state.SOCKETS", sockets_dir):
+            vm = VMInfo(
+                name="co1-gate-test",
+                ip="192.168.100.51",
+                os_id="rocky9",
+            )
+            vm.save()
+
+            with (
+                patch.object(cli_mod, "_require_root", return_value=None),
+                patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
+                patch.object(cli_mod, "TargetConfig", return_value=tc),
+                patch.object(
+                    cli_mod,
+                    "validate_target",
+                    return_value=self._vr("refuse", "nope"),
+                ),
+                patch("subprocess.run") as run_mock,
+            ):
+                args = ap.Namespace(
+                    vm="co1-gate-test",
+                    build=str(build_path),
+                    mount=False,
+                    target=None,
+                    kernel=None,
+                    json=False,
+                    userspace_only=False,
+                    force_compat=False,
+                )
+                with pytest.raises(SystemExit) as exc:
+                    cli_mod.cmd_deploy(args)
+
+        assert exc.value.code == EXIT_ERROR
+        # subprocess.run must NOT have been called to spawn build-lustre.
+        calls = [
+            c
+            for c in run_mock.call_args_list
+            if c.args
+            and isinstance(c.args[0], list)
+            and len(c.args[0]) > 1
+            and c.args[0][1] == "build-lustre"
+        ]
+        assert calls == []
+
+
+# ---------------------------------------------------------------------------
 # cmd_deploy: build gating
 # ---------------------------------------------------------------------------
 

@@ -241,6 +241,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Rebuild even if artifacts are current",
     )
+    sp.add_argument(
+        "--force-compat",
+        action="store_true",
+        help="Override a Lustre-tree compatibility refusal (not errors)",
+    )
     sp.set_defaults(func=cmd_build_all)
 
     # -- build-container --
@@ -264,6 +269,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "--force", action="store_true", help="Rebuild even if inputs unchanged"
+    )
+    sp.add_argument(
+        "--force-compat",
+        action="store_true",
+        help="Override a Lustre-tree compatibility refusal (not errors)",
     )
     sp.set_defaults(func=cmd_build_kernel)
 
@@ -321,6 +331,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Clean and reconfigure before building",
     )
+    sp.add_argument(
+        "--force-compat",
+        action="store_true",
+        help="Override a Lustre-tree compatibility refusal (not errors)",
+    )
     sp.set_defaults(func=cmd_build_lustre)
 
     # -- package (hidden: maintainer use only) --
@@ -352,6 +367,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--output",
         default=None,
         help="Output directory for tarball (default: output/)",
+    )
+    sp.add_argument(
+        "--force-compat",
+        action="store_true",
+        help="Override a Lustre-tree compatibility refusal (not errors)",
     )
     sp.set_defaults(func=cmd_package)
 
@@ -692,6 +712,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         default=None,
         help="Target OS for kernel modules (default: auto-detect from VM)",
+    )
+    sp.add_argument(
+        "--force-compat",
+        action="store_true",
+        help="Override a Lustre-tree compatibility refusal (not errors)",
     )
     sp.set_defaults(func=cmd_deploy)
 

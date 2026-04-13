@@ -227,6 +227,10 @@ def cmd_build_all(args: argparse.Namespace) -> int:
         )
     assert lustre_tree is not None
 
+    _gate_lustre_validation(
+        tc, lustre_tree, force=getattr(args, "force_compat", False)
+    )
+
     kernel = getattr(args, "kernel", None)
     resolved_kernel = tc.resolve_kernel(kernel)
 
@@ -345,6 +349,9 @@ def cmd_build_kernel(args: argparse.Namespace) -> int:
                 "--lustre-tree /path/to/lustre-release",
             )
         assert lustre_tree is not None
+        _gate_lustre_validation(
+            tc, lustre_tree, force=getattr(args, "force_compat", False)
+        )
 
     kernel = getattr(args, "kernel", None)
 
@@ -418,6 +425,10 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
             hint="Pass --lustre-tree or run from a Lustre source tree",
         )
     assert lustre_tree is not None
+
+    _gate_lustre_validation(
+        tc, lustre_tree, force=getattr(args, "force_compat", False)
+    )
 
     kernel = getattr(args, "kernel", None)
     resolved_kernel = tc.resolve_kernel(kernel)
@@ -524,6 +535,9 @@ def cmd_package(args: argparse.Namespace) -> int:
                 ),
             )
         assert lustre_path is not None
+        _gate_lustre_validation(
+            tc, lustre_path, force=getattr(args, "force_compat", False)
+        )
         if not use_json:
             print(f"Snapshotting Lustre tree from {lustre_path}...")
         try:
@@ -1140,6 +1154,42 @@ def cmd_validate(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def _gate_lustre_validation(
+    tc: TargetConfig,
+    lustre_tree: Path,
+    *,
+    force: bool,
+) -> None:
+    """Run validate_target as a gate before producing Lustre artifacts.
+
+    Behavior by status:
+      ok           silent pass
+      best_effort  one-line stderr warning, pass
+      refuse       print message; raise SystemExit(EXIT_ERROR) unless
+                   force is True (then print override line, pass)
+      error        print message; raise SystemExit(EXIT_ERROR) regardless
+                   of force -- parse/IO failures are not overridable
+    """
+    result = validate_target(tc, lustre_tree)
+    if result.status == "ok":
+        return
+    if result.status == "best_effort":
+        print(f"warning: [best_effort] {result.message}", file=sys.stderr)
+        return
+    if result.status == "refuse":
+        if force:
+            print(
+                f"--force-compat: overriding refusal: {result.message}",
+                file=sys.stderr,
+            )
+            return
+        print(f"[refuse] {result.message}", file=sys.stderr)
+        raise SystemExit(EXIT_ERROR)
+    # "error": parse / IO problems.  Not force-able.
+    print(f"[error] {result.message}", file=sys.stderr)
+    raise SystemExit(EXIT_ERROR)
+
+
 # ------------------------------------------------------------------
 # Runtime: VM management
 # ------------------------------------------------------------------
@@ -1599,6 +1649,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             if not use_json:
                 print("  Staging up to date, skipping build")
         else:
+            _gate_lustre_validation(
+                tc,
+                build_path,
+                force=getattr(args, "force_compat", False),
+            )
             build_cmd = [
                 "ltvm",
                 "build-lustre",
