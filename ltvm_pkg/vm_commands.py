@@ -42,6 +42,7 @@ from .vm_state import (
     SSH_TIMEOUT,
     VMInfo,
     VMNotFound,
+    lustre_libdir,
     resolve_os_artifacts,
 )
 
@@ -739,7 +740,22 @@ def cmd_llmount(args: argparse.Namespace) -> None:
         print(f"error: VM '{name}' not running", file=sys.stderr)
         sys.exit(EXIT_UNREACHABLE)
 
-    libdir = "/usr/lib64/lustre"
+    # Debian targets put Lustre under /usr/lib, RHEL under /usr/lib64.
+    # Resolve from the VM's recorded os_id; fall back to rhel with a
+    # warning if the target config is missing/broken.
+    os_family = "rhel"
+    if vm.os_id:
+        try:
+            from .target_config import TargetConfig
+
+            os_family = TargetConfig(vm.os_id).os_family
+        except (ValueError, FileNotFoundError) as e:
+            print(
+                f"warning: cannot resolve target {vm.os_id!r}, "
+                f"defaulting to rhel libdir: {e}",
+                file=sys.stderr,
+            )
+    libdir = lustre_libdir(os_family)
 
     if cleanup:
         command = (
