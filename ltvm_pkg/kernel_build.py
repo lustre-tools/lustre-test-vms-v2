@@ -41,32 +41,33 @@ def parse_lustre_target(
     """Parse a Lustre .target file for SRPM version info.
 
     Returns dict with keys: lnxmaj, lnxrel, srpm, series.
+
+    Thin wrapper around :func:`lustre_compat.parse_target_in` --
+    that module owns the authoritative parser; this function
+    preserves the dict shape the rest of kernel_build.py expects.
+    Historically this function always constructed the SRPM name
+    as ``kernel-<lnxmaj>-<lnxrel>.src.rpm`` regardless of what the
+    .target file said, so we preserve that behavior here.
     """
+    from .lustre_compat import parse_target_in
+
+    # parse_target_in raises FileNotFoundError / ValueError itself.
+    # Prefer .target over .target.in (matches historical behavior).
     targets_dir = Path(lustre_tree) / "lustre/kernel_patches/targets"
-    target_file = targets_dir / f"{lustre_target}.target"
-    if not target_file.exists():
-        target_file = targets_dir / f"{lustre_target}.target.in"
-    if not target_file.exists():
+    plain = targets_dir / f"{lustre_target}.target"
+    dotin = targets_dir / f"{lustre_target}.target.in"
+    if not plain.exists() and not dotin.exists():
         raise FileNotFoundError(
-            f"Lustre target file not found: {targets_dir}/{lustre_target}.target[.in]"
+            f"Lustre target file not found: {targets_dir}/"
+            f"{lustre_target}.target[.in]"
         )
 
-    text = target_file.read_text()
-
-    lnxmaj = _shell_var(text, "lnxmaj")
-    lnxrel = _shell_var(text, "lnxrel")
-    series = _shell_var(text, "SERIES")
-
-    if not lnxmaj or not lnxrel:
-        raise ValueError(f"Cannot parse lnxmaj/lnxrel from {target_file}")
-
-    srpm = f"kernel-{lnxmaj}-{lnxrel}.src.rpm"
-
+    ti = parse_target_in(Path(lustre_tree), lustre_target)
     return {
-        "lnxmaj": lnxmaj,
-        "lnxrel": lnxrel,
-        "srpm": srpm,
-        "series": series or f"{lustre_target}.series",
+        "lnxmaj": ti.lnxmaj,
+        "lnxrel": ti.lnxrel,
+        "srpm": f"kernel-{ti.lnxmaj}-{ti.lnxrel}.src.rpm",
+        "series": ti.SERIES,
     }
 
 
