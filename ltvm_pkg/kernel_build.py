@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
-from .paths import chown_to_sudo_user, load_meta_safe
+from .paths import load_meta_safe
 from .target_config import TARGETS_DIR
 
 if TYPE_CHECKING:
@@ -395,7 +395,7 @@ def build_kernel(
         target_config: TargetConfig instance
         lustre_tree: Path to a Lustre source tree (not needed for deb targets)
         force: Build even if inputs haven't changed
-        kernel: Lustre target name to build (defaults to target_config.default_kernel)
+        kernel: Lustre target name to build (defaults to target_config.lustre_target)
 
     Returns:
         dict with build metadata
@@ -423,7 +423,7 @@ def _build_kernel_deb(
     No Lustre kernel patches or .target file needed -- this is for
     client-only targets where we build against the stock distro kernel.
     """
-    lustre_target = kernel or target_config.default_kernel
+    lustre_target = kernel or target_config.lustre_target
     deb_source = target_config.kernel_deb_source
     assert deb_source is not None
 
@@ -488,14 +488,7 @@ def _build_kernel_deb(
             jobs,
             deb_source,
         )
-        try:
-            subprocess.run(container_cmd, check=True)
-        except BaseException:
-            # Don't leave a partial kernel output tree behind: downstream
-            # build-image / build-lustre only probe a couple of marker
-            # files and would happily consume a half-populated tree.
-            shutil.rmtree(kernel_out, ignore_errors=True)
-            raise
+        subprocess.run(container_cmd, check=True)
 
     # Verify outputs
     vmlinux = kernel_out / "vmlinux"
@@ -539,8 +532,6 @@ def _build_kernel_deb(
         built_at=meta["built_at"],
     )
 
-    chown_to_sudo_user(kernel_out, recursive=True)
-
     log.info("Kernel build complete")
     return meta
 
@@ -556,7 +547,7 @@ def _build_kernel_srpm(
     This is the original RHEL/SLES build path.
     """
     lustre_tree = Path(lustre_tree)
-    lustre_target = kernel or target_config.default_kernel
+    lustre_target = kernel or target_config.lustre_target
 
     # Resolve Lustre patches/config FIRST so we can fold them into the
     # staleness check.  Without this, editing a patch in place doesn't
@@ -670,14 +661,7 @@ def _build_kernel_srpm(
         ]
 
         log.info("Starting kernel build in container (j%d)...", jobs)
-        try:
-            subprocess.run(container_cmd, check=True)
-        except BaseException:
-            # Don't leave a partial kernel output tree behind: downstream
-            # build-image / build-lustre only probe a couple of marker
-            # files and would happily consume a half-populated tree.
-            shutil.rmtree(kernel_out, ignore_errors=True)
-            raise
+        subprocess.run(container_cmd, check=True)
 
     # Verify outputs
     vmlinux = kernel_out / "vmlinux"
@@ -717,9 +701,6 @@ def _build_kernel_srpm(
         "kernel", kernel=full_name, extra_hash=extra_hash, **meta
     )
 
-    chown_to_sudo_user(kernel_out, recursive=True)
-    chown_to_sudo_user(cache_dir, recursive=True)
-
     log.info("Kernel build complete")
     return meta
 
@@ -738,7 +719,7 @@ def kernel_status(
 
     Args:
         target_config: TargetConfig instance
-        kernel: Lustre target name to query (defaults to target_config.default_kernel)
+        kernel: Lustre target name to query (defaults to target_config.lustre_target)
         extra_hash: Lustre-inputs hash from kernel_build's caller, when
             available.  ``cmd_status`` doesn't have a Lustre tree on hand
             so it can't recompute the Lustre-inputs portion of the
@@ -750,7 +731,7 @@ def kernel_status(
 
     Returns dict with version, build date, staleness, etc.
     """
-    resolved = kernel or target_config.default_kernel
+    resolved = kernel or target_config.lustre_target
     meta_file = target_config.kernel_output_dir(kernel=resolved) / "meta.json"
     meta = load_meta_safe(meta_file)
     if meta is None:
