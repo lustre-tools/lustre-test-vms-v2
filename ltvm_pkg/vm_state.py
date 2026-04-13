@@ -117,7 +117,14 @@ def resolve_os_artifacts(
         with open(TARGETS_YAML) as f:
             cfg = yaml.safe_load(f)
         defaults = cfg.get("defaults", {})
-        target_cfg = cfg.get("targets", {}).get(os_name, {})
+        all_targets = cfg.get("targets", {})
+        if os_name not in all_targets:
+            known = ", ".join(sorted(all_targets)) or "(none configured)"
+            raise FileNotFoundError(
+                f"Unknown target {os_name!r}.  Known targets: {known}\n"
+                f"See: ltvm targets"
+            )
+        target_cfg = all_targets[os_name]
         kernel_suffix = target_cfg.get("kernels", {}).get("default", "")
         default_mem = int(
             target_cfg.get("default_mem", defaults.get("default_mem", 2048))
