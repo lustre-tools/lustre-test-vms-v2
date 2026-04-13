@@ -1,0 +1,6 @@
+lnxmaj=3.6.10
+lnxrel=4.fc18
+
+KERNEL_SRPM=kernel-${lnxmaj}-${lnxrel}.src.rpm
+SERIES=""
+EXTRA_VERSION=${lnxrel}_lustre.@VERSION@
