@@ -398,6 +398,11 @@ def cmd_create(args: argparse.Namespace) -> None:
     # race and claim the same address.  The lock is held until vm.save()
     # commits the .info file, at which point the IP is visible to peers.
     with alloc_ip(name, explicit_ip=getattr(args, "ip", None) or None) as ip:
+        # Re-check existence under the alloc_ip lock: the earlier check
+        # at the top of the function is unsynchronized so two concurrent
+        # `ltvm create <same name>` could both pass it.
+        if info_path.exists():
+            die(f"VM '{name}' already exists")
         vm = VMInfo(
             name=name,
             ip=ip,
@@ -1038,8 +1043,7 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
                 f"\nVM '{args.name}' did not come back after {args.wait + 5}s",
                 EXIT_TIMEOUT,
             )
-
-    if not is_running(vm):
+    elif not is_running(vm):
         die(f"VM '{args.name}' not running")
 
     print("finding vmcore...")
