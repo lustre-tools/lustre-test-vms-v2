@@ -1527,3 +1527,59 @@ class TestKernelArgPropagation:
         mock_bi.assert_called_once()
         _, kwargs = mock_bi.call_args
         assert kwargs.get("kernel") == "5.14-rhel9.5"
+
+    def test_build_all_lustre_build_runs_before_image(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+        lustre_tree: Path,
+    ) -> None:
+        """--lustre-build must run Lustre before the image so the
+        image-bake step can pick up the freshly staged Lustre."""
+        from ltvm_pkg import cli as cli_mod
+        from ltvm_pkg.lustre_compat import ValidationResult
+
+        tc = self._tc(tmp_targets)
+        vr = ValidationResult(
+            status="ok",
+            mode=None,
+            kernel_version=None,
+            matched_in=None,
+            message="stub",
+        )
+        calls: list[str] = []
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(cli_mod, "validate_target", return_value=vr),
+            patch.object(cli_mod, "_do_build_container"),
+            patch.object(
+                cli_mod,
+                "build_kernel",
+                side_effect=lambda *a, **kw: calls.append("kernel") or {"ok": True},
+            ),
+            patch.object(
+                cli_mod,
+                "build_lustre",
+                side_effect=lambda *a, **kw: calls.append("lustre") or {"ok": True},
+            ),
+            patch.object(
+                cli_mod,
+                "build_image",
+                side_effect=lambda *a, **kw: calls.append("image"),
+            ) as mock_bi,
+        ):
+            rc = _run_main(
+                [
+                    "build-all",
+                    "rocky9",
+                    "--lustre-tree",
+                    str(lustre_tree),
+                    "--lustre-build",
+                ],
+                capsys,
+            )
+
+        assert rc == EXIT_OK
+        assert calls == ["kernel", "lustre", "image"]
+        _, img_kwargs = mock_bi.call_args
+        assert img_kwargs.get("with_lustre") == str(lustre_tree)

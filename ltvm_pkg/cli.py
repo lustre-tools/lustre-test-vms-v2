@@ -259,17 +259,11 @@ def cmd_build_all(args: argparse.Namespace) -> int:
     except Exception as e:
         return _error(f"Kernel build failed: {e}", use_json)
 
-    # 3. Image
-    if not use_json:
-        print(f"==> Building image for {args.target} (kernel={resolved_kernel})...")
-    try:
-        build_image(tc, force=args.force, kernel=kernel)
-        results["image"] = "ok"
-    except Exception as e:
-        return _error(f"Image build failed: {e}", use_json)
-
-    # 4. Lustre (optional -- only when --lustre-build is passed)
-    if getattr(args, "lustre_build", False):
+    # 3. Lustre (optional -- only when --lustre-build is passed).
+    # Runs BEFORE the image so its per-kernel staging is in place for
+    # the image-bake step to auto-inject.
+    lustre_build = getattr(args, "lustre_build", False)
+    if lustre_build:
         if not use_json:
             print(
                 f"==> Building Lustre against {resolved_kernel} kernel tree..."
@@ -292,6 +286,20 @@ def cmd_build_all(args: argparse.Namespace) -> int:
             results["lustre"] = lmeta
         except Exception as e:
             return _error(f"Lustre build failed: {e}", use_json)
+
+    # 4. Image (picks up Lustre staging from step 3 if it was built).
+    if not use_json:
+        print(f"==> Building image for {args.target} (kernel={resolved_kernel})...")
+    try:
+        build_image(
+            tc,
+            force=args.force,
+            kernel=kernel,
+            with_lustre=str(lustre_tree) if lustre_build else None,
+        )
+        results["image"] = "ok"
+    except Exception as e:
+        return _error(f"Image build failed: {e}", use_json)
 
     _output(results, use_json)
     return EXIT_OK
