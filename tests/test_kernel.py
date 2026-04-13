@@ -12,6 +12,7 @@ from ltvm_pkg.kernel_build import (
     _build_config_fragment,
     _ensure_container_image,
     _shell_var,
+    _srpm_fallback_urls,
     download_srpm,
     kernel_status,
     parse_lustre_target,
@@ -256,6 +257,58 @@ class TestDownloadSrpm:
         cmd = mock_run.call_args[0][0]
         expected_url = f"{_ROCKY9_SRPM_URL}/{srpm}"
         assert expected_url in cmd
+
+    def test_404_falls_back_to_vault(self, tmp_path: Path) -> None:
+        import subprocess as _sp
+
+        srpm = "kernel-5.14.0-503.40.1.el9_5.src.rpm"
+        cache_dir = tmp_path / "cache"
+        calls: list[str] = []
+
+        def side_effect(cmd, *args, **kwargs):
+            out_idx = cmd.index("-o") + 1
+            url = cmd[-1]
+            calls.append(url)
+            if "/pub/rocky/9/" in url:
+                raise _sp.CalledProcessError(22, cmd)
+            Path(cmd[out_idx]).write_bytes(b"fake srpm")
+            r = MagicMock()
+            r.returncode = 0
+            return r
+
+        with patch(
+            "ltvm_pkg.kernel_build.subprocess.run",
+            new=MagicMock(side_effect=side_effect),
+        ):
+            download_srpm(srpm, cache_dir, _ROCKY9_SRPM_URL)
+
+        assert len(calls) == 2
+        assert "/pub/rocky/9/" in calls[0]
+        assert "/vault/rocky/9.5/" in calls[1]
+        assert calls[1].endswith(srpm)
+
+
+class TestSrpmFallbackUrls:
+    _PUB = "https://dl.rockylinux.org/pub/rocky/9/BaseOS/source/tree/Packages/k"
+
+    def test_rocky_pub_to_vault(self) -> None:
+        urls = _srpm_fallback_urls(
+            self._PUB, "kernel-5.14.0-503.40.1.el9_5.src.rpm"
+        )
+        assert urls == [
+            "https://dl.rockylinux.org/vault/rocky/9.5/BaseOS/source/tree/Packages/k/kernel-5.14.0-503.40.1.el9_5.src.rpm"
+        ]
+
+    def test_non_rocky_url_no_fallback(self) -> None:
+        assert _srpm_fallback_urls("https://example.com/srpms", "kernel-x.src.rpm") == []
+
+    def test_non_el_srpm_no_fallback(self) -> None:
+        assert _srpm_fallback_urls(self._PUB, "kernel-something.src.rpm") == []
+
+    def test_el_major_mismatch_no_fallback(self) -> None:
+        assert _srpm_fallback_urls(
+            self._PUB, "kernel-4.18.0-553.89.1.el8_10.src.rpm"
+        ) == []
 
 
 # ------------------------------------------------------------------

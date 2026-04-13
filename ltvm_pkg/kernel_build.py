@@ -213,8 +213,7 @@ def download_srpm(srpm_name: str, cache_dir: str | Path, base_url: str) -> Path:
         log.info("Using cached SRPM: %s", cached)
         return cached
 
-    url = f"{base_url}/{srpm_name}"
-    log.info("Downloading SRPM: %s", url)
+    urls = [f"{base_url}/{srpm_name}"] + _srpm_fallback_urls(base_url, srpm_name)
 
     # Download to a per-pid temp file in the same directory and rename on
     # success.  A previous interrupted curl could otherwise leave a
@@ -231,10 +230,21 @@ def download_srpm(srpm_name: str, cache_dir: str | Path, base_url: str) -> Path:
     os.close(fd)
     tmp = Path(tmp_str)
     try:
-        subprocess.run(
-            ["curl", "-fSL", "--progress-bar", "-o", str(tmp), url],
-            check=True,
-        )
+        last_err: Exception | None = None
+        for url in urls:
+            log.info("Downloading SRPM: %s", url)
+            try:
+                subprocess.run(
+                    ["curl", "-fSL", "--progress-bar", "-o", str(tmp), url],
+                    check=True,
+                )
+                break
+            except subprocess.CalledProcessError as e:
+                last_err = e
+                log.info("  not found at %s", url)
+        else:
+            assert last_err is not None
+            raise last_err
         tmp.rename(cached)
     except BaseException:
         try:
@@ -244,6 +254,27 @@ def download_srpm(srpm_name: str, cache_dir: str | Path, base_url: str) -> Path:
         raise
 
     return cached
+
+
+_ROCKY_PUB_RE = re.compile(r"^(https?://[^/]+)/pub/rocky/(\d+)/(.*)$")
+_EL_MINOR_RE = re.compile(r"\.el(\d+)_(\d+)\.src\.rpm$")
+
+
+def _srpm_fallback_urls(base_url: str, srpm_name: str) -> list[str]:
+    """Derive vault fallback URLs for an SRPM when the primary 404s.
+
+    Rocky only keeps the current minor at /pub/rocky/<major>/; older
+    minors move to /vault/rocky/<major>.<minor>/.  We detect this from
+    the SRPM's ``.elN_M.src.rpm`` suffix and the base URL's shape.
+    """
+    pub = _ROCKY_PUB_RE.match(base_url)
+    minor = _EL_MINOR_RE.search(srpm_name)
+    if not pub or not minor:
+        return []
+    host, major, rest = pub.group(1), pub.group(2), pub.group(3)
+    if minor.group(1) != major:
+        return []
+    return [f"{host}/vault/rocky/{major}.{minor.group(2)}/{rest}/{srpm_name}"]
 
 
 # ------------------------------------------------------------------
