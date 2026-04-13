@@ -39,6 +39,7 @@ COPY common/rc.local           /etc/rc.d/rc.local
 COPY common/setup-network.sh   /tmp/setup-network.sh
 COPY common/setup-kdump.sh     /tmp/setup-kdump.sh
 COPY common/setup-services.sh  /tmp/setup-services.sh
+COPY common/lustre-tests-path.sh /etc/profile.d/lustre-tests-path.sh
 
 # Source-built tools: IOR, mdtest, iozone, pjdfstest, FlameGraph, drgn
 RUN bash /tmp/build-tools.sh
