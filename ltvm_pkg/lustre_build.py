@@ -430,16 +430,18 @@ fi""")
     # cross-kernel builds for the same target don't clobber each
     # other's .ko files OR the userland portion (usr/sbin, etc.) that
     # has no per-kver discriminator inside the DESTDIR layout.
-    resolved_kernel = kernel
-    if resolved_kernel is None:
-        try:
-            from .target_config import TargetConfig
+    # Always resolve to the full kernel directory name (e.g.
+    # "5.14-rhel9.5" -> "5.14-rhel9.5-5.14.0-503.40.1.el9_5") so the
+    # staging path matches what other commands (build-image, deploy)
+    # compute via TargetConfig.resolve_kernel(kernel).
+    try:
+        from .target_config import TargetConfig
 
-            resolved_kernel = TargetConfig(target, arch=arch).resolve_kernel(
-                None
-            )
-        except Exception:
-            resolved_kernel = kver
+        resolved_kernel = TargetConfig(target, arch=arch).resolve_kernel(
+            kernel
+        )
+    except Exception:
+        resolved_kernel = kernel or kver
     host_staging = staging_path(
         lustre_tree, target, arch=arch, kernel=resolved_kernel
     )
