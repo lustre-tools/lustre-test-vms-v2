@@ -1813,6 +1813,17 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     kver = vm.kver  # already set on boot; keep existing value
     try:
         vm.update_deploy(int(_time.time()), str(build_path), kver)
+    except PermissionError:
+        # Non-root deploy can't take the lock file in a root-owned
+        # sockets/ -- the actual module copy already happened, only
+        # the "last deployed at" timestamp fails to persist.
+        if not use_json:
+            print(
+                "  Warning: couldn't update deploy timestamp "
+                "(missing write perm on sockets dir); "
+                "run `sudo ltvm doctor --fix` or rerun as root",
+                file=sys.stderr,
+            )
     except VMNotFound:
         if not use_json:
             print(
