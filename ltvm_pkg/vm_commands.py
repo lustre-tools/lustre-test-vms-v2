@@ -371,11 +371,6 @@ def cmd_create(args: argparse.Namespace) -> None:
     os_arts = resolve_os_artifacts(
         os_target, arch=arch, kernel=explicit_kernel or None
     )
-    if defaulted_target and not explicit_image and not explicit_kernel:
-        print(
-            f"using default target: {os_target} "
-            f"(kernel: {os_arts.kernel.parent.name})"
-        )
     image = explicit_image or str(os_arts.image)
     kernel = str(os_arts.kernel)
     # If the user didn't pass --mem, fall back to the target's default
@@ -383,6 +378,18 @@ def cmd_create(args: argparse.Namespace) -> None:
     # so we can distinguish "user said 2048" from "user said nothing".
     if args.mem is None:
         args.mem = os_arts.default_mem
+    if defaulted_target and not explicit_image and not explicit_kernel:
+        kver_short = os_arts.kernel.parent.name
+        disk_desc = (
+            f"mdt={args.mdt_disks} ost={args.ost_disks}"
+            if (args.mdt_disks or args.ost_disks)
+            else "no data disks"
+        )
+        print(
+            f"using default target: {os_target} "
+            f"(kernel: {kver_short}; "
+            f"vcpus={args.vcpus} mem={args.mem}MB {disk_desc})"
+        )
 
     base_name = Path(image).name
     os_id = os_target
