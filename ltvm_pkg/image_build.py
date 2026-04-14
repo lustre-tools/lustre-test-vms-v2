@@ -305,6 +305,7 @@ def _kdump_inject_lines(
         else:
             lines.append(
                 f"RUN dracut --kver {kver} --force "
+                f"--no-hostonly --no-hostonly-cmdline "
                 f"/boot/initramfs-{kver}.img {kver}"
             )
         return lines
