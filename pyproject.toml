@@ -1,6 +1,6 @@
 [project]
 name = "lustre-test-vms"
-version = "0.1.0"
+version = "0.20.0"
 description = "Lustre test VM infrastructure"
 requires-python = ">=3.9"
 dependencies = [

@@ -19,6 +19,7 @@ import importlib
 import importlib.machinery
 import importlib.util
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -57,14 +58,25 @@ ltvm_script = _load_ltvm()
 
 
 class TestVersion:
-    def test_base_version_is_010(self) -> None:
-        assert ltvm_pkg.BASE_VERSION == "0.10"
+    """Assertions tied to BASE_VERSION as a variable, not a literal,
+    so a version bump doesn't require re-plumbing every test.
+    test_base_version_shape covers the separate concern that the
+    constant itself looks reasonable."""
+
+    def test_base_version_shape(self) -> None:
+        # Reject empty, dev-marker suffixes, or anything that isn't
+        # MAJOR.MINOR -- the compute-version logic and --version output
+        # rely on this shape.
+        assert re.fullmatch(r"\d+\.\d+", ltvm_pkg.BASE_VERSION), (
+            f"BASE_VERSION must match MAJOR.MINOR, got "
+            f"{ltvm_pkg.BASE_VERSION!r}"
+        )
 
     def test_version_starts_with_base_version(self) -> None:
-        # Either "0.10" or "0.10.<hash>" depending on env
-        assert (
-            ltvm_pkg.__version__ == "0.10"
-            or ltvm_pkg.__version__.startswith("0.10.")
+        base = ltvm_pkg.BASE_VERSION
+        v = ltvm_pkg.__version__
+        assert v == base or v.startswith(base + "."), (
+            f"__version__ ({v!r}) should be {base!r} or {base!r}.<hash>"
         )
 
     def test_compute_version_uses_baked_hash(self) -> None:
@@ -72,16 +84,21 @@ class TestVersion:
         fake = type(sys)("ltvm_pkg._build_info")
         fake.BUILD_HASH = "deadbee"  # type: ignore[attr-defined]
         with patch.dict(sys.modules, {"ltvm_pkg._build_info": fake}):
-            assert ltvm_pkg._compute_version() == "0.10.deadbee"
+            assert (
+                ltvm_pkg._compute_version()
+                == f"{ltvm_pkg.BASE_VERSION}.deadbee"
+            )
 
     def test_compute_version_falls_back_to_git(self) -> None:
         """No _build_info → fall back to _git_short_hash."""
-        # Make sure any cached _build_info import is removed.
         with (
             patch.dict(sys.modules, {"ltvm_pkg._build_info": None}),
             patch.object(ltvm_pkg, "_git_short_hash", return_value="cafef00"),
         ):
-            assert ltvm_pkg._compute_version() == "0.10.cafef00"
+            assert (
+                ltvm_pkg._compute_version()
+                == f"{ltvm_pkg.BASE_VERSION}.cafef00"
+            )
 
     def test_compute_version_bare_when_no_git(self) -> None:
         """No _build_info and git unavailable → just BASE_VERSION."""
@@ -89,7 +106,7 @@ class TestVersion:
             patch.dict(sys.modules, {"ltvm_pkg._build_info": None}),
             patch.object(ltvm_pkg, "_git_short_hash", return_value=None),
         ):
-            assert ltvm_pkg._compute_version() == "0.10"
+            assert ltvm_pkg._compute_version() == ltvm_pkg.BASE_VERSION
 
     def test_git_short_hash_handles_missing_git(self, tmp_path: Path) -> None:
         """If the parent dir isn't a git checkout, return None."""
@@ -114,7 +131,7 @@ class TestVersionFlag:
             p.parse_args(["--version"])
         assert exc_info.value.code == 0
         out = capsys.readouterr().out
-        assert out.startswith("ltvm 0.10")
+        assert out.startswith(f"ltvm {ltvm_pkg.BASE_VERSION}")
 
     def test_version_flag_via_main(
         self, capsys: pytest.CaptureFixture[str]
@@ -124,7 +141,7 @@ class TestVersionFlag:
                 ltvm_script.main()
         assert exc_info.value.code == 0
         out = capsys.readouterr().out
-        assert "ltvm 0.10" in out
+        assert f"ltvm {ltvm_pkg.BASE_VERSION}" in out
 
 
 # ---------------------------------------------------------------------------
