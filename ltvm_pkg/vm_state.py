@@ -281,7 +281,9 @@ SUBNET = _read_subnet()
 GATEWAY = f"{SUBNET}.1"
 MARKER = "# qemu-vm"
 ROOT_PASSWORD = "initial0"
-SSH_TIMEOUT = 30
+# Cross-arch (TCG) boots are 5-20x slower than native; let operators bump
+# the wait-for-SSH timeout without patching the source.
+SSH_TIMEOUT = int(os.environ.get("LTVM_SSH_TIMEOUT", "30"))
 DEFAULT_TARGET = "rocky9"
 
 
