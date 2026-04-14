@@ -588,13 +588,6 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
             f"--kernel {resolved_kernel}",
         )
 
-    _gate_lustre_validation(
-        tc,
-        lustre_tree,
-        force=args.force_compat,
-        kernel_build_tree=build_tree,
-    )
-
     # Server build follows lustre.mode unless overridden
     enable_server = tc.lustre_mode != LustreMode.CLIENT
     if getattr(args, "disable_server", False):
