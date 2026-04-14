@@ -1470,6 +1470,17 @@ def cmd_targets(args: argparse.Namespace) -> int:
                 avail = "fetch"
             else:
                 avail = "build"
+            # Flag "behind latest" when a local copy exists and differs
+            # from the published release.  "?" (GitHub unreachable) and
+            # "-" (nothing published) both mean "no comparison possible";
+            # skip the marker in those cases rather than crying wolf.
+            behind = (
+                local not in ("-", "?")
+                and remote not in ("-", "?")
+                and local != remote
+            )
+            if behind:
+                avail = f"{avail}!"
             rows.append(
                 {
                     "name": name,
@@ -1502,12 +1513,15 @@ def cmd_targets(args: argparse.Namespace) -> int:
     print("-" * len(hdr))
     prev_key: tuple[str, str] | None = None
     has_experimental = False
+    has_behind = False
     for r in rows:
         if "kernel" not in r:
             print(f"{r['name']:<12} {r.get('error', '')}")
             prev_key = None
             continue
         default_mark = "yes" if r["is_default"] else ""
+        if r["available"].endswith("!"):
+            has_behind = True
         key = (r["name"], r["arch"])
         if key == prev_key:
             name_col = ""
@@ -1526,9 +1540,15 @@ def cmd_targets(args: argparse.Namespace) -> int:
             f"{default_mark}"
         )
         prev_key = key
-    if has_experimental:
+    if has_experimental or has_behind:
         print()
-        print("* experimental -- may not build or boot cleanly")
+        if has_experimental:
+            print("* experimental -- may not build or boot cleanly")
+        if has_behind:
+            print(
+                "! local copy behind latest release -- "
+                "`sudo ltvm fetch --replace <target>` to refresh"
+            )
     return EXIT_OK
 
 
