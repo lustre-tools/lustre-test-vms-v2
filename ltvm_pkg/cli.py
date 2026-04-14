@@ -1340,13 +1340,10 @@ def _gate_lustre_validation(
       error        print message; raise SystemExit(EXIT_ERROR) regardless
                    of force -- parse/IO failures are not overridable
 
-    Deb-based targets have no .target.in in Lustre's kernel_patches/,
-    so the gate always returns status=error -- skip it entirely; the
-    kernel build for those targets uses the distro's source packages
-    rather than Lustre's RHEL-style SRPM flow.
+    validate_target now owns the decision for all targets, including
+    deb-based ones (client-mode ubuntu lives in ChangeLog's client
+    kernel lists).
     """
-    if tc.kernel_deb_source:
-        return
     result = validate_target(tc, lustre_tree)
     if result.status == "ok":
         return
