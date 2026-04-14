@@ -1051,7 +1051,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             f"  sudo ltvm create co1-test --os {target}{arch_flag} "
             f"--vcpus 2 --mdt-disks 1 --ost-disks 2"
         )
-        print("  sudo ltvm deploy co1-test --mount")
+        print("  ltvm llmount co1-test")
 
     return EXIT_OK
 

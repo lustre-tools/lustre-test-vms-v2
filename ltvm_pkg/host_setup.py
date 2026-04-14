@@ -1055,4 +1055,4 @@ def run_setup(
         log.info(
             "  sudo ltvm create co1-test --os rocky9 --vcpus 2 --mdt-disks 1 --ost-disks 2"
         )
-        log.info("  sudo ltvm deploy co1-test --mount")
+        log.info("  ltvm llmount co1-test")
