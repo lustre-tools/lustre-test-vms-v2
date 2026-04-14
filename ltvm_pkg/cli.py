@@ -399,21 +399,23 @@ def cmd_build_image(args: argparse.Namespace) -> int:
     if not args.no_lustre:
         lustre_tree = Path(args.lustre_tree) if args.lustre_tree else Path(os.getcwd())
         candidate = staging_path(lustre_tree, args.target, arch=tc.arch, kernel=resolved_kernel)
-        if candidate.exists():
-            _gate_lustre_validation(
-                tc,
-                lustre_tree,
-                force=args.force_compat,
-                kernel_build_tree=tc.kernel_output_dir(kernel=resolved_kernel) / "build-tree",
+        if not candidate.exists():
+            return _error(
+                f"no Lustre staging at {candidate}",
+                use_json,
+                hint=(
+                    f"run `ltvm build-lustre {args.target} --kernel "
+                    f"{resolved_kernel}` first, or pass --no-lustre to "
+                    f"bake a kernel-only image"
+                ),
             )
-            with_lustre = str(lustre_tree)
-        else:
-            print(
-                f"warning: no Lustre staging at {candidate}; image will not "
-                f"contain Lustre (run `ltvm build-lustre {args.target} "
-                f"--kernel {resolved_kernel}` or pass --no-lustre to silence)",
-                file=sys.stderr,
-            )
+        _gate_lustre_validation(
+            tc,
+            lustre_tree,
+            force=args.force_compat,
+            kernel_build_tree=tc.kernel_output_dir(kernel=resolved_kernel) / "build-tree",
+        )
+        with_lustre = str(lustre_tree)
 
     if not use_json:
         extra = f" +lustre={with_lustre}" if with_lustre else ""

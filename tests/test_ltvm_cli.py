@@ -1408,7 +1408,13 @@ class TestKernelArgPropagation:
         ):
             mock_bi.return_value = Path("/fake/base.ext4")
             rc = _run_main(
-                ["build-image", "rocky9", "--kernel", "5.14-rhel9.5"],
+                [
+                    "build-image",
+                    "rocky9",
+                    "--kernel",
+                    "5.14-rhel9.5",
+                    "--no-lustre",
+                ],
                 capsys,
             )
 
@@ -1487,7 +1493,7 @@ class TestKernelArgPropagation:
         _, kwargs = mock_bi.call_args
         assert kwargs.get("with_lustre") is None
 
-    def test_build_image_missing_staging_warns_and_skips(
+    def test_build_image_missing_staging_errors(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_targets: Path,
@@ -1508,11 +1514,11 @@ class TestKernelArgPropagation:
                 capsys,
             )
 
-        assert rc == EXIT_OK
-        _, kwargs = mock_bi.call_args
-        assert kwargs.get("with_lustre") is None
+        assert rc != EXIT_OK
+        mock_bi.assert_not_called()
         captured = capsys.readouterr()
         assert "no Lustre staging" in captured.err
+        assert "--no-lustre" in captured.err
 
     def test_build_all_kernel_reaches_image_builder(
         self,
