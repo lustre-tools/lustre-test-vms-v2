@@ -44,6 +44,7 @@ COPY common/setup-network.sh   /tmp/setup-network.sh
 COPY common/setup-kdump.sh     /tmp/setup-kdump.sh
 COPY common/setup-services.sh  /tmp/setup-services.sh
 COPY common/lustre-tests-path.sh /etc/profile.d/lustre-tests-path.sh
+RUN cat /etc/profile.d/lustre-tests-path.sh >> /etc/bashrc
 
 # EL8-specific: kernel-devel + lustre userspace build deps.
 # kernel-devel is excluded from the common package list (not needed on
