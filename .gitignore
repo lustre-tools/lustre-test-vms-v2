@@ -12,3 +12,4 @@ ltvm_pkg/_build_info.py
 *.db
 .beads-credential-key
 __pycache__/
+.claude/worktrees/
