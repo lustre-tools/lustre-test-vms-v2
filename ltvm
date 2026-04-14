@@ -403,8 +403,16 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--replace",
         action="store_true",
-        help="Wipe the target's existing output dir before fetching "
-        "(forces a clean re-fetch even if already up to date)",
+        help="Wipe the target's existing output dir before fetching. "
+        "By default refuses if the local tag already matches the "
+        "remote release (no-op).  Combine with --force to re-fetch "
+        "an identical release anyway.",
+    )
+    sp.add_argument(
+        "--force",
+        action="store_true",
+        help="With --replace, re-fetch even when the local tag "
+        "already matches the remote release.",
     )
     sp.set_defaults(func=cmd_fetch)
 

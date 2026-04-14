@@ -1040,9 +1040,23 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         release_tag = ""
     tag_file = OUTPUT_DIR / target / arch / ".ltvm-release-tag"
     replace = bool(getattr(args, "replace", False))
-    if not replace and release_tag and tag_file.exists():
-        existing_tag = tag_file.read_text().strip()
-        if existing_tag == release_tag:
+    force = bool(getattr(args, "force", False))
+    existing_tag = (
+        tag_file.read_text().strip() if tag_file.exists() else ""
+    )
+    if release_tag and existing_tag == release_tag:
+        # Same tag already on disk.  Without --replace: no-op success.
+        # With --replace but no --force: refuse, because the "clean
+        # re-fetch" would produce identical bytes -- probably not
+        # what the user meant to pay for.
+        if replace and not force:
+            return _error(
+                f"local copy already at {release_tag}; "
+                f"--replace would re-download identical bytes",
+                use_json,
+                hint="pass --force to re-fetch anyway",
+            )
+        if not replace:
             if not use_json:
                 print(f"  Already up to date ({release_tag})")
             result = {"target": target, "path": str(OUTPUT_DIR / target / arch)}
