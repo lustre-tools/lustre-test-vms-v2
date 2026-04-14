@@ -182,6 +182,15 @@ def _fake_repo(tmp_path: Path) -> Path:
 
 
 class TestCmdUpdate:
+    @pytest.fixture(autouse=True)
+    def _bypass_require_root(self):
+        # cmd_update requires root to avoid leaking a git permission
+        # error when attendees run it against an admin-owned checkout.
+        # Tests call it directly as an unprivileged user, so stub the
+        # guard out.
+        with patch.object(ltvm_cli, "_require_root", return_value=None):
+            yield
+
     def test_repo_root_resolves_through_symlink(self, tmp_path: Path) -> None:
         """``ltvm update`` is run from an installed (symlinked) copy.
 

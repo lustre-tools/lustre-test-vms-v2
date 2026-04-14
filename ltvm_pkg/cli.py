@@ -2400,6 +2400,14 @@ def cmd_update(args: argparse.Namespace) -> int:
     user's checkout.  Reports the old and new version on success.
     """
     use_json = args.json
+    # git pull writes into the checkout (.git/FETCH_HEAD, refs, ...).
+    # In shared-install deployments the ltvm repo is owned by one user
+    # (e.g. admin) and everyone else runs ltvm through PATH, so letting
+    # the unprivileged caller hit this leaks a git permission error
+    # mid-command.  Require root up front so sudo is the obvious fix.
+    err = _require_root(use_json)
+    if err is not None:
+        return err
     repo = _ltvm_repo_root()
 
     if not (repo / ".git").exists():
