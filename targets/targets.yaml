@@ -1,7 +1,6 @@
 defaults:
   arch: x86_64
   os_family: rhel
-  server: true
 targets:
   rocky10:
     container_image: quay.io/rockylinux/rockylinux:10.1
@@ -16,7 +15,6 @@ targets:
       mode: server_ldiskfs
     os_name: rocky
     os_version: '10.1'
-    server: false
     srpm_url: https://dl.rockylinux.org/pub/rocky/10/BaseOS/source/tree/Packages/k
     status: working
   rocky8:
@@ -31,7 +29,6 @@ targets:
       mode: server_ldiskfs
     os_name: rocky
     os_version: '8.9'
-    server: false
     srpm_url: https://dl.rockylinux.org/pub/rocky/8/BaseOS/source/tree/Packages/k
     status: working
   rocky9:
@@ -65,5 +62,4 @@ targets:
     os_family: debian
     os_name: ubuntu
     os_version: '24.04'
-    server: false
     status: experimental

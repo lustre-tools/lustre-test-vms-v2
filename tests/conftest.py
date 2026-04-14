@@ -14,7 +14,7 @@ if TYPE_CHECKING:
     from ltvm_pkg.target_config import TargetConfig
 
 _ROCKY9_YAML: dict = {
-    "defaults": {"arch": "x86_64", "os_family": "rhel", "server": True},
+    "defaults": {"arch": "x86_64", "os_family": "rhel"},
     "targets": {
         "rocky9": {
             "os_name": "rocky",

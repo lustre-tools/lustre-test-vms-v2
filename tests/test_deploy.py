@@ -511,6 +511,7 @@ class TestCmdDeployPerKernelStaging:
 
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(cli_mod, "_gate_lustre_validation"),
             patch("ltvm_pkg.cli.deploy_to_vm") as deploy_mock,
         ):
             args = ap.Namespace(

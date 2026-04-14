@@ -12,6 +12,7 @@ from ltvm_pkg.lustre_compat import (
     TargetIn,
     ValidationResult,
     parse_changelog,
+    parse_ldiskfs_series,
     parse_target_in,
     parse_which_patch,
     validate_target,
@@ -264,6 +265,28 @@ class TestParseTargetIn:
 
 
 # ------------------------------------------------------------------
+# parse_ldiskfs_series
+# ------------------------------------------------------------------
+
+
+class TestParseLdiskfsSeries:
+    def test_empty_when_dir_absent(self, tmp_path: Path) -> None:
+        assert parse_ldiskfs_series(tmp_path) == set()
+
+    def test_reads_series_stems(self, tmp_path: Path) -> None:
+        d = tmp_path / "lustre/ldiskfs/kernel_patches/series"
+        d.mkdir(parents=True)
+        (d / "ldiskfs-6.8.0-90-ubuntu24.series").write_text("")
+        (d / "ldiskfs-5.14.0-427.13.1.el9.series").write_text("")
+        (d / "README").write_text("ignored")
+        got = parse_ldiskfs_series(tmp_path)
+        assert got == {
+            "ldiskfs-6.8.0-90-ubuntu24",
+            "ldiskfs-5.14.0-427.13.1.el9",
+        }
+
+
+# ------------------------------------------------------------------
 # validate_target
 # ------------------------------------------------------------------
 
@@ -283,6 +306,7 @@ def _make_tree(
     which_patch: str | None,
     changelog: str | None,
     target_ins: dict[str, str],
+    ldiskfs_series: list[str] | None = None,
 ) -> Path:
     tree = _mktree(tmp_path)
     (tree / "lustre").mkdir(exist_ok=True)
@@ -294,6 +318,11 @@ def _make_tree(
         (tree / f"lustre/kernel_patches/targets/{name}.target.in").write_text(
             body
         )
+    if ldiskfs_series:
+        ld = tree / "lustre/ldiskfs/kernel_patches/series"
+        ld.mkdir(parents=True, exist_ok=True)
+        for stem in ldiskfs_series:
+            (ld / f"{stem}.series").write_text("")
     return tree
 
 
@@ -302,6 +331,20 @@ _TI_RHEL97 = (
     'lnxrel="611.13.1.el9_7"\n'
     "KERNEL_SRPM=kernel-${lnxmaj}-${lnxrel}.src.rpm\n"
     "SERIES=5.14-rhel9.7.series\n"
+)
+
+_TI_UBUNTU2404 = (
+    'lnxmaj="6.8.0"\n'
+    'lnxrel="90"\n'
+    "KERNEL_SRPM=kernel-${lnxmaj}-${lnxrel}.src.rpm\n"
+    "SERIES=6.8-ubuntu2404.series\n"
+)
+
+_TI_RHEL85 = (
+    'lnxmaj="4.18.0"\n'
+    'lnxrel="348.23.1.el8"\n'
+    "KERNEL_SRPM=kernel-${lnxmaj}-${lnxrel}.src.rpm\n"
+    "SERIES=4.18-rhel8.5.series\n"
 )
 
 _TI_RHEL97_MISMATCH = (
@@ -478,6 +521,73 @@ class TestValidateTarget:
         r = validate_target(tc, tree)
         assert r.status == "error"
         assert "which_patch" in r.message
+
+    def test_ldiskfs_series_fallback_ubuntu(self, tmp_path: Path) -> None:
+        """ubuntu server_ldiskfs: not in which_patch but a matching
+        ldiskfs-<major>.<minor>.* series file exists -> ok."""
+        tree = _make_tree(
+            tmp_path,
+            which_patch=_WP_ABSENT,
+            changelog=_CL_PRIMARY,
+            target_ins={"6.8-ubuntu2404": _TI_UBUNTU2404},
+            ldiskfs_series=["ldiskfs-6.8.0-90-ubuntu24"],
+        )
+        tc = _FakeTC("6.8-ubuntu2404", LustreMode.SERVER_LDISKFS)
+        r = validate_target(tc, tree)
+        assert r.status == "ok"
+        assert r.matched_in == "ldiskfs_series"
+        assert "ldiskfs-6.8.0-90-ubuntu24" in r.message
+
+    def test_ldiskfs_series_no_match(self, tmp_path: Path) -> None:
+        """ubuntu server_ldiskfs: no ldiskfs series file matches the
+        kernel -> refuse."""
+        tree = _make_tree(
+            tmp_path,
+            which_patch=_WP_ABSENT,
+            changelog=_CL_PRIMARY,
+            target_ins={"6.8-ubuntu2404": _TI_UBUNTU2404},
+            ldiskfs_series=["ldiskfs-5.14.0-427.13.1.el9"],
+        )
+        tc = _FakeTC("6.8-ubuntu2404", LustreMode.SERVER_LDISKFS)
+        r = validate_target(tc, tree)
+        assert r.status == "refuse"
+        assert r.matched_in == "not_listed"
+
+    def test_client_primary_match(self, tmp_path: Path) -> None:
+        tree = _make_tree(
+            tmp_path,
+            which_patch=_WP_BASIC,
+            changelog=_CL_PRIMARY,
+            target_ins={"5.14-rhel9.7": _TI_RHEL97},
+        )
+        tc = _FakeTC("5.14-rhel9.7", LustreMode.CLIENT)
+        r = validate_target(tc, tree)
+        assert r.status == "ok"
+        assert r.matched_in == "changelog_client_primary"
+
+    def test_client_best_effort_match(self, tmp_path: Path) -> None:
+        tree = _make_tree(
+            tmp_path,
+            which_patch=_WP_BASIC,
+            changelog=_CL_PRIMARY,
+            target_ins={"4.18-rhel8.5": _TI_RHEL85},
+        )
+        tc = _FakeTC("4.18-rhel8.5", LustreMode.CLIENT)
+        r = validate_target(tc, tree)
+        assert r.status == "best_effort"
+        assert r.matched_in == "changelog_client_best_effort"
+
+    def test_client_absent(self, tmp_path: Path) -> None:
+        tree = _make_tree(
+            tmp_path,
+            which_patch=_WP_BASIC,
+            changelog=_CL_ABSENT,
+            target_ins={"5.14-rhel9.7": _TI_RHEL97},
+        )
+        tc = _FakeTC("5.14-rhel9.7", LustreMode.CLIENT)
+        r = validate_target(tc, tree)
+        assert r.status == "refuse"
+        assert r.matched_in == "not_listed"
 
     def test_result_is_frozen_and_fully_populated(self, tmp_path: Path) -> None:
         tree = _make_tree(
