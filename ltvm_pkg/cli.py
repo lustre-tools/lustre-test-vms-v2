@@ -1440,8 +1440,12 @@ def cmd_targets(args: argparse.Namespace) -> int:
                 name, tc.arch, all_releases, kernel_signature=signature
             )
             built = tc.meta_path("kernel", kname).exists()
-            if local == "-" and built:
-                local = "built"
+            if built:
+                avail = "ready"
+            elif remote not in ("-", "?"):
+                avail = "fetch"
+            else:
+                avail = "build"
             rows.append(
                 {
                     "name": name,
@@ -1452,6 +1456,7 @@ def cmd_targets(args: argparse.Namespace) -> int:
                     "server": tc.lustre_mode != LustreMode.CLIENT,
                     "default_kernel": tc.default_kernel,
                     "lustre_mode": tc.lustre_mode.value,
+                    "available": avail,
                     "local_release": local,
                     "remote_release": remote,
                 }
@@ -1466,8 +1471,8 @@ def cmd_targets(args: argparse.Namespace) -> int:
         return EXIT_OK
 
     hdr = (
-        f"{'Target':<12} {'Arch':<8} {'Kernel':<20} "
-        f"{'Mode':<16} {'Local':<24} {'Remote':<24} Default?"
+        f"{'Available':<10} {'Target':<12} {'Arch':<8} {'Kernel':<20} "
+        f"{'Mode':<16} Default?"
     )
     print(hdr)
     print("-" * len(hdr))
@@ -1492,9 +1497,8 @@ def cmd_targets(args: argparse.Namespace) -> int:
             arch_col = r["arch"]
             mode_col = r["lustre_mode"]
         print(
-            f"{name_col:<12} {arch_col:<8} "
+            f"{r['available']:<10} {name_col:<12} {arch_col:<8} "
             f"{r['kernel']:<20} {mode_col:<16} "
-            f"{r['local_release']:<24} {r['remote_release']:<24} "
             f"{default_mark}"
         )
         prev_key = key
