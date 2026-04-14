@@ -16,15 +16,49 @@ podman after `ltvm build-container` or `ltvm build-all`.
 
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
 import shlex
 import subprocess
+import time
 from pathlib import Path
 from typing import TypedDict
 
 from .vm_state import DEFAULT_TARGET
+
+
+@contextlib.contextmanager
+def _tree_build_lock(lustre_tree: Path):
+    """Serialize concurrent builds on a shared Lustre source tree.
+
+    Two pipelines (e.g. `ltvm build-all rocky9` and `ltvm build-all
+    rocky10`) invoked against the same ~/lustre-release both bind-
+    mount the tree into a build container and run `make` against
+    the same in-tree object files.  That races and produces partial
+    DESTDIRs (see bd lustre_test_vms_v2-8h1 for the incident).
+    Take an fcntl lock on <tree>/.ltvm-build-lock so only one
+    containerized make runs per source tree at a time.
+    """
+    lock_path = lustre_tree / ".ltvm-build-lock"
+    lock_path.touch(exist_ok=True)
+    with lock_path.open("w") as fp:
+        try:
+            fcntl.flock(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            print(
+                f"waiting for lustre build lock at {lock_path} "
+                f"(another ltvm build-lustre/build-all is in flight)..."
+            )
+            t0 = time.time()
+            fcntl.flock(fp, fcntl.LOCK_EX)
+            print(f"  acquired after {time.time() - t0:.0f}s")
+        try:
+            yield
+        finally:
+            fcntl.flock(fp, fcntl.LOCK_UN)
 
 
 def _hash_file(path: Path) -> str | None:
@@ -239,19 +273,20 @@ def build_lustre(
             f"Run: ltvm build-container <target>"
         )
 
-    return _build_in_container(
-        lustre_tree,
-        build_tree,
-        container_tag,
-        kver,
-        enable_server,
-        extra_configure,
-        jobs,
-        force,
-        arch=arch,
-        target=target,
-        kernel=kernel,
-    )
+    with _tree_build_lock(lustre_tree):
+        return _build_in_container(
+            lustre_tree,
+            build_tree,
+            container_tag,
+            kver,
+            enable_server,
+            extra_configure,
+            jobs,
+            force,
+            arch=arch,
+            target=target,
+            kernel=kernel,
+        )
 
 
 def _kernel_changed(
