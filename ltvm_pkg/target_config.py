@@ -22,12 +22,8 @@ class LustreMode(str, Enum):
     """Lustre build/deploy mode for a target.
 
     CLIENT targets build only client modules; no ldiskfs/OSD code
-    and no kernel patches required.  The compat gate's server-mode
-    checks (which_patch, ChangeLog server lists) don't apply.
-    Wiring CLIENT into validate_target to consult ChangeLog's
-    client_primary/client_best_effort lists is separate future work;
-    for now the gate skips deb-based (kernel_deb_source) targets,
-    which is how the common CLIENT case is handled.
+    and no kernel patches required.  validate_target consults
+    ChangeLog's client_primary/client_best_effort lists for these.
     """
 
     SERVER_LDISKFS = "server_ldiskfs"

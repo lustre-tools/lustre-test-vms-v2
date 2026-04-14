@@ -235,6 +235,24 @@ def parse_target_in(tree: Path, series: str) -> TargetIn:
 
 
 # ------------------------------------------------------------------
+# ldiskfs series
+# ------------------------------------------------------------------
+
+
+def parse_ldiskfs_series(tree: Path) -> set[str]:
+    """Return series file stems under lustre/ldiskfs/kernel_patches/series/.
+
+    Each stem is the filename without ``.series`` (e.g.
+    ``ldiskfs-6.8.0-90-ubuntu24``, ``ldiskfs-5.14.0-427.13.1.el9``).
+    Returns an empty set if the directory is absent.
+    """
+    series_dir = Path(tree) / "lustre/ldiskfs/kernel_patches/series"
+    if not series_dir.is_dir():
+        return set()
+    return {p.stem for p in series_dir.glob("*.series")}
+
+
+# ------------------------------------------------------------------
 # Compatibility gate
 # ------------------------------------------------------------------
 
@@ -242,8 +260,11 @@ def parse_target_in(tree: Path, series: str) -> TargetIn:
 ValidationStatus = Literal["ok", "best_effort", "refuse", "error"]
 MatchedIn = Literal[
     "which_patch_primary",
+    "ldiskfs_series",
     "changelog_primary",
     "changelog_best_effort",
+    "changelog_client_primary",
+    "changelog_client_best_effort",
     "not_listed",
 ]
 
@@ -276,6 +297,39 @@ def _kver_from_target_in(ti: TargetIn) -> str:
 
 def _kver_matches(declared: str, target_kver: str) -> bool:
     return _normalize_kver(declared) == _normalize_kver(target_kver)
+
+
+# Extract the leading "<major>.<minor>" from a kernel-shaped token.
+# Accepts "5.14-rhel9.7" -> "5.14", "6.8-ubuntu2404" -> "6.8",
+# "5.14.0-611.13.1.el9_7" -> "5.14".
+_KVER_MAJMIN_RE = re.compile(r"^(\d+)\.(\d+)")
+
+
+def _kver_majmin(s: str) -> str | None:
+    m = _KVER_MAJMIN_RE.match(s)
+    return f"{m.group(1)}.{m.group(2)}" if m else None
+
+
+def _ldiskfs_series_matches(
+    series_stems: set[str], kver_majmin: str | None
+) -> str | None:
+    """Heuristic: does any ldiskfs series filename appear to target the
+    given kernel major.minor?
+
+    Series filenames look like ``ldiskfs-<kver>-<distro>`` (e.g.
+    ``ldiskfs-6.8.0-90-ubuntu24``, ``ldiskfs-5.14.0-427.13.1.el9``).
+    We accept a target if any stem starts with ``ldiskfs-<major>.<minor>``.
+    This errs on the side of accepting -- a future agent can tighten it
+    by also checking the distro suffix (ubuntu<os_major>, el<os_major>,
+    etc.) if false positives show up.
+    """
+    if kver_majmin is None:
+        return None
+    prefix = f"ldiskfs-{kver_majmin}."
+    for stem in sorted(series_stems):
+        if stem.startswith(prefix):
+            return stem
+    return None
 
 
 def validate_target(tc: TargetConfig, lustre_tree: Path) -> ValidationResult:
@@ -343,6 +397,24 @@ def validate_target(tc: TargetConfig, lustre_tree: Path) -> ValidationResult:
                     f"it claims to patch"
                 ),
             )
+        # Fallback: ldiskfs patches may ship under
+        # lustre/ldiskfs/kernel_patches/series/ without being listed in
+        # which_patch (e.g. some ubuntu/debian flows).
+        kver_mm = _kver_majmin(series) or _kver_majmin(kver)
+        stems = parse_ldiskfs_series(lustre_tree)
+        match_stem = _ldiskfs_series_matches(stems, kver_mm)
+        if match_stem is not None:
+            return ValidationResult(
+                status="ok",
+                mode=mode,
+                kernel_version=kver,
+                matched_in="ldiskfs_series",
+                message=(
+                    f"matched ldiskfs series file {match_stem!r} under "
+                    f"lustre/ldiskfs/kernel_patches/series/ for kernel "
+                    f"{kver} (prefix ldiskfs-{kver_mm}.)"
+                ),
+            )
         return ValidationResult(
             status="refuse",
             mode=mode,
@@ -350,8 +422,9 @@ def validate_target(tc: TargetConfig, lustre_tree: Path) -> ValidationResult:
             matched_in="not_listed",
             message=(
                 f"{series} is not listed in lustre/kernel_patches/"
-                f"which_patch; ldiskfs server builds require an "
-                f"explicit patch-series entry"
+                f"which_patch and no matching ldiskfs series file "
+                f"found under lustre/ldiskfs/kernel_patches/series/ "
+                f"for kernel {kver}"
             ),
         )
 
@@ -399,6 +472,54 @@ def validate_target(tc: TargetConfig, lustre_tree: Path) -> ValidationResult:
             message=(
                 f"kernel {kver} is not listed in either the "
                 f"'Server primary kernels' or 'Other server kernels' "
+                f"section of lustre/ChangeLog"
+            ),
+        )
+
+    if mode == LustreMode.CLIENT:
+        try:
+            cl = parse_changelog(lustre_tree)
+        except (FileNotFoundError, ValueError) as exc:
+            return ValidationResult(
+                status="error",
+                mode=mode,
+                kernel_version=kver,
+                matched_in=None,
+                message=f"Cannot read ChangeLog: {exc}",
+            )
+        for declared in cl.client_primary:
+            if _kver_matches(declared, kver):
+                return ValidationResult(
+                    status="ok",
+                    mode=mode,
+                    kernel_version=kver,
+                    matched_in="changelog_client_primary",
+                    message=(
+                        f"kernel {kver} is a client primary kernel "
+                        f"in lustre/ChangeLog (matched {declared})"
+                    ),
+                )
+        for declared in cl.client_best_effort:
+            if _kver_matches(declared, kver):
+                return ValidationResult(
+                    status="best_effort",
+                    mode=mode,
+                    kernel_version=kver,
+                    matched_in="changelog_client_best_effort",
+                    message=(
+                        f"kernel {kver} is listed in ChangeLog only as "
+                        f"'other clients' (best-effort; matched "
+                        f"{declared})"
+                    ),
+                )
+        return ValidationResult(
+            status="refuse",
+            mode=mode,
+            kernel_version=kver,
+            matched_in="not_listed",
+            message=(
+                f"kernel {kver} is not listed in either the "
+                f"'Client primary kernels' or 'Other clients' "
                 f"section of lustre/ChangeLog"
             ),
         )
