@@ -280,9 +280,7 @@ class TestCmdCreateValidation:
         with (
             patch("ltvm_pkg.vm_commands.is_running", return_value=False),
             patch("ltvm_pkg.vm_commands.launch_qemu"),
-            patch("ltvm_pkg.vm_commands.wait_for_ssh"),
-            patch("ltvm_pkg.vm_commands.register_ssh_name"),
-            patch("ltvm_pkg.vm_commands.deploy_ssh_key"),
+            patch("ltvm_pkg.vm_commands.provision_vm_ssh"),
             patch("ltvm_pkg.vm_commands._seed_kdump_boot"),
         ):
             vm_commands.cmd_create(_create_args(name="stopped-c"))
@@ -760,9 +758,7 @@ class TestCmdCreateChown:
             patch("ltvm_pkg.vm_commands.mac_for_name", return_value="AA:BB:CC:DD:EE:FF"),
             patch("ltvm_pkg.vm_commands.run") as mock_run,
             patch("ltvm_pkg.vm_commands.launch_qemu"),
-            patch("ltvm_pkg.vm_commands.wait_for_ssh"),
-            patch("ltvm_pkg.vm_commands.register_ssh_name"),
-            patch("ltvm_pkg.vm_commands.deploy_ssh_key"),
+            patch("ltvm_pkg.vm_commands.provision_vm_ssh"),
             patch("ltvm_pkg.vm_commands._seed_kdump_boot"),
             patch("ltvm_pkg.vm_commands.os.chown", side_effect=fake_chown),
             patch("ltvm_pkg.vm_commands.os.environ", env),
@@ -784,7 +780,10 @@ class TestCmdCreateChown:
 
             mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
 
-            with patch("ltvm_pkg.vm_commands.load_meta_safe", return_value=None):
+            with patch(
+                "ltvm_pkg.vm_commands.load_meta_safe",
+                return_value={"kernel_version": "5.14.0-test"},
+            ):
                 if sudo_user:
                     with patch("pwd.getpwnam", return_value=fake_pw):
                         vm_commands.cmd_create(
@@ -850,8 +849,12 @@ class TestCmdCrashCollectOutdir:
                 trigger=False,
                 wait=120,
                 mod_dir=None,
+                json=False,
             )
-            with pytest.raises(SystemExit):
-                vm_commands.cmd_crash_collect(args)
+            # cmd_crash_collect now returns an error code (EXIT_ERROR)
+            # instead of raising SystemExit, so the outer JSON-aware
+            # wrapper can emit {"error": ...} cleanly.
+            rc = vm_commands.cmd_crash_collect(args)
+            assert rc != 0
 
         assert Path(explicit).exists()

@@ -179,6 +179,36 @@ class TestNeedsReconfigure:
         )
         assert result is True
 
+    def test_server_flag_change_triggers_reconf(self, tmp_path: Path) -> None:
+        lustre, kernel = self._tree(tmp_path)
+        (lustre / "configure").write_text("#!/bin/sh\n")
+        (lustre / "config.status").write_text("")
+        kver = "5.14.0-611.el9.x86_64"
+        release = kernel / "include" / "config" / "kernel.release"
+        release.parent.mkdir(parents=True, exist_ok=True)
+        release.write_text(kver + "\n")
+        (lustre / f".ltvm-kernel-{self.TARGET}-x86_64").write_text(kver)
+        # stamp says server=False, but caller passes enable_server=True
+        (lustre / f".ltvm-server-{self.TARGET}-x86_64").write_text("False")
+        assert _needs_reconfigure(
+            lustre,
+            kernel,
+            force=False,
+            target=self.TARGET,
+            enable_server=True,
+        )
+
+    def test_stamp_suffix_separates_targets(self) -> None:
+        """Two different targets sharing a lustre_tree don't clobber stamps."""
+        from ltvm_pkg.lustre_build import _stamp_suffix
+
+        assert _stamp_suffix("rocky9", "x86_64") != _stamp_suffix(
+            "rocky10", "x86_64"
+        )
+        assert _stamp_suffix("rocky9", "x86_64") != _stamp_suffix(
+            "rocky9", "aarch64"
+        )
+
 
 # ---------------------------------------------------------------------------
 # lustre_status
@@ -302,6 +332,20 @@ class TestLustreStatus:
         # build_tree does not exist -> current_kernel None -> stale
         status = lustre_status(lt, tmp_path / "nonexistent")
         assert status["stale"] is True
+
+    def test_ko_count_summed_across_kernels_when_no_kernel_given(
+        self, tmp_path: Path
+    ) -> None:
+        """When kernel=None, ko_count sums all per-kernel staging dirs."""
+        lt = self._make_lustre(tmp_path)
+        kt = self._make_kernel(tmp_path)
+        for k, n in [("5.14-rhel9.7", 3), ("5.14-rhel9.5", 2)]:
+            s = staging_path(lt, self.TARGET, kernel=k)
+            s.mkdir(parents=True, exist_ok=True)
+            for i in range(n):
+                (s / f"mod{i}.ko").write_text("")
+        status = lustre_status(lt, kt, target=self.TARGET)
+        assert status["ko_count"] == 5
 
 
 # ---------------------------------------------------------------------------

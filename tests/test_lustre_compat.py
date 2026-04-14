@@ -605,10 +605,10 @@ class TestValidateTarget:
         tc = _FakeTC("5.14-rhel9.7", LustreMode.SERVER_LDISKFS)
         r = validate_target(tc, tree)
         assert isinstance(r, ValidationResult)
-        assert r.status in ("ok", "best_effort", "refuse", "error")
-        assert r.mode is not None
-        assert r.kernel_version is not None
-        assert r.matched_in is not None
+        assert r.status == "ok"
+        assert r.matched_in == "which_patch_primary"
+        assert r.mode == LustreMode.SERVER_LDISKFS
+        assert r.kernel_version == "5.14.0-611.13.1.el9_7"
         assert r.message
         with pytest.raises(Exception):
             r.status = "refuse"  # type: ignore[misc]

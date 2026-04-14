@@ -417,11 +417,13 @@ class TestCmdCreateIdempotence:
                 ),
             ),
             patch("ltvm_pkg.vm_commands.launch_qemu"),
-            patch("ltvm_pkg.vm_commands.wait_for_ssh", return_value=True),
-            patch("ltvm_pkg.vm_commands.register_ssh_name"),
-            patch("ltvm_pkg.vm_commands.deploy_ssh_key"),
+            patch("ltvm_pkg.vm_commands.provision_vm_ssh"),
             patch("ltvm_pkg.vm_commands._seed_kdump_boot"),
             patch("ltvm_pkg.vm_commands.run"),
+            patch(
+                "ltvm_pkg.vm_commands.load_meta_safe",
+                return_value={"kernel_version": "5.14.0-test"},
+            ),
         ]
         with contextlib.ExitStack() as stack:
             for p in patches:
@@ -541,11 +543,13 @@ class TestCmdCreateIdempotence:
                 return_value="52:54:00:aa:bb:cc",
             ),
             patch("ltvm_pkg.vm_commands.launch_qemu"),
-            patch("ltvm_pkg.vm_commands.wait_for_ssh", return_value=True),
-            patch("ltvm_pkg.vm_commands.register_ssh_name"),
-            patch("ltvm_pkg.vm_commands.deploy_ssh_key"),
+            patch("ltvm_pkg.vm_commands.provision_vm_ssh"),
             patch("ltvm_pkg.vm_commands._seed_kdump_boot"),
             patch("ltvm_pkg.vm_commands.run"),
+            patch(
+                "ltvm_pkg.vm_commands.load_meta_safe",
+                return_value={"kernel_version": "5.14.0-test"},
+            ),
         ]
         with contextlib.ExitStack() as stack:
             for p in patches:

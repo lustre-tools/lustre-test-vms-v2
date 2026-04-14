@@ -49,6 +49,18 @@ _DEFAULTS = {
 _COPY_RE = re.compile(r"^\s*COPY\s+(\S+)", re.MULTILINE)
 
 
+def build_container_tag(name: str, arch: str = "x86_64") -> str:
+    """Compute the podman build-container tag for a target + arch.
+
+    Module-level so callers that don't have a full TargetConfig in hand
+    (e.g. release_package.export_build_container, which may run against
+    a synthetic target name) share the exact same logic.
+    """
+    if arch != "x86_64":
+        return f"ltvm-build-{name}-{arch}"
+    return f"ltvm-build-{name}"
+
+
 def _dockerfile_referenced_files(dockerfile: Path) -> list[Path]:
     """Return the files under TARGETS_DIR referenced by COPY lines in a
     Dockerfile. Build context is TARGETS_DIR, so COPY sources like
@@ -187,8 +199,18 @@ class TargetConfig:
         return str(self._data["container_image"])
 
     @property
+    def container_tag(self) -> str:
+        """Podman tag for this target's build container."""
+        return build_container_tag(self.name, self.arch)
+
+    @property
     def status(self) -> str:
         return str(self._data.get("status", "unknown"))
+
+    @property
+    def default_mem(self) -> int:
+        """Default VM memory in MB (per-target; fallback 2048)."""
+        return int(self._data.get("default_mem", 2048))
 
     @property
     def srpm_url(self) -> str | None:
@@ -343,6 +365,27 @@ class TargetConfig:
     def container_output_dir(self) -> Path:
         return self.output_dir / "container"
 
+    def meta_path(
+        self, artifact: str, kernel: str | None = None
+    ) -> Path:
+        """Path to meta.json for an artifact ('kernel'|'image'|'container').
+
+        Single source of truth for meta.json location -- previously the
+        path was joined three different ways (kernels/<resolved>/meta.json,
+        image_output_dir(kernel)/meta.json, output_dir/<artifact>/meta.json),
+        which silently diverged once image_output_dir grew per-kernel keying.
+        """
+        if artifact == "kernel":
+            return self.kernel_output_dir(kernel) / "meta.json"
+        if artifact == "image":
+            return self.image_output_dir(kernel) / "meta.json"
+        if artifact == "container":
+            return self.container_output_dir() / "meta.json"
+        # Unknown artifacts: fall back to legacy <output>/<artifact>/meta.json
+        # so callers introducing a new artifact name don't silently miss
+        # this dispatch.
+        raise ValueError(f"unknown artifact: {artifact!r}")
+
     # ------------------------------------------------------------------
     # Staleness and metadata
     # ------------------------------------------------------------------
@@ -457,12 +500,7 @@ class TargetConfig:
             # staging moved per-tree under <lustre_tree>/.ltvm-staging,
             # and the maintainer is expected to bundle Lustre via
             # `ltvm package`'s lustre-artifacts/ instead.
-            kernel_meta = (
-                self.output_dir
-                / "kernels"
-                / self.resolve_kernel(kernel)
-                / "meta.json"
-            )
+            kernel_meta = self.meta_path("kernel", kernel)
             km = load_meta_safe(kernel_meta)
             if km is not None:
                 kh = km.get("input_hash")
@@ -476,12 +514,7 @@ class TargetConfig:
         return h.hexdigest()[:16]
 
     def _kernel_meta_file(self, kernel: str | None) -> Path:
-        return (
-            self.output_dir
-            / "kernels"
-            / self.resolve_kernel(kernel)
-            / "meta.json"
-        )
+        return self.meta_path("kernel", kernel)
 
     def is_stale(
         self,
@@ -494,12 +527,7 @@ class TargetConfig:
         ``extra_hash`` is forwarded to ``input_hash`` so callers can fold
         in inputs target_config doesn't know about (see ``input_hash``).
         """
-        if artifact == "kernel":
-            meta_file = self._kernel_meta_file(kernel)
-        elif artifact == "image":
-            meta_file = self.image_output_dir(kernel) / "meta.json"
-        else:
-            meta_file = self.output_dir / artifact / "meta.json"
+        meta_file = self.meta_path(artifact, kernel)
         meta = load_meta_safe(meta_file)
         if meta is None:
             # Missing or corrupt meta -- treat as stale so the next

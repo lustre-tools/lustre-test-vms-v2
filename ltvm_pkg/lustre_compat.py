@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Literal
 
 from .kernel_build import _shell_var
+from .lustre_tree import ldiskfs_series, kp_targets
 
 if TYPE_CHECKING:
     from .target_config import LustreMode, TargetConfig
@@ -201,7 +202,7 @@ def parse_target_in(tree: Path, series: str) -> TargetIn:
     references lnxmaj/lnxrel).  Falls back to the plain .target
     variant when no .target.in exists.
     """
-    targets_dir = Path(tree) / "lustre/kernel_patches/targets"
+    targets_dir = kp_targets(tree)
     path = targets_dir / f"{series}.target.in"
     if not path.exists():
         alt = targets_dir / f"{series}.target"
@@ -246,7 +247,7 @@ def parse_ldiskfs_series(tree: Path) -> set[str]:
     ``ldiskfs-6.8.0-90-ubuntu24``, ``ldiskfs-5.14.0-427.13.1.el9``).
     Returns an empty set if the directory is absent.
     """
-    series_dir = Path(tree) / "ldiskfs/kernel_patches/series"
+    series_dir = ldiskfs_series(tree)
     if not series_dir.is_dir():
         return set()
     return {p.stem for p in series_dir.glob("*.series")}

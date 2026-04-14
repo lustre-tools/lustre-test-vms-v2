@@ -46,9 +46,11 @@ class TestHostInfo:
 
 class TestTranslatePkgs:
     def test_dnf_passthrough(self) -> None:
-        host = HostInfo()
-        if host.pkg_mgr != "dnf":
-            pytest.skip("need dnf host")
+        host = HostInfo.__new__(HostInfo)
+        host.id = "rocky"
+        host.version = "9"
+        host.pretty_name = "Rocky Linux 9"
+        host.pkg_mgr = "dnf"
         result = _translate_pkgs(("glib2-devel", "make"), host)
         assert result == ["glib2-devel", "make"]
 

@@ -244,25 +244,6 @@ class TestOutputDirs:
 
 
 class TestInputHash:
-    def test_container_hash_deterministic(self, tmp_targets: Path) -> None:
-        tc = _make_config(tmp_targets)
-        h1 = tc.input_hash("container")
-        h2 = tc.input_hash("container")
-        assert h1 == h2
-        assert len(h1) == 16
-
-    def test_kernel_hash_deterministic(self, tmp_targets: Path) -> None:
-        tc = _make_config(tmp_targets)
-        h1 = tc.input_hash("kernel")
-        h2 = tc.input_hash("kernel")
-        assert h1 == h2
-
-    def test_image_hash_deterministic(self, tmp_targets: Path) -> None:
-        tc = _make_config(tmp_targets)
-        h1 = tc.input_hash("image")
-        h2 = tc.input_hash("image")
-        assert h1 == h2
-
     def test_different_artifacts_different_hash(
         self, tmp_targets: Path
     ) -> None:

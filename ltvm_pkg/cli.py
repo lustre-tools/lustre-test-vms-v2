@@ -195,6 +195,8 @@ def _do_build_container(target_config: TargetConfig) -> str:
     from ltvm_pkg.kernel_build import _ensure_container_image
 
     tag = _ensure_container_image(target_config)
+    # Schema: see ltvm_pkg.meta_schema.ContainerMeta.
+    # target/input_hash are written by TargetConfig.write_meta.
     target_config.write_meta("container", image_tag=tag)
     return tag
 
@@ -433,6 +435,109 @@ def cmd_build_image(args: argparse.Namespace) -> int:
         "with_lustre": with_lustre,
     }
     _output(result, use_json)
+    return EXIT_OK
+
+
+# ------------------------------------------------------------------
+# Subcommand: clean
+# ------------------------------------------------------------------
+
+
+def _dir_size_bytes(path: Path) -> int:
+    """Total size of all regular files under ``path`` (bytes)."""
+    total = 0
+    if not path.exists():
+        return 0
+    for p in path.rglob("*"):
+        try:
+            if p.is_file() and not p.is_symlink():
+                total += p.stat().st_size
+        except OSError:
+            continue
+    return total
+
+
+def _format_bytes(n: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(n)
+    for u in units:
+        if size < 1024 or u == units[-1]:
+            return f"{size:.1f} {u}" if u != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{int(n)} B"
+
+
+def cmd_clean(args: argparse.Namespace) -> int:
+    """Remove built artifacts for a target.
+
+    By default wipes output/<target>/<arch>/ for the target's default
+    arch (x86_64).  --arch narrows to a specific arch; --all-arches
+    wipes the whole output/<target>/ tree.
+    """
+    import shutil
+
+    from ltvm_pkg.target_config import OUTPUT_DIR
+
+    use_json = args.json
+    target = args.target
+    all_arches = bool(getattr(args, "all_arches", False))
+    arch_flag = getattr(args, "arch", None)
+
+    # Validate target exists (via TargetConfig).  We don't need to
+    # instantiate an arch-specific TargetConfig for --all-arches, but
+    # we still want to ensure target is known.
+    tc, err = _load_target(target, use_json, arch=arch_flag)
+    if err is not None:
+        return err
+    assert tc is not None
+
+    if all_arches and arch_flag:
+        return _error(
+            "--arch and --all-arches are mutually exclusive", use_json
+        )
+
+    if all_arches:
+        wipe_paths = [OUTPUT_DIR / target]
+    else:
+        # Use the arch actually configured in the TargetConfig (honors
+        # --arch override; defaults to x86_64).
+        wipe_paths = [OUTPUT_DIR / target / tc.arch]
+
+    wiped: list[dict[str, Any]] = []
+    for p in wipe_paths:
+        if p.exists():
+            size = _dir_size_bytes(p)
+            try:
+                shutil.rmtree(p)
+            except OSError as e:
+                return _error(f"Failed to remove {p}: {e}", use_json)
+            wiped.append(
+                {"path": str(p), "bytes": size, "removed": True}
+            )
+        else:
+            wiped.append(
+                {"path": str(p), "bytes": 0, "removed": False}
+            )
+
+    result = {
+        "target": target,
+        "arch": None if all_arches else tc.arch,
+        "all_arches": all_arches,
+        "wiped": wiped,
+    }
+
+    if use_json:
+        _output(result, use_json)
+    else:
+        total = sum(w["bytes"] for w in wiped)
+        any_removed = any(w["removed"] for w in wiped)
+        for w in wiped:
+            if w["removed"]:
+                print(f"removed {w['path']} ({_format_bytes(w['bytes'])})")
+            else:
+                print(f"nothing to clean at {w['path']}")
+        if any_removed:
+            print(f"total freed: {_format_bytes(total)}")
     return EXIT_OK
 
 
@@ -701,10 +806,46 @@ def _gh_next_link(headers: str) -> str | None:
     return None
 
 
+_RHEL_RE = __import__("re").compile(r"rhel(\d+)\.(\d+)")
+
+
+def _kernel_release_signature(kname: str) -> str | None:
+    """Derive a substring found in release tag/asset names for ``kname``.
+
+    Release asset names use the kernel uname-r suffix, which for RHEL
+    kernels contains ``elX_Y`` where X.Y is the distro minor version.
+    So ``5.14-rhel9.5`` -> ``el9_5`` and ``5.14-rhel9.7`` -> ``el9_7``.
+
+    Returns None if no signature can be derived (e.g. non-RHEL kname);
+    callers should then skip kernel-name filtering.
+    """
+    m = _RHEL_RE.search(kname)
+    if m:
+        return f"el{m.group(1)}_{m.group(2)}"
+    return None
+
+
+def _release_matches_kernel(rel: dict, signature: str, arch: str) -> bool:
+    """True iff ``rel`` has an arch-matching asset whose name contains
+    the kernel signature."""
+    arch_match = f"-{arch}-"
+    for asset in rel.get("assets", []):
+        name = asset.get("name", "")
+        if arch_match not in name:
+            continue
+        if signature in name:
+            return True
+    # Tag itself sometimes carries the signature (publish derives tag
+    # from tarball stem, which contains the kernel_version).
+    tag = rel.get("tag_name", "")
+    return signature in tag
+
+
 def _find_release_url(
     target: str,
     filter_str: str | None = None,
     arch: str = "x86_64",
+    kernel_signature: str | None = None,
 ) -> str:
     """Find a tarball download URL from GitHub releases.
 
@@ -715,6 +856,9 @@ def _find_release_url(
     Asset filenames always contain '-<arch>-' (e.g.
     rocky9-x86_64-5.14.0_lustre.tar.gz).  We match on that substring
     so an x86_64 fetch never picks up an aarch64 asset and vice versa.
+
+    If ``kernel_signature`` is given (e.g. ``el9_5``), only releases
+    whose assets contain that substring are returned.
     """
     releases = _gh_api("releases")
     if not isinstance(releases, list):
@@ -730,16 +874,24 @@ def _find_release_url(
             continue
         if filter_str and filter_str not in tag:
             continue
+        if kernel_signature and not _release_matches_kernel(
+            rel, kernel_signature, arch
+        ):
+            continue
         for asset in rel.get("assets", []):
             name = asset.get("name", "")
             if not name.endswith(".tar.gz"):
                 continue
             if arch_match not in name:
                 continue
+            if kernel_signature and kernel_signature not in name:
+                continue
             return str(asset["browser_download_url"])
 
     avail = [r.get("tag_name", "?") for r in releases]
     hint = f" matching '{filter_str}'" if filter_str else ""
+    if kernel_signature:
+        hint += f" kernel-signature={kernel_signature!r}"
     raise RuntimeError(
         f"No release found for '{target}'{hint}\n"
         f"  Available releases: {', '.join(avail)}\n"
@@ -747,7 +899,11 @@ def _find_release_url(
     )
 
 
-def _list_releases(target: str | None = None) -> list[dict]:
+def _list_releases(
+    target: str | None = None,
+    kernel_signature: str | None = None,
+    arch: str = "x86_64",
+) -> list[dict]:
     """List available releases, optionally filtered by target prefix."""
     releases = _gh_api("releases")
     if not isinstance(releases, list):
@@ -756,6 +912,10 @@ def _list_releases(target: str | None = None) -> list[dict]:
     for rel in releases:
         tag = rel.get("tag_name", "")
         if target and tag != target and not tag.startswith(target + "-"):
+            continue
+        if kernel_signature and not _release_matches_kernel(
+            rel, kernel_signature, arch
+        ):
             continue
         assets = [
             a["name"]
@@ -782,11 +942,45 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     target = getattr(args, "target", None)
     filt = getattr(args, "filter", None)
     arch = getattr(args, "arch", None) or "x86_64"
+    kernel = getattr(args, "kernel", None)
+
+    # Validate --kernel against the target's declared kernels (if both
+    # are given).  This is user-friendly: it catches typos before we
+    # make a round trip to GitHub.
+    kernel_signature: str | None = None
+    if kernel:
+        if not target:
+            return _error(
+                "--kernel requires a target (e.g. ltvm fetch rocky9 "
+                "--kernel 5.14-rhel9.5)",
+                use_json,
+            )
+        tc, err = _load_target(target, use_json, arch=arch)
+        if err is not None:
+            return err
+        assert tc is not None
+        declared = tc.declared_kernels()
+        if kernel not in declared:
+            return _error(
+                f"--kernel {kernel!r} not in targets.yaml kernels.available "
+                f"for {target}",
+                use_json,
+                hint=f"Available: {', '.join(declared)}",
+            )
+        kernel_signature = _kernel_release_signature(kernel)
+        if kernel_signature is None and not use_json:
+            print(
+                f"warning: could not derive release signature from "
+                f"--kernel {kernel!r}; falling back to first match.",
+                file=sys.stderr,
+            )
 
     # --list: show available releases
     if getattr(args, "list", False):
         try:
-            releases = _list_releases(target)
+            releases = _list_releases(
+                target, kernel_signature=kernel_signature, arch=arch
+            )
         except RuntimeError as e:
             return _error(str(e), use_json)
         if use_json:
@@ -808,7 +1002,12 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         if not use_json:
             print(f"Looking up {target} from GitHub releases...")
         try:
-            url = _find_release_url(target, filter_str=filt, arch=arch)
+            url = _find_release_url(
+                target,
+                filter_str=filt,
+                arch=arch,
+                kernel_signature=kernel_signature,
+            )
         except RuntimeError as e:
             return _error(str(e), use_json)
 
@@ -1141,12 +1340,17 @@ def _release_status(
     target: str,
     arch: str,
     all_releases: list | None,
+    kernel_signature: str | None = None,
 ) -> tuple[str, str]:
     """Return (local_tag, remote_tag) for a target/arch, display-trimmed.
 
     Both strip the shared ``<target>-<arch>-`` prefix so only the bit
     that actually varies (kernel + version) shows up in the table.
     ``-`` means "nothing"; ``?`` means "couldn't talk to GitHub".
+
+    If ``kernel_signature`` is given, only releases whose assets match
+    that signature (e.g. ``el9_5``) are considered for Remote, and Local
+    is ``-`` unless the stored tag contains the signature.
     """
     from ltvm_pkg.target_config import OUTPUT_DIR
 
@@ -1156,7 +1360,14 @@ def _release_status(
         return tag[len(prefix):] if tag.startswith(prefix) else tag
 
     tag_file = OUTPUT_DIR / target / arch / ".ltvm-release-tag"
-    local = _trim(tag_file.read_text().strip()) if tag_file.exists() else "-"
+    if tag_file.exists():
+        raw_local = tag_file.read_text().strip()
+        if kernel_signature and kernel_signature not in raw_local:
+            local = "-"
+        else:
+            local = _trim(raw_local)
+    else:
+        local = "-"
 
     if all_releases is None:
         remote = "?"
@@ -1170,6 +1381,10 @@ def _release_status(
             if not any(
                 arch_match in a.get("name", "")
                 for a in rel.get("assets", [])
+            ):
+                continue
+            if kernel_signature and not _release_matches_kernel(
+                rel, kernel_signature, arch
             ):
                 continue
             remote = _trim(tag)
@@ -1199,19 +1414,25 @@ def cmd_targets(args: argparse.Namespace) -> int:
         except ValueError as e:
             rows.append({"name": name, "error": f"error: {e}"})
             continue
-        local, remote = _release_status(name, tc.arch, all_releases)
-        rows.append(
-            {
-                "name": name,
-                "arch": tc.arch,
-                "server": tc.lustre_mode != LustreMode.CLIENT,
-                "default_kernel": tc.default_kernel,
-                "available_kernels": tc.declared_kernels(),
-                "lustre_mode": tc.lustre_mode.value,
-                "local_release": local,
-                "remote_release": remote,
-            }
-        )
+        declared = tc.declared_kernels()
+        for kname in declared:
+            signature = _kernel_release_signature(kname)
+            local, remote = _release_status(
+                name, tc.arch, all_releases, kernel_signature=signature
+            )
+            rows.append(
+                {
+                    "name": name,
+                    "arch": tc.arch,
+                    "kernel": kname,
+                    "is_default": kname == tc.default_kernel,
+                    "server": tc.lustre_mode != LustreMode.CLIENT,
+                    "default_kernel": tc.default_kernel,
+                    "lustre_mode": tc.lustre_mode.value,
+                    "local_release": local,
+                    "remote_release": remote,
+                }
+            )
 
     if use_json:
         print(json.dumps(rows, indent=2))
@@ -1222,20 +1443,21 @@ def cmd_targets(args: argparse.Namespace) -> int:
         return EXIT_OK
 
     hdr = (
-        f"{'Target':<12} {'Arch':<8} {'Mode':<16} "
-        f"{'Default kernel':<24} {'Local':<24} {'Remote':<24} Supported"
+        f"{'Target':<12} {'Arch':<8} {'Kernel':<20} {'Mode':<16} "
+        f"{'Local':<24} {'Remote':<24} Default?"
     )
     print(hdr)
     print("-" * len(hdr))
     for r in rows:
-        if "default_kernel" not in r:
+        if "kernel" not in r:
             print(f"{r['name']:<12} {r.get('error', '')}")
             continue
-        avail = ", ".join(r["available_kernels"])
+        default_mark = "yes" if r["is_default"] else ""
         print(
-            f"{r['name']:<12} {r['arch']:<8} {r['lustre_mode']:<16} "
-            f"{r['default_kernel']:<24} "
-            f"{r['local_release']:<24} {r['remote_release']:<24} {avail}"
+            f"{r['name']:<12} {r['arch']:<8} {r['kernel']:<20} "
+            f"{r['lustre_mode']:<16} "
+            f"{r['local_release']:<24} {r['remote_release']:<24} "
+            f"{default_mark}"
         )
     return EXIT_OK
 

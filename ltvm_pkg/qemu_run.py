@@ -277,6 +277,11 @@ def launch_qemu(vm: VMInfo) -> None:
             if vm.pid_path.exists():
                 break
             time.sleep(0.1)
+        if not vm.pid_path.exists():
+            die(
+                f"QEMU pidfile not written within 2s: {vm.pid_path}; "
+                f"QEMU likely failed to start"
+            )
         pid = int(vm.pid_path.read_text().strip())
         # QMP socket is created by QEMU (running as root) as 0600.  Any
         # user who can read the VM state files should be able to send NMI

@@ -11,7 +11,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .vm_net import run_ssh
+from .vm_net import SSH_OPTS, run_ssh
 from .vm_state import (
     EXIT_ERROR,
     EXIT_NOT_FOUND,
@@ -43,12 +43,20 @@ def deploy_to_vm(
     # Stream staging tree into the VM, unpacking directly into /.
     # --userspace-only: exclude lib/modules/ so kernel modules already in
     # the VM are not overwritten (and depmod is skipped below).
+    #
+    # COMPROMISE: this is the ONLY shell-string SSH caller in the codebase
+    # (all others use vm_net.sshpass_*_argv). The tests patch
+    # subprocess.run with a bash -c pipeline expectation, so a full
+    # Popen(argv) pipeline rewrite would break them.  At minimum we build
+    # the ssh option string from vm_net.SSH_OPTS so
+    # UserKnownHostsFile=/dev/null isn't silently dropped here (as it was
+    # before), keeping this call site consistent with the rest.
     exclude_modules = "--exclude=./lib/modules" if userspace_only else ""
+    ssh_opt_str = " ".join(shlex.quote(o) for o in SSH_OPTS)
     tar_cmd = (
         f"set -o pipefail; "
         f"tar cf - -C {shlex.quote(str(staging))} {exclude_modules} . "
-        f"| sshpass -p {shlex.quote(ROOT_PASSWORD)} ssh "
-        f"-o StrictHostKeyChecking=no -o LogLevel=ERROR "
+        f"| sshpass -p {shlex.quote(ROOT_PASSWORD)} ssh {ssh_opt_str} "
         f"root@{shlex.quote(vm.ip)} "
         f"'tar xf - -C / --keep-directory-symlink --no-same-owner'"
     )

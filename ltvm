@@ -52,6 +52,7 @@ from ltvm_pkg.cli import (  # noqa: E402
     cmd_build_kernel,
     cmd_build_lustre,
     cmd_build_shell,
+    cmd_clean,
     cmd_cluster,
     cmd_console_log,
     cmd_crash_collect,
@@ -150,6 +151,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Kernel version (default: from targets.yaml)",
     )
 
+    # Shared --force flag for build subcommands
+    force_arg = argparse.ArgumentParser(add_help=False)
+    force_arg.add_argument(
+        "--force",
+        action="store_true",
+        help="Rebuild even if inputs unchanged",
+    )
+
+    # Shared --force-compat flag for subcommands that gate on Lustre-tree
+    # compatibility (build + deploy paths).  'refuse' status is bypassed
+    # when set; hard errors (parse/IO) are never bypassed.
+    force_compat_arg = argparse.ArgumentParser(add_help=False)
+    force_compat_arg.add_argument(
+        "--force-compat",
+        action="store_true",
+        help="Override a Lustre-tree compatibility refusal (not errors)",
+    )
+
     p = argparse.ArgumentParser(
         prog="ltvm",
         description="Lustre test VM infrastructure CLI",
@@ -222,7 +241,7 @@ def build_parser() -> argparse.ArgumentParser:
     # -- build-all --
     sp = sub.add_parser(
         "build-all",
-        parents=[common, kernel_arg],
+        parents=[common, kernel_arg, force_arg, force_compat_arg],
         help="Build container + kernel + image from scratch",
     )
     sp.add_argument("target")
@@ -233,16 +252,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--lustre-build",
         action="store_true",
         help="Also build Lustre against the target kernel",
-    )
-    sp.add_argument(
-        "--force",
-        action="store_true",
-        help="Rebuild even if artifacts are current",
-    )
-    sp.add_argument(
-        "--force-compat",
-        action="store_true",
-        help="Override a Lustre-tree compatibility refusal (not errors)",
     )
     sp.set_defaults(func=cmd_build_all)
 
@@ -258,33 +267,22 @@ def build_parser() -> argparse.ArgumentParser:
     # -- build-kernel --
     sp = sub.add_parser(
         "build-kernel",
-        parents=[common, kernel_arg],
+        parents=[common, kernel_arg, force_arg, force_compat_arg],
         help="Build the kernel for a target",
     )
     sp.add_argument("target")
     sp.add_argument(
         "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
     )
-    sp.add_argument(
-        "--force", action="store_true", help="Rebuild even if inputs unchanged"
-    )
-    sp.add_argument(
-        "--force-compat",
-        action="store_true",
-        help="Override a Lustre-tree compatibility refusal (not errors)",
-    )
     sp.set_defaults(func=cmd_build_kernel)
 
     # -- build-image --
     sp = sub.add_parser(
         "build-image",
-        parents=[common, kernel_arg],
+        parents=[common, kernel_arg, force_arg, force_compat_arg],
         help="Build the VM base image for a target",
     )
     sp.add_argument("target")
-    sp.add_argument(
-        "--force", action="store_true", help="Rebuild even if inputs unchanged"
-    )
     sp.add_argument(
         "--no-lustre",
         action="store_true",
@@ -298,17 +296,16 @@ def build_parser() -> argparse.ArgumentParser:
         help="Path to Lustre source tree (default: cwd) -- used to "
         "find per-kernel Lustre staging to bake into the image",
     )
-    sp.add_argument(
-        "--force-compat",
-        action="store_true",
-        help="Override a Lustre-tree compatibility refusal (not errors)",
-    )
     sp.set_defaults(func=cmd_build_image)
 
     # -- build-lustre --
+    # Note: build-lustre's --force has a slightly different meaning
+    # ("Clean and reconfigure before building") than the shared help text,
+    # but the flag behaviour is identical (force flag => force rebuild),
+    # so it still uses the shared parent parser.
     sp = sub.add_parser(
         "build-lustre",
-        parents=[common, kernel_arg],
+        parents=[common, kernel_arg, force_arg, force_compat_arg],
         help="Build a Lustre source tree against the target kernel build-tree",
     )
     sp.add_argument(
@@ -342,22 +339,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp.add_argument(
         "--jobs", type=int, default=None, help="Parallel jobs (default: nproc)"
     )
-    sp.add_argument(
-        "--force",
-        action="store_true",
-        help="Clean and reconfigure before building",
-    )
-    sp.add_argument(
-        "--force-compat",
-        action="store_true",
-        help="Override a Lustre-tree compatibility refusal (not errors)",
-    )
     sp.set_defaults(func=cmd_build_lustre)
 
     # -- package (hidden: maintainer use only) --
     sp = sub.add_parser(
         "package",
-        parents=[common, kernel_arg],
+        parents=[common, kernel_arg, force_compat_arg],
         help=argparse.SUPPRESS,
     )
     sp.add_argument("target")
@@ -384,11 +371,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output directory for tarball (default: output/)",
     )
-    sp.add_argument(
-        "--force-compat",
-        action="store_true",
-        help="Override a Lustre-tree compatibility refusal (not errors)",
-    )
     sp.set_defaults(func=cmd_package)
 
     # -- fetch --
@@ -411,6 +393,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.add_argument(
         "--url", default=None, help="Direct URL (skip GitHub lookup)"
+    )
+    sp.add_argument(
+        "--kernel",
+        default=None,
+        help="Specific kernel name from targets.yaml kernels.available "
+        "(e.g. 5.14-rhel9.5)",
     )
     sp.set_defaults(func=cmd_fetch)
 
@@ -464,21 +452,31 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_targets)
 
+    # -- clean --
+    sp = sub.add_parser(
+        "clean",
+        parents=[common],
+        help="Remove built artifacts for a target",
+    )
+    sp.add_argument("target")
+    sp.add_argument(
+        "--all-arches",
+        action="store_true",
+        default=False,
+        help="Wipe every arch under output/<target>/",
+    )
+    sp.set_defaults(func=cmd_clean)
+
     # -- validate --
     sp = sub.add_parser(
         "validate",
-        parents=[common],
+        parents=[common, force_compat_arg],
         help="Check Lustre-tree compatibility for a target (read-only)",
     )
     sp.add_argument("target")
     sp.add_argument(
         "--lustre-tree",
         help="Path to Lustre source tree (default: ~/lustre-release)",
-    )
-    sp.add_argument(
-        "--force-compat",
-        action="store_true",
-        help="Downgrade 'refuse' exit code to 0 (message still printed)",
     )
     sp.set_defaults(func=cmd_validate)
 
@@ -696,7 +694,7 @@ def build_parser() -> argparse.ArgumentParser:
     # -- deploy-lustre --
     sp = sub.add_parser(
         "deploy-lustre",
-        parents=[common, kernel_arg],
+        parents=[common, kernel_arg, force_compat_arg],
         aliases=["deploy"],
         help="Deploy Lustre to a VM",
     )
@@ -718,11 +716,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--target",
         default=None,
         help="Target OS for kernel modules (default: auto-detect from VM)",
-    )
-    sp.add_argument(
-        "--force-compat",
-        action="store_true",
-        help="Override a Lustre-tree compatibility refusal (not errors)",
     )
     sp.set_defaults(func=cmd_deploy)
 

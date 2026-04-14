@@ -8,9 +8,10 @@ import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
+from typing import Any
 
 from .qemu_run import die, is_running, kill_qemu, run
-from .vm_net import run_ssh, unregister_ssh_name
+from .vm_net import SSH_OPTS, run_ssh, sshpass_ssh_argv, unregister_ssh_name
 from .vm_state import (
     DEFAULT_TARGET,
     EXIT_TIMEOUT,
@@ -410,12 +411,10 @@ def _write_cluster_local_sh(
     cfg_path = f"{lustre_dir}/tests/cfg/local.sh"
     try:
         r = subprocess.run(
-            ["sshpass", "-p", ROOT_PASSWORD, "ssh"]
-            + ssh_opts
-            + [
-                f"root@{node_ip}",
+            sshpass_ssh_argv(
+                node_ip,
                 f"mkdir -p {lustre_dir}/tests/cfg && cat > {cfg_path}",
-            ],
+            ),
             input=local_sh,
             capture_output=True,
             text=True,
@@ -431,6 +430,33 @@ def _write_cluster_local_sh(
     if r.stderr:
         combined = combined + r.stderr if combined else r.stderr
     return node_name, r.returncode, combined.rstrip("\n")
+
+
+def _parallel_cluster_op(
+    nodes: list,
+    submit: Any,
+    success_verb: str,
+    failure_verb: str,
+) -> list[str]:
+    """Fan out ``submit(node)`` across a thread pool and collect results.
+
+    Each submitted future must return a ``(name, rc, output)`` tuple.
+    Prints per-node progress and returns the list of failed node names
+    so the caller can decide whether to die() or continue.
+    """
+    failed: list[str] = []
+    with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
+        futures = {executor.submit(submit, node): node for node in nodes}
+        for future in as_completed(futures):
+            name, rc, output = future.result()
+            if rc != 0:
+                print(
+                    f"\n--- {name}: {failure_verb} (rc={rc}) ---\n{output}"
+                )
+                failed.append(name)
+            else:
+                print(f"  {name}: {success_verb}")
+    return failed
 
 
 def _validate_lustre_source(path: Path) -> None:
@@ -529,19 +555,12 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
 
     # Deploy to all nodes in parallel -- same as single-node deploy,
     # just run concurrently.
-    failed = []
-    with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
-        futures = {
-            executor.submit(_deploy_one_node, node.name, build, os_family): node
-            for node in nodes
-        }
-        for future in as_completed(futures):
-            name, rc, output = future.result()
-            if rc != 0:
-                print(f"\n--- {name}: FAILED (rc={rc}) ---\n{output}")
-                failed.append(name)
-            else:
-                print(f"  {name}: deployed")
+    failed = _parallel_cluster_op(
+        nodes,
+        lambda node: _deploy_one_node(node.name, build, os_family),
+        success_verb="deployed",
+        failure_verb="FAILED",
+    )
 
     if failed:
         die(f"deploy failed for: {', '.join(failed)}")
@@ -564,38 +583,23 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     print("\n--- Distributing cluster config (local.sh)...")
     print(local_sh)
 
-    ssh_opts = [
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "LogLevel=ERROR",
-    ]
+    ssh_opts = SSH_OPTS
     try:
         node_ips = {node.name: VMInfo.load(node.name).ip for node in nodes}
     except VMNotFound as e:
         die(f"cluster node missing: {e}")
-    failed_sh = []
-    with ThreadPoolExecutor(max_workers=len(nodes)) as executor:
-        futures = {
-            executor.submit(
-                _write_cluster_local_sh,
-                node.name,
-                node_ips[node.name],
-                local_sh,
-                ssh_opts,
-                os_family,
-            ): node
-            for node in nodes
-        }
-        for future in as_completed(futures):
-            name, rc, output = future.result()
-            if rc != 0:
-                print(f"\n--- {name}: local.sh FAILED (rc={rc}) ---\n{output}")
-                failed_sh.append(name)
-            else:
-                print(f"  {name}: local.sh written")
+    failed_sh = _parallel_cluster_op(
+        nodes,
+        lambda node: _write_cluster_local_sh(
+            node.name,
+            node_ips[node.name],
+            local_sh,
+            ssh_opts,
+            os_family,
+        ),
+        success_verb="local.sh written",
+        failure_verb="local.sh FAILED",
+    )
 
     if failed_sh:
         die(f"local.sh distribution failed for: {', '.join(failed_sh)}")
@@ -615,9 +619,7 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
         print(f"Running llmount.sh from {mgs.name}...")
         try:
             r = run(
-                ["sshpass", "-p", ROOT_PASSWORD, "ssh"]
-                + ssh_opts
-                + [f"root@{mgs_vm.ip}", mount_cmd],
+                sshpass_ssh_argv(mgs_vm.ip, mount_cmd),
                 capture_output=False,
                 timeout=300,
             )
@@ -731,18 +733,11 @@ def cmd_cluster_ssh(args: argparse.Namespace) -> None:
 
     vm = VMInfo.load(matched.name)
     ssh_args = [
-        "sshpass",
-        "-p",
-        ROOT_PASSWORD,
-        "ssh",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "LogLevel=ERROR",
+        "sshpass", "-p", ROOT_PASSWORD, "ssh",
+        *SSH_OPTS,
         f"root@{vm.ip}",
-    ] + args.command
+        *args.command,
+    ]
     os.execvp("sshpass", ssh_args)
 
 

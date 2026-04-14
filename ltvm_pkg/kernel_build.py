@@ -18,6 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, TypedDict
 
+from .lustre_tree import kp_configs, kp_patches, kp_series, kp_targets
 from .paths import load_meta_safe
 from .target_config import TARGETS_DIR
 
@@ -53,7 +54,7 @@ def parse_lustre_target(
 
     # parse_target_in raises FileNotFoundError / ValueError itself.
     # Prefer .target over .target.in (matches historical behavior).
-    targets_dir = Path(lustre_tree) / "lustre/kernel_patches/targets"
+    targets_dir = kp_targets(lustre_tree)
     plain = targets_dir / f"{lustre_target}.target"
     dotin = targets_dir / f"{lustre_target}.target.in"
     if not plain.exists() and not dotin.exists():
@@ -147,26 +148,23 @@ def resolve_lustre_files(
 
     Returns dict with keys: config, series_file, patches (list).
     """
-    lt = Path(lustre_tree)
-    kp = lt / "lustre/kernel_patches"
-
     # Kernel config -- arch-specific name (Lustre uses x86_64 / aarch64).
     config_glob = (
         f"kernel-{target_info['lnxmaj']}-{lustre_target}-{arch}.config"
     )
-    _config = kp / "kernel_configs" / config_glob
+    _config = kp_configs(lustre_tree) / config_glob
     # No Lustre-provided config -- will extract from SRPM at build time
     config_path: Path | None = _config if _config.exists() else None
 
     # Series file
-    series_file = kp / "series" / target_info["series"]
+    series_file = kp_series(lustre_tree) / target_info["series"]
     patches = []
     if series_file.exists():
         for line in series_file.read_text().splitlines():
             line = line.strip()
             if not line or line.startswith("#"):
                 continue
-            patch_path = kp / "patches" / line
+            patch_path = kp_patches(lustre_tree) / line
             if not patch_path.exists():
                 raise FileNotFoundError(f"Patch not found: {patch_path}")
             patches.append(patch_path)
@@ -203,7 +201,7 @@ def lustre_inputs_hash(
     """
     h = hashlib.sha256()
 
-    targets_dir = Path(lustre_tree) / "lustre/kernel_patches/targets"
+    targets_dir = kp_targets(lustre_tree)
     for name in (f"{lustre_target}.target", f"{lustre_target}.target.in"):
         tf = targets_dir / name
         if tf.exists():
@@ -336,11 +334,7 @@ def _ensure_container_image(target_config: TargetConfig) -> str:
     """
     # Arch-qualify the tag so cross-compile containers coexist with native
     arch = target_config.arch
-    default_arch = "x86_64"
-    if arch != default_arch:
-        tag = f"ltvm-build-{target_config.name}-{arch}"
-    else:
-        tag = f"ltvm-build-{target_config.name}"
+    tag = target_config.container_tag
     dockerfile = target_config.target_dir / "container.Dockerfile"
 
     log.info("Building container image: %s", tag)
@@ -443,6 +437,53 @@ def build_kernel(
     )
 
 
+def _finalize_kernel_build(
+    target_config: TargetConfig,
+    kernel_out: Path,
+    full_name: str,
+    lustre_target: str,
+    patches_applied: int,
+    extra_meta: dict[str, object],
+    extra_hash: bytes = b"",
+) -> dict[str, object]:
+    """Shared tail of the kernel build: verify outputs, read kernel.release,
+    log sizes, write meta.json.  Returns the meta dict."""
+    vmlinux = kernel_out / "vmlinux"
+    vmlinuz = kernel_out / "vmlinuz"
+    if not vmlinux.exists():
+        raise RuntimeError("Build failed: vmlinux not found in output")
+    if not vmlinuz.exists():
+        raise RuntimeError("Build failed: vmlinuz not found in output")
+
+    krelease = "unknown"
+    kr_file = kernel_out / "build-tree" / "include/config/kernel.release"
+    if kr_file.exists():
+        krelease = kr_file.read_text().strip()
+
+    vmlinux_size = vmlinux.stat().st_size
+    vmlinuz_size = vmlinuz.stat().st_size
+    log.info("vmlinux: %.1f MB", vmlinux_size / 1e6)
+    log.info("vmlinuz: %.1f MB", vmlinuz_size / 1e6)
+    log.info("Kernel version: %s", krelease)
+
+    # Schema: see ltvm_pkg.meta_schema.KernelMeta.
+    # target/input_hash are written by TargetConfig.write_meta.
+    meta: dict[str, object] = {
+        "kernel_version": krelease,
+        "lustre_target": lustre_target,
+        "patches_applied": patches_applied,
+        "vmlinux_bytes": vmlinux_size,
+        "vmlinuz_bytes": vmlinuz_size,
+        "built_at": datetime.now(timezone.utc).isoformat(),
+        **extra_meta,
+    }
+    target_config.write_meta(
+        "kernel", kernel=full_name, extra_hash=extra_hash, **meta
+    )
+    log.info("Kernel build complete")
+    return meta
+
+
 def _build_kernel_deb(
     target_config: TargetConfig,
     force: bool = False,
@@ -474,7 +515,6 @@ def _build_kernel_deb(
     # Prepare output directory
     kernel_out = target_config.output_dir / "kernels" / full_name
     kernel_out.mkdir(parents=True, exist_ok=True)
-    build_tree = kernel_out / "build-tree"
 
     # Prepare staging area with config fragment (no patches/SRPM)
     with tempfile.TemporaryDirectory(prefix="ltvm-kbuild-") as staging_str:
@@ -522,50 +562,14 @@ def _build_kernel_deb(
         )
         subprocess.run(container_cmd, check=True)
 
-    # Verify outputs
-    vmlinux = kernel_out / "vmlinux"
-    vmlinuz = kernel_out / "vmlinuz"
-    if not vmlinux.exists():
-        raise RuntimeError("Build failed: vmlinux not found in output")
-    if not vmlinuz.exists():
-        raise RuntimeError("Build failed: vmlinuz not found in output")
-
-    # Get kernel version from build tree
-    krelease = "unknown"
-    kr_file = build_tree / "include/config/kernel.release"
-    if kr_file.exists():
-        krelease = kr_file.read_text().strip()
-
-    vmlinux_size = vmlinux.stat().st_size
-    vmlinuz_size = vmlinuz.stat().st_size
-    log.info("vmlinux: %.1f MB", vmlinux_size / 1e6)
-    log.info("vmlinuz: %.1f MB", vmlinuz_size / 1e6)
-    log.info("Kernel version: %s", krelease)
-
-    # Write metadata
-    meta: dict[str, object] = {
-        "kernel_version": krelease,
-        "deb_source": deb_source,
-        "lustre_target": lustre_target,
-        "patches_applied": 0,
-        "vmlinux_bytes": vmlinux_size,
-        "vmlinuz_bytes": vmlinuz_size,
-        "built_at": datetime.now(timezone.utc).isoformat(),
-    }
-    target_config.write_meta(
-        "kernel",
-        kernel=full_name,
-        kernel_version=krelease,
-        deb_source=deb_source,
-        lustre_target=lustre_target,
+    return _finalize_kernel_build(
+        target_config,
+        kernel_out,
+        full_name,
+        lustre_target,
         patches_applied=0,
-        vmlinux_bytes=vmlinux_size,
-        vmlinuz_bytes=vmlinuz_size,
-        built_at=meta["built_at"],
+        extra_meta={"deb_source": deb_source},
     )
-
-    log.info("Kernel build complete")
-    return meta
 
 
 def _build_kernel_srpm(
@@ -639,7 +643,6 @@ def _build_kernel_srpm(
     # Prepare output directory (use full name)
     kernel_out = target_config.output_dir / "kernels" / full_name
     kernel_out.mkdir(parents=True, exist_ok=True)
-    build_tree = kernel_out / "build-tree"
 
     # Prepare staging area with patches and config
     with tempfile.TemporaryDirectory(prefix="ltvm-kbuild-") as staging_str:
@@ -699,46 +702,22 @@ def _build_kernel_srpm(
         log.info("Starting kernel build in container (j%d)...", jobs)
         subprocess.run(container_cmd, check=True)
 
-    # Verify outputs
-    vmlinux = kernel_out / "vmlinux"
-    vmlinuz = kernel_out / "vmlinuz"
-    if not vmlinux.exists():
-        raise RuntimeError("Build failed: vmlinux not found in output")
-    if not vmlinuz.exists():
-        raise RuntimeError("Build failed: vmlinuz not found in output")
-
-    # Get kernel version from build tree
-    krelease = "unknown"
-    kr_file = build_tree / "include/config/kernel.release"
-    if kr_file.exists():
-        krelease = kr_file.read_text().strip()
-
-    vmlinux_size = vmlinux.stat().st_size
-    vmlinuz_size = vmlinuz.stat().st_size
-    log.info("vmlinux: %.1f MB", vmlinux_size / 1e6)
-    log.info("vmlinuz: %.1f MB", vmlinuz_size / 1e6)
-    log.info("Kernel version: %s", krelease)
-
-    # Write metadata.  extra_hash MUST match what was used in the
-    # is_stale check above, otherwise the persisted hash and the
-    # next-run input_hash diverge and rebuild loops forever.
-    meta: dict[str, object] = {
-        "kernel_version": krelease,
-        "srpm": target_info["srpm"],
-        "lnxmaj": target_info["lnxmaj"],
-        "lnxrel": target_info["lnxrel"],
-        "lustre_target": lustre_target,
-        "patches_applied": len(lustre_patches),
-        "vmlinux_bytes": vmlinux_size,
-        "vmlinuz_bytes": vmlinuz_size,
-        "built_at": datetime.now(timezone.utc).isoformat(),
-    }
-    target_config.write_meta(
-        "kernel", kernel=full_name, extra_hash=extra_hash, **meta
+    # extra_hash MUST match what was used in the is_stale check above,
+    # otherwise the persisted hash and the next-run input_hash diverge
+    # and rebuild loops forever.
+    return _finalize_kernel_build(
+        target_config,
+        kernel_out,
+        full_name,
+        lustre_target,
+        patches_applied=len(lustre_patches),
+        extra_meta={
+            "srpm": target_info["srpm"],
+            "lnxmaj": target_info["lnxmaj"],
+            "lnxrel": target_info["lnxrel"],
+        },
+        extra_hash=extra_hash,
     )
-
-    log.info("Kernel build complete")
-    return meta
 
 
 # ------------------------------------------------------------------

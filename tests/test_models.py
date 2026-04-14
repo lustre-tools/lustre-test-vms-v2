@@ -310,9 +310,13 @@ class TestResolveOsArtifactsPerKernel:
         from ltvm_pkg import vm_state
 
         root = self._setup(tmp_path)
+        from ltvm_pkg import target_config as tc_mod
         with (
             patch.object(vm_state, "_LTVM_ROOT", root),
             patch.object(vm_state, "TARGETS_YAML", root / "targets" / "targets.yaml"),
+            patch.object(tc_mod, "TARGETS_YAML", root / "targets" / "targets.yaml"),
+            patch.object(tc_mod, "TARGETS_DIR", root / "targets"),
+            patch.object(tc_mod, "OUTPUT_DIR", root / "output"),
         ):
             arts = vm_state.resolve_os_artifacts("rocky9", kernel="6.1-rhel9.7")
         assert arts.kernel.parent.name == "6.1-rhel9.7"
@@ -322,9 +326,13 @@ class TestResolveOsArtifactsPerKernel:
         from ltvm_pkg import vm_state
 
         root = self._setup(tmp_path)
+        from ltvm_pkg import target_config as tc_mod
         with (
             patch.object(vm_state, "_LTVM_ROOT", root),
             patch.object(vm_state, "TARGETS_YAML", root / "targets" / "targets.yaml"),
+            patch.object(tc_mod, "TARGETS_YAML", root / "targets" / "targets.yaml"),
+            patch.object(tc_mod, "TARGETS_DIR", root / "targets"),
+            patch.object(tc_mod, "OUTPUT_DIR", root / "output"),
         ):
             arts = vm_state.resolve_os_artifacts("rocky9")
         assert arts.image.parent.name == "5.14-rhel9.7"
@@ -335,9 +343,13 @@ class TestResolveOsArtifactsPerKernel:
         root = self._setup(tmp_path)
         # Remove the 6.1 image to force the failure path.
         (root / "output" / "rocky9" / "x86_64" / "images" / "6.1-rhel9.7" / "base.ext4").unlink()
+        from ltvm_pkg import target_config as tc_mod
         with (
             patch.object(vm_state, "_LTVM_ROOT", root),
             patch.object(vm_state, "TARGETS_YAML", root / "targets" / "targets.yaml"),
+            patch.object(tc_mod, "TARGETS_YAML", root / "targets" / "targets.yaml"),
+            patch.object(tc_mod, "TARGETS_DIR", root / "targets"),
+            patch.object(tc_mod, "OUTPUT_DIR", root / "output"),
         ):
             with pytest.raises(FileNotFoundError, match="build-image"):
                 vm_state.resolve_os_artifacts("rocky9", kernel="6.1-rhel9.7")

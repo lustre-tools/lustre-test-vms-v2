@@ -19,6 +19,50 @@ from .vm_state import MARKER, ROOT_PASSWORD, SUBNET, VM_DIR, VMInfo, VMNotFound
 _IP_LOCK_PATH = VM_DIR / ".ip-alloc.lock"
 _HOSTS_LOCK_PATH = VM_DIR / ".hosts.lock"
 
+# Shared SSH client options for all sshpass-driven ssh/scp calls.
+# Kept here so call sites can't diverge (one was omitting
+# UserKnownHostsFile=/dev/null, silently polluting known_hosts on
+# every deploy).
+SSH_OPTS = [
+    "-o", "StrictHostKeyChecking=no",
+    "-o", "UserKnownHostsFile=/dev/null",
+    "-o", "LogLevel=ERROR",
+]
+
+
+def sshpass_ssh_argv(
+    ip: str,
+    command: str,
+    *,
+    extra_opts: list[str] | None = None,
+) -> list[str]:
+    """argv for `sshpass ssh [opts] root@<ip> <command>`."""
+    opts = SSH_OPTS + (extra_opts or [])
+    return [
+        "sshpass", "-p", ROOT_PASSWORD, "ssh",
+        *opts,
+        f"root@{ip}", command,
+    ]
+
+
+def sshpass_scp_argv(
+    src: str,
+    dst: str,
+    *,
+    extra_opts: list[str] | None = None,
+) -> list[str]:
+    """argv for `sshpass scp [opts] <src> <dst>`.
+
+    Either src or dst may be a `root@host:/path` remote spec; scp
+    figures out the direction itself.
+    """
+    opts = SSH_OPTS + (extra_opts or [])
+    return [
+        "sshpass", "-p", ROOT_PASSWORD, "scp",
+        *opts,
+        src, dst,
+    ]
+
 
 @contextmanager
 def _ip_alloc_lock() -> Iterator[None]:
@@ -287,24 +331,13 @@ def deploy_ssh_key(ip: str) -> None:
     # Pipe the key in via stdin so weird key-file content (newlines in
     # comment field, embedded quotes, etc.) can't break shell quoting.
     key_data = pubkey.read_text().rstrip("\n") + "\n"
-    ssh_cmd = [
-        "sshpass",
-        "-p",
-        ROOT_PASSWORD,
-        "ssh",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "ConnectTimeout=5",
-        "-o",
-        "LogLevel=ERROR",
-        f"root@{ip}",
+    ssh_cmd = sshpass_ssh_argv(
+        ip,
         "mkdir -p ~/.ssh && chmod 700 ~/.ssh && "
         "cat >> ~/.ssh/authorized_keys && "
         "chmod 600 ~/.ssh/authorized_keys",
-    ]
+        extra_opts=["-o", "ConnectTimeout=5"],
+    )
     try:
         r = subprocess.run(
             ssh_cmd,
@@ -329,27 +362,41 @@ def run_ssh(
     timeout: int = 120,
 ) -> subprocess.CompletedProcess:
     """Run a command on a VM via SSH with timeout."""
-    ssh_cmd = [
-        "sshpass",
-        "-p",
-        ROOT_PASSWORD,
-        "ssh",
-        "-o",
-        "StrictHostKeyChecking=no",
-        "-o",
-        "UserKnownHostsFile=/dev/null",
-        "-o",
-        "ConnectTimeout=5",
-        "-o",
-        "ServerAliveInterval=10",
-        "-o",
-        "ServerAliveCountMax=3",
-        "-o",
-        "LogLevel=ERROR",
-        f"root@{ip}",
+    ssh_cmd = sshpass_ssh_argv(
+        ip,
         command,
-    ]
+        extra_opts=[
+            "-o", "ConnectTimeout=5",
+            "-o", "ServerAliveInterval=10",
+            "-o", "ServerAliveCountMax=3",
+        ],
+    )
     return run(ssh_cmd, timeout=timeout)
+
+
+def provision_vm_ssh(
+    vm: VMInfo,
+    timeout: int = 30,
+    *,
+    register_before_wait: bool = False,
+) -> None:
+    """Run the standard post-launch SSH provisioning sequence.
+
+    1. wait_for_ssh
+    2. register_ssh_name (/etc/hosts + ~/.ssh/config)
+    3. deploy_ssh_key (invoking user's pubkey)
+
+    `register_before_wait` flips the first two steps: cmd_start wants
+    /etc/hosts populated even if wait_for_ssh times out, so the user
+    can `ssh root@<name>` to diagnose a stalled boot.
+    """
+    if register_before_wait:
+        register_ssh_name(vm.name, vm.ip)
+        wait_for_ssh(vm.ip, timeout)
+    else:
+        wait_for_ssh(vm.ip, timeout)
+        register_ssh_name(vm.name, vm.ip)
+    deploy_ssh_key(vm.ip)
 
 
 def wait_for_ssh(ip: str, max_wait: int = 30) -> None:

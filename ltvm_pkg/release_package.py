@@ -202,23 +202,26 @@ def snapshot_lustre(
     meta_file = kernel_dir / "meta.json"
     meta = load_meta_safe(meta_file)
     if meta is not None:
-        expected_kver = meta.get("kernel_version", "")
-        if expected_kver:
-            sample = ko_files[0]
-            r = subprocess.run(
-                ["modinfo", "-F", "vermagic", str(sample)],
-                capture_output=True,
-                text=True,
-                check=False,
+        expected_kver = meta.get("kernel_version")
+        if not expected_kver:
+            raise RuntimeError(
+                f"kernel meta.json missing kernel_version: {meta_file}"
             )
-            parts = r.stdout.split() if r.returncode == 0 else []
-            actual_kver = parts[0] if parts else ""
-            if actual_kver and actual_kver != expected_kver:
-                raise ValueError(
-                    f"Lustre modules built for {actual_kver} but target "
-                    f"kernel is {expected_kver}\n"
-                    f"  Rebuild: ltvm build-lustre <target> --force"
-                )
+        sample = ko_files[0]
+        r = subprocess.run(
+            ["modinfo", "-F", "vermagic", str(sample)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        parts = r.stdout.split() if r.returncode == 0 else []
+        actual_kver = parts[0] if parts else ""
+        if actual_kver and actual_kver != expected_kver:
+            raise ValueError(
+                f"Lustre modules built for {actual_kver} but target "
+                f"kernel is {expected_kver}\n"
+                f"  Rebuild: ltvm build-lustre <target> --force"
+            )
 
     dest = kernel_dir / "lustre-artifacts"
     print(f"  Snapshotting Lustre staging tree to {dest}")
@@ -278,7 +281,9 @@ def _dir_size_mb(path: str | Path) -> float:
     return 0.0
 
 
-def export_build_container(target_name: str, output_dir: str | Path) -> Path:
+def export_build_container(
+    target_name: str, output_dir: str | Path, arch: str = "x86_64"
+) -> Path:
     """Export the build container image to output/<target>/container/image.tar.
 
     Uses `podman save` to write a tarball that can later be loaded
@@ -290,8 +295,10 @@ def export_build_container(target_name: str, output_dir: str | Path) -> Path:
     publisher must have built it via `ltvm build-container <target>`)
     or if podman is missing/fails.
     """
+    from ltvm_pkg.target_config import build_container_tag
+
     output_dir = Path(output_dir)
-    container_tag = f"ltvm-build-{target_name}"
+    container_tag = build_container_tag(target_name, arch)
     container_dir = output_dir / "container"
     container_dir.mkdir(parents=True, exist_ok=True)
     image_tar = container_dir / "image.tar"
@@ -357,7 +364,7 @@ def package_target(
     # This is unconditional: every published package must include its
     # build container so the consumer can run `ltvm build-lustre` after
     # `ltvm fetch`.
-    export_build_container(target_name, output_dir)
+    export_build_container(target_name, output_dir, arch=arch)
 
     artifacts = _find_artifacts(output_dir, kernel=kernel)
 

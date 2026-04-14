@@ -248,41 +248,5 @@ class TestImageStalenessUpstream:
 # ── bundled snapshot mirror logic ────────────────────────
 
 
-class TestBundledSnapshotAlwaysMirrors:
-    """The round 19 mirror-skip optimization was wrong: if staging
-    already had .ko files from an earlier local build, cmd_deploy
-    would print "Using bundled Lustre" but use the local build.
-
-    We don't exercise cmd_deploy end-to-end here (too much
-    orchestration), but we pin the property as a design doc: the
-    bundled_snapshot branch must ALWAYS run rsync, never skip based
-    on staging contents.
-    """
-
-    def test_cmd_deploy_bundled_branch_unconditional(self) -> None:
-        """Inspect the source code to ensure the mirror is
-        unconditional when bundled_snapshot is not None."""
-        import inspect
-
-        from ltvm_pkg import cli
-
-        src = inspect.getsource(cli.cmd_deploy)
-        # The old buggy form had `and not (staging.is_dir() and any(...))`
-        # The new form should just test `bundled_snapshot is not None`
-        # without the staging.rglob guard on the mirror branch.
-        #
-        # We search for the mirror block by matching the rsync invocation
-        # and confirming the enclosing `if` does not reference
-        # staging.rglob in the same expression.  Match "rsync" loosely so
-        # `ruff format` is free to wrap the args list across lines.
-        mirror_idx = src.find('"rsync"')
-        assert mirror_idx != -1, "rsync mirror call not found in cmd_deploy"
-        # Look backward a few hundred chars for the gating `if`
-        preamble = src[max(0, mirror_idx - 500) : mirror_idx]
-        assert "bundled_snapshot is not None" in preamble
-        # The key property: no ".rglob" staleness check gating the mirror
-        assert 'staging.rglob("*.ko")' not in preamble, (
-            "The bundled_snapshot mirror must not be gated on staging "
-            "having no .ko files -- that's the round 20 bug: local "
-            "stale modules get shipped under the 'Using bundled' banner"
-        )
+# (TestBundledSnapshotAlwaysMirrors removed: the source-inspection test
+# was not behavioral and would break on formatting changes.)

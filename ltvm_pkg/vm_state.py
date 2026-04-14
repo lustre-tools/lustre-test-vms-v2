@@ -12,6 +12,32 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 
+
+def _atomic_write(path: Path, text: str, mode: int = 0o644) -> None:
+    """Write ``text`` to ``path`` atomically via a tempfile + rename.
+
+    Creates the parent directory if needed, chmods the temp file before
+    rename so callers observing ``path`` see the final mode, and removes
+    the temp file on any error (including BaseException).
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_str = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.name}.",
+    )
+    tmp = Path(tmp_str)
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        tmp.rename(path)
+    except BaseException:
+        try:
+            tmp.unlink()
+        except OSError:
+            pass
+        raise
+
 # ── constants ────────────────────────────────────────────
 # Configurable via environment variables; defaults match the
 # standard install layout from `ltvm setup`.
@@ -107,34 +133,25 @@ def resolve_os_artifacts(
     To use an out-of-tree vmlinuz, symlink or copy it into
     output/<os>/kernels/<name>/vmlinuz and pass the name.
     """
-    # Read targets.yaml for kernel suffix and defaults
-    kernel_suffix = ""
-    default_mem = 2048
-    target_cfg: dict = {}
-    if TARGETS_YAML.exists():
-        import yaml
+    # Resolve target config via the single TargetConfig source of truth
+    # rather than re-parsing targets.yaml here.  TargetConfig owns
+    # schema validation and default resolution.
+    from .target_config import TargetConfig
 
-        with open(TARGETS_YAML) as f:
-            cfg = yaml.safe_load(f)
-        defaults = cfg.get("defaults", {})
-        all_targets = cfg.get("targets", {})
-        if os_name not in all_targets:
-            known = ", ".join(sorted(all_targets)) or "(none configured)"
-            raise FileNotFoundError(
-                f"Unknown target {os_name!r}.  Known targets: {known}\n"
-                f"See: ltvm targets"
-            )
-        target_cfg = all_targets[os_name]
-        kernel_suffix = target_cfg.get("kernels", {}).get("default", "")
-        default_mem = int(
-            target_cfg.get("default_mem", defaults.get("default_mem", 2048))
-        )
+    try:
+        tc = TargetConfig(os_name, arch=arch)
+    except ValueError as e:
+        # TargetConfig raises ValueError for unknown target; callers
+        # expect FileNotFoundError from this helper.
+        raise FileNotFoundError(str(e)) from e
 
-    # Determine effective arch (CLI override > target config > default)
-    effective_arch = arch or target_cfg.get("arch") or "x86_64"
+    kernel_suffix = tc.default_kernel
+    default_mem = tc.default_mem
+
+    effective_arch = tc.arch
     default_arch = "x86_64"
 
-    output_dir = _LTVM_ROOT / "output" / os_name / effective_arch
+    output_dir = tc.output_dir
 
     arch_hint = (
         f" --arch {effective_arch}" if effective_arch != default_arch else ""
@@ -382,23 +399,7 @@ class VMInfo:
             f"ARCH={self.arch}\n"
             f"CREATOR={self.creator}\n"
         )
-        self.info_path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_str = tempfile.mkstemp(
-            dir=str(self.info_path.parent),
-            prefix=f".{self.info_path.name}.",
-        )
-        tmp = Path(tmp_str)
-        try:
-            with os.fdopen(fd, "w") as f:
-                f.write(text)
-            os.chmod(tmp, 0o644)
-            tmp.rename(self.info_path)
-        except BaseException:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            raise
+        _atomic_write(self.info_path, text)
 
     @property
     def _lock_path(self) -> Path:
@@ -443,22 +444,7 @@ class VMInfo:
                     )
                 else:
                     text = text.rstrip("\n") + f"\n{replacement}\n"
-            fd, tmp_str = tempfile.mkstemp(
-                dir=str(self.info_path.parent),
-                prefix=f".{self.info_path.name}.",
-            )
-            tmp = Path(tmp_str)
-            try:
-                with os.fdopen(fd, "w") as f:
-                    f.write(text)
-                os.chmod(tmp, 0o644)
-                tmp.rename(self.info_path)
-            except BaseException:
-                try:
-                    tmp.unlink()
-                except OSError:
-                    pass
-                raise
+            _atomic_write(self.info_path, text)
 
     def _update_field(self, key: str, value: str | int) -> None:
         """Update a single field in the info file (add if missing)."""
@@ -578,22 +564,7 @@ class ClusterInfo:
         # would fail JSON parse on the next load).
         data = {"name": self.name, "nodes": self.nodes}
         text = json.dumps(data, indent=2) + "\n"
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        fd, tmp_str = tempfile.mkstemp(
-            dir=str(self.path.parent),
-            prefix=f".{self.path.name}.",
-        )
-        tmp = Path(tmp_str)
-        try:
-            with os.fdopen(fd, "w") as f:
-                f.write(text)
-            tmp.rename(self.path)
-        except BaseException:
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-            raise
+        _atomic_write(self.path, text)
 
     @staticmethod
     def load(name: str) -> ClusterInfo:

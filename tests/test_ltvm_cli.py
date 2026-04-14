@@ -41,9 +41,9 @@ from ltvm_pkg.cli import (  # noqa: E402, I001
     EXIT_NOT_FOUND,
     EXIT_OK,
     _artifact_label,
+    _emit_error,
     _error,
     _load_target,
-    _not_found,
     _output,
     _resolve_lustre_tree,
     cmd_status,
@@ -220,11 +220,13 @@ class TestErrorHelpers:
     def test_not_found_returns_exit_not_found(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        rc = _not_found("no such target", use_json=False)
+        rc = _emit_error(
+            "no such target", use_json=False, code=EXIT_NOT_FOUND
+        )
         assert rc == EXIT_NOT_FOUND
 
     def test_not_found_json(self, capsys: pytest.CaptureFixture[str]) -> None:
-        _not_found("missing", use_json=True)
+        _emit_error("missing", use_json=True, code=EXIT_NOT_FOUND)
         payload = json.loads(capsys.readouterr().err)
         assert "error" in payload
 
@@ -1687,3 +1689,246 @@ class TestNoRootRequiredForReadCommands:
             cli_mod.cmd_deploy(args)
 
         mock_rr.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
+# Feature 1: cmd_clean
+# ---------------------------------------------------------------------------
+
+
+class TestCmdClean:
+    def test_clean_wipes_target_arch_dir(
+        self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
+    ) -> None:
+        """`ltvm clean rocky9` removes output/rocky9/x86_64/ but not other arches."""
+        import ltvm_pkg.cli as cli_mod
+        import ltvm_pkg.target_config as cfg
+
+        out = tmp_targets / "output"
+        (out / "rocky9" / "x86_64" / "kernels" / "foo").mkdir(parents=True)
+        (out / "rocky9" / "x86_64" / "kernels" / "foo" / "vmlinux").write_bytes(
+            b"x" * 1024
+        )
+        (out / "rocky9" / "aarch64").mkdir(parents=True)
+        (out / "rocky9" / "aarch64" / "keep.txt").write_text("keep")
+
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(cfg, "OUTPUT_DIR", out),
+            patch.object(cli_mod, "TargetConfig", cfg.TargetConfig),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+        ):
+            args = argparse.Namespace(
+                target="rocky9", arch=None, all_arches=False, json=False
+            )
+            rc = cli_mod.cmd_clean(args)
+
+        assert rc == EXIT_OK
+        assert not (out / "rocky9" / "x86_64").exists()
+        assert (out / "rocky9" / "aarch64" / "keep.txt").exists()
+        cap = capsys.readouterr().out
+        assert "removed" in cap
+        assert "x86_64" in cap
+
+    def test_clean_all_arches(
+        self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
+    ) -> None:
+        """--all-arches wipes the whole target directory."""
+        import ltvm_pkg.cli as cli_mod
+        import ltvm_pkg.target_config as cfg
+
+        out = tmp_targets / "output"
+        (out / "rocky9" / "x86_64").mkdir(parents=True, exist_ok=True)
+        (out / "rocky9" / "x86_64" / "a").write_text("a")
+        (out / "rocky9" / "aarch64").mkdir(parents=True)
+        (out / "rocky9" / "aarch64" / "b").write_text("b")
+
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(cfg, "OUTPUT_DIR", out),
+            patch.object(cli_mod, "TargetConfig", cfg.TargetConfig),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+        ):
+            args = argparse.Namespace(
+                target="rocky9", arch=None, all_arches=True, json=True
+            )
+            rc = cli_mod.cmd_clean(args)
+
+        assert rc == EXIT_OK
+        assert not (out / "rocky9").exists()
+        payload = json.loads(capsys.readouterr().out)
+        assert payload["all_arches"] is True
+        assert payload["wiped"][0]["removed"] is True
+
+    def test_clean_already_clean_is_safe(
+        self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
+    ) -> None:
+        import ltvm_pkg.cli as cli_mod
+        import ltvm_pkg.target_config as cfg
+
+        out = tmp_targets / "output"
+
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(cfg, "OUTPUT_DIR", out),
+            patch.object(cli_mod, "TargetConfig", cfg.TargetConfig),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+        ):
+            args = argparse.Namespace(
+                target="rocky9", arch=None, all_arches=False, json=False
+            )
+            rc = cli_mod.cmd_clean(args)
+        assert rc == EXIT_OK
+        assert "nothing to clean" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------
+# Feature 2: ltvm fetch --kernel
+# ---------------------------------------------------------------------------
+
+
+class TestFetchKernelFlag:
+    def test_kernel_signature_derivation(self) -> None:
+        from ltvm_pkg.cli import _kernel_release_signature
+
+        assert _kernel_release_signature("5.14-rhel9.7") == "el9_7"
+        assert _kernel_release_signature("5.14-rhel9.5") == "el9_5"
+        assert _kernel_release_signature("4.18-rhel8.10") == "el8_10"
+        assert _kernel_release_signature("6.8-ubuntu2404") is None
+
+    def test_find_release_url_filters_by_kernel_signature(self) -> None:
+        from ltvm_pkg.cli import _find_release_url
+
+        releases = [
+            {
+                "tag_name": "rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre",
+                "assets": [
+                    {
+                        "name": "rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre.tar.gz",
+                        "browser_download_url": "https://ex/97.tar.gz",
+                    }
+                ],
+            },
+            {
+                "tag_name": "rocky9-x86_64-5.14.0-503.26.1.el9_5_lustre",
+                "assets": [
+                    {
+                        "name": "rocky9-x86_64-5.14.0-503.26.1.el9_5_lustre.tar.gz",
+                        "browser_download_url": "https://ex/95.tar.gz",
+                    }
+                ],
+            },
+        ]
+        with patch("ltvm_pkg.cli._gh_api", return_value=releases):
+            url = _find_release_url(
+                "rocky9", arch="x86_64", kernel_signature="el9_5"
+            )
+        assert url == "https://ex/95.tar.gz"
+
+    def test_cmd_fetch_rejects_unknown_kernel(
+        self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
+    ) -> None:
+        import ltvm_pkg.cli as cli_mod
+        import ltvm_pkg.target_config as cfg
+
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cli_mod, "TargetConfig", cfg.TargetConfig),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+        ):
+            args = argparse.Namespace(
+                url=None,
+                target="rocky9",
+                filter=None,
+                arch=None,
+                kernel="5.14-rhel9.99",
+                list=False,
+                json=False,
+            )
+            rc = cli_mod.cmd_fetch(args)
+        assert rc == EXIT_ERROR
+        err = capsys.readouterr().err
+        assert "not in targets.yaml" in err
+
+
+# ---------------------------------------------------------------------------
+# Feature 3: cmd_targets emits one row per (target, arch, kernel)
+# ---------------------------------------------------------------------------
+
+
+class TestCmdTargetsPerKernelRows:
+    def test_json_has_one_row_per_declared_kernel(
+        self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
+    ) -> None:
+        import ltvm_pkg.cli as cli_mod
+        import ltvm_pkg.target_config as cfg
+
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cli_mod, "TargetConfig", cfg.TargetConfig),
+            patch.object(
+                cfg,
+                "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+            patch("ltvm_pkg.cli.list_targets", return_value=["rocky9"]),
+            patch("ltvm_pkg.cli._gh_api", return_value=[]),
+        ):
+            args = argparse.Namespace(json=True)
+            rc = cli_mod.cmd_targets(args)
+
+        assert rc == EXIT_OK
+        payload = json.loads(capsys.readouterr().out)
+        # rocky9 has two kernels in the fixture: 5.14-rhel9.7 and 5.14-rhel9.5
+        kernels = [r["kernel"] for r in payload]
+        assert "5.14-rhel9.7" in kernels
+        assert "5.14-rhel9.5" in kernels
+        # Exactly one row flagged as default
+        defaults = [r for r in payload if r["is_default"]]
+        assert len(defaults) == 1
+        assert defaults[0]["kernel"] == "5.14-rhel9.7"
+        # All rows have the required columns
+        for r in payload:
+            assert set(["name", "arch", "kernel", "lustre_mode",
+                        "local_release", "remote_release", "is_default"]) <= set(r.keys())
+
+    def test_release_status_kernel_signature_filters_remote(self) -> None:
+        from ltvm_pkg.cli import _release_status
+
+        releases = [
+            {
+                "tag_name": "rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre",
+                "assets": [
+                    {
+                        "name": "rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre.tar.gz"
+                    }
+                ],
+            }
+        ]
+        local, remote = _release_status(
+            "rocky9", "x86_64", releases, kernel_signature="el9_5"
+        )
+        # el9_7 release doesn't match el9_5 signature
+        assert remote == "-"
+        local2, remote2 = _release_status(
+            "rocky9", "x86_64", releases, kernel_signature="el9_7"
+        )
+        assert remote2.endswith("el9_7_lustre")

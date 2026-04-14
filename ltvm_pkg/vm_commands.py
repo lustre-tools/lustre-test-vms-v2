@@ -10,6 +10,8 @@ import subprocess
 import sys
 import time
 from pathlib import Path
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from .deploy import configure_test_disks
@@ -20,8 +22,10 @@ from .vm_net import (
     alloc_ip,
     deploy_ssh_key,
     mac_for_name,
+    provision_vm_ssh,
     register_ssh_name,
     run_ssh,
+    sshpass_scp_argv,
     tap_for_name,
     unregister_ssh_name,
     wait_for_ssh,
@@ -47,6 +51,98 @@ from .vm_state import (
 )
 
 
+def _handler_error(
+    args: argparse.Namespace, msg: str, code: int = EXIT_ERROR
+) -> int:
+    """Emit a handler error honoring ``args.json``.
+
+    JSON mode: print ``{"error": msg}`` to stdout (so wrapper scripts
+    can parse stdout).  Text mode: print ``error: msg`` to stderr.
+    Returns ``code`` so the caller can ``return _handler_error(...)``
+    and let the outer wrapper propagate the exit code.
+    """
+    use_json = bool(getattr(args, "json", False))
+    if use_json:
+        print(json.dumps({"error": msg}))
+    else:
+        print(f"error: {msg}", file=sys.stderr)
+    return code
+
+
+@contextmanager
+def _with_vm_stopped(
+    vm: VMInfo,
+    reason: str,
+    *,
+    register_before_wait: bool = False,
+    get_error: Any = None,
+) -> Iterator[None]:
+    """Stop ``vm`` (if running) for the duration of the block, then
+    restart it.
+
+    Used by snapshot / restore paths that need to mutate the qcow2 overlay:
+    qemu-img refuses to operate on an image open by another qemu process,
+    and mutating overlay metadata under a running guest risks corruption.
+
+    The restart always runs (via ``finally``) so a failure inside the
+    block still brings the VM back up.  If the restart itself raises
+    SystemExit (via die() in one of the restart steps), and ``get_error``
+    is a callable returning a non-empty error string, that inner error
+    is printed to stderr before the SystemExit propagates -- preserving
+    the "both errors visible" semantics the original snapshot and
+    snapshot-delete paths had.
+    """
+    was_running = is_running(vm)
+    if was_running:
+        print(f"stopping {vm.name} {reason}...")
+        kill_qemu(vm)
+    try:
+        yield
+    finally:
+        if was_running:
+            print(f"restarting {vm.name}...")
+            try:
+                launch_qemu(vm)
+                if register_before_wait:
+                    provision_vm_ssh(
+                        vm, SSH_TIMEOUT, register_before_wait=True
+                    )
+                else:
+                    provision_vm_ssh(vm, SSH_TIMEOUT)
+                _seed_kdump_boot(vm)
+                print(f"started {vm.name}")
+            except SystemExit as e:
+                if get_error is not None:
+                    inner = get_error()
+                    if inner:
+                        print(f"error: {inner}", file=sys.stderr)
+                raise e
+
+
+def _os_family_for_vm(vm: VMInfo, context: str = "") -> str:
+    """Resolve the OS family (e.g. 'rhel', 'debian') from ``vm.os_id``.
+
+    Falls back to 'rhel' with a warning only when the target config is
+    genuinely missing/broken (ValueError: unknown target / bad schema,
+    FileNotFoundError: targets.yaml gone).  ``context`` is a short
+    phrase appended to the warning message (e.g. 'kdump path').
+    """
+    if not vm.os_id:
+        return "rhel"
+    try:
+        from .target_config import TargetConfig
+
+        return TargetConfig(vm.os_id).os_family
+    except (ValueError, FileNotFoundError) as e:
+        suffix = f" {context}" if context else ""
+        print(
+            f"warning: cannot resolve target {vm.os_id!r}, "
+            f"defaulting to rhel{suffix}: {e}",
+            file=sys.stderr,
+        )
+        return "rhel"
+
+
 def _seed_kdump_boot(vm: VMInfo) -> None:
     """Ensure /boot has vmlinuz + kdump initramfs for kexec-on-panic.
 
@@ -58,33 +154,17 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
     if not vm.kernel:
         return
 
+    if not vm.kver:
+        raise RuntimeError(
+            f"VM {vm.name!r} has no kver recorded; recreate the VM"
+        )
     kver = vm.kver
-    if not kver:
-        r = run_ssh(vm.ip, "uname -r", timeout=10)
-        if r.returncode != 0:
-            print(
-                "warning: could not determine kernel version; kdump boot seeding skipped"
-            )
-            return
-        kver = r.stdout.strip()
 
-    # Determine OS family from target config.  Catch only the narrow
-    # cases where the target config is genuinely missing/broken
-    # (ValueError: unknown target / bad schema, FileNotFoundError:
-    # targets.yaml gone).  A blanket `except Exception: pass` would
-    # silently fall back to "rhel" for a Debian VM.
-    os_family = "rhel"
-    if vm.os_id:
-        try:
-            from .target_config import TargetConfig
-
-            os_family = TargetConfig(vm.os_id).os_family
-        except (ValueError, FileNotFoundError) as e:
-            print(
-                f"warning: cannot resolve target {vm.os_id!r}, "
-                f"defaulting to rhel kdump path: {e}",
-                file=sys.stderr,
-            )
+    # Determine OS family from target config.  A blanket
+    # `except Exception: pass` would silently fall back to "rhel" for
+    # a Debian VM, so _os_family_for_vm() narrows to the missing/broken
+    # target cases.
+    os_family = _os_family_for_vm(vm, "kdump path")
 
     if os_family == "debian":
         initrd_path = f"/var/lib/kdump/initrd.img-{kver}"
@@ -114,18 +194,11 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
                 f"or restore the kernel output dir."
             )
         scp_r = run(
-            [
-                "sshpass",
-                "-p",
-                ROOT_PASSWORD,
-                "scp",
-                "-o", "StrictHostKeyChecking=no",
-                "-o", "UserKnownHostsFile=/dev/null",
-                "-o", "ConnectTimeout=5",
-                "-o", "LogLevel=ERROR",
+            sshpass_scp_argv(
                 str(vmlinuz),
                 f"root@{vm.ip}:/boot/vmlinuz-{kver}",
-            ],
+                extra_opts=["-o", "ConnectTimeout=5"],
+            ),
         )
         if scp_r.returncode != 0:
             err = (scp_r.stderr or scp_r.stdout or "").strip()
@@ -247,9 +320,7 @@ def cmd_create(args: argparse.Namespace) -> None:
                 print(f"{name}: already running")
             return
         launch_qemu(vm)
-        wait_for_ssh(vm.ip, SSH_TIMEOUT)
-        register_ssh_name(vm.name, vm.ip)
-        deploy_ssh_key(vm.ip)
+        provision_vm_ssh(vm, SSH_TIMEOUT)
         _seed_kdump_boot(vm)
         if args.json:
             print(
@@ -317,11 +388,13 @@ def cmd_create(args: argparse.Namespace) -> None:
     os_id = os_target
 
     # Read kernel version from meta.json next to the kernel binary
-    kver = ""
     kernel_meta = Path(kernel).parent / "meta.json"
     meta = load_meta_safe(kernel_meta)
-    if meta is not None:
-        kver = meta.get("kernel_version", "")
+    if meta is None or not meta.get("kernel_version"):
+        raise RuntimeError(
+            f"kernel meta.json missing kernel_version: {kernel_meta}"
+        )
+    kver = meta["kernel_version"]
 
     disk_size = _parse_disk_size(getattr(args, "disk_size", None))
 
@@ -441,9 +514,7 @@ def cmd_create(args: argparse.Namespace) -> None:
     # so we can re-raise after cleanup.
     try:
         launch_qemu(vm)
-        wait_for_ssh(vm.ip, SSH_TIMEOUT)
-        register_ssh_name(vm.name, vm.ip)
-        deploy_ssh_key(vm.ip)
+        provision_vm_ssh(vm, SSH_TIMEOUT)
         _seed_kdump_boot(vm)
     except BaseException:
         # Best-effort cleanup of overlay/disks/.info/TAP.  If any
@@ -499,16 +570,12 @@ def cmd_start(args: argparse.Namespace) -> None:
     for name in args.names:
         vm = VMInfo.load(name)
         launch_qemu(vm)
-        # Register /etc/hosts BEFORE waiting for SSH so a wait_for_ssh
-        # timeout doesn't leave a zombie VM running with no DNS entry.
-        # The user can then `ssh root@<name>` to diagnose why boot
-        # stalled instead of having to hunt down the IP by hand.
-        register_ssh_name(vm.name, vm.ip)
-        wait_for_ssh(vm.ip, SSH_TIMEOUT)
-        # Both of these are idempotent and cheap on a re-start, but
-        # they're necessary for fresh VMs whose create was interrupted
-        # before they ran (so cmd_start recovers a half-set-up VM).
-        deploy_ssh_key(vm.ip)
+        # register_before_wait: populate /etc/hosts BEFORE waiting for
+        # SSH so a wait_for_ssh timeout doesn't leave a zombie VM
+        # running with no DNS entry. deploy_ssh_key is idempotent and
+        # cheap on re-start, but necessary for fresh VMs whose create
+        # was interrupted (so cmd_start recovers a half-set-up VM).
+        provision_vm_ssh(vm, SSH_TIMEOUT, register_before_wait=True)
         _seed_kdump_boot(vm)
         print(f"started {name}")
 
@@ -568,7 +635,8 @@ def cmd_destroy(args: argparse.Namespace) -> None:
 
 
 def cmd_llmount(args: argparse.Namespace) -> None:
-    name = args.name
+    # cli.py parser positional is 'vm'; older call sites used 'name'
+    name = getattr(args, "vm", None) or args.name
     timeout = getattr(args, "timeout", 300)
     cleanup = getattr(args, "cleanup", False)
 
@@ -585,18 +653,7 @@ def cmd_llmount(args: argparse.Namespace) -> None:
     # Debian targets put Lustre under /usr/lib, RHEL under /usr/lib64.
     # Resolve from the VM's recorded os_id; fall back to rhel with a
     # warning if the target config is missing/broken.
-    os_family = "rhel"
-    if vm.os_id:
-        try:
-            from .target_config import TargetConfig
-
-            os_family = TargetConfig(vm.os_id).os_family
-        except (ValueError, FileNotFoundError) as e:
-            print(
-                f"warning: cannot resolve target {vm.os_id!r}, "
-                f"defaulting to rhel libdir: {e}",
-                file=sys.stderr,
-            )
+    os_family = _os_family_for_vm(vm, "libdir")
     libdir = lustre_libdir(os_family)
 
     if cleanup:
@@ -827,10 +884,12 @@ def _qmp_nmi(qmp_path: Path) -> None:
             )
 
 
-def cmd_nmi(args: argparse.Namespace) -> None:
+def cmd_nmi(args: argparse.Namespace) -> int:
     vm = VMInfo.load(args.name)
     if not is_running(vm):
-        die(f"VM '{args.name}' not running", EXIT_UNREACHABLE)
+        return _handler_error(
+            args, f"VM '{args.name}' not running", EXIT_UNREACHABLE
+        )
     # Ensure the injected NMI causes a panic.  QEMU microVM delivers
     # inject-nmi as an ISA SERR NMI (PCI system error, reason 0xff), handled
     # by mem_parity_error() which only panics when panic_on_unrecovered_nmi=1.
@@ -843,18 +902,23 @@ def cmd_nmi(args: argparse.Namespace) -> None:
             timeout=10,
         )
     except Exception as e:
-        die(f"failed to set NMI panic sysctls on '{args.name}': {e}")
+        return _handler_error(
+            args, f"failed to set NMI panic sysctls on '{args.name}': {e}"
+        )
     try:
         _qmp_nmi(vm.socket_path)
     except Exception as e:
-        die(f"failed to inject NMI into '{args.name}': {e}")
+        return _handler_error(
+            args, f"failed to inject NMI into '{args.name}': {e}"
+        )
     print(f"NMI injected into '{args.name}' (expect panic + kdump reboot)")
+    return EXIT_OK
 
 
 # ── crash-collect ────────────────────────────────────────
 
 
-def cmd_crash_collect(args: argparse.Namespace) -> None:
+def cmd_crash_collect(args: argparse.Namespace) -> int:
     vm = VMInfo.load(args.name)
     raw_outdir = getattr(args, "outdir", None)
     outdir = Path(raw_outdir) if raw_outdir else Path.home() / "ltvm-crashes"
@@ -862,7 +926,9 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
 
     if args.trigger:
         if not is_running(vm):
-            die(f"VM '{args.name}' not running, can't trigger crash")
+            return _handler_error(
+                args, f"VM '{args.name}' not running, can't trigger crash"
+            )
         print(f"triggering crash on {args.name}...")
         try:
             run_ssh(vm.ip, "echo c > /proc/sysrq-trigger", timeout=5)
@@ -882,12 +948,14 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
             print(".", end="", flush=True)
             time.sleep(1)
         else:
-            die(
-                f"\nVM '{args.name}' did not come back after {args.wait + 5}s",
+            return _handler_error(
+                args,
+                f"\nVM '{args.name}' did not come back after "
+                f"{args.wait + 5}s",
                 EXIT_TIMEOUT,
             )
     elif not is_running(vm):
-        die(f"VM '{args.name}' not running")
+        return _handler_error(args, f"VM '{args.name}' not running")
 
     print("finding vmcore...")
     # Support both RHEL format (/var/crash/*/vmcore) and
@@ -901,20 +969,23 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
             timeout=10,
         )
     except subprocess.TimeoutExpired as e:
-        die(
-            f"timed out after {e.timeout}s probing /var/crash on '{args.name}'",
+        return _handler_error(
+            args,
+            f"timed out after {e.timeout}s probing /var/crash on "
+            f"'{args.name}'",
             EXIT_TIMEOUT,
         )
     if r.returncode != 0:
         # SSH failure (host unreachable, key mismatch, etc.) -- surface
         # the real error rather than the misleading "no vmcore found".
-        die(
+        return _handler_error(
+            args,
             f"failed to probe /var/crash on '{args.name}' "
-            f"(rc={r.returncode}): {(r.stderr or r.stdout or '').strip()}"
+            f"(rc={r.returncode}): {(r.stderr or r.stdout or '').strip()}",
         )
     vmcore_path = r.stdout.strip()
     if not vmcore_path:
-        die("no vmcore found in /var/crash/")
+        return _handler_error(args, "no vmcore found in /var/crash/")
 
     r = run_ssh(vm.ip, f"ls -lh {vmcore_path}", timeout=5)
     print(f"found: {r.stdout.strip()}")
@@ -927,32 +998,24 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
     print(f"copying vmcore to {local_vmcore}...")
     try:
         r = run(
-            [
-                "sshpass",
-                "-p",
-                ROOT_PASSWORD,
-                "scp",
-                "-o",
-                "StrictHostKeyChecking=no",
-                "-o",
-                "UserKnownHostsFile=/dev/null",
-                "-o",
-                "LogLevel=ERROR",
+            sshpass_scp_argv(
                 f"root@{vm.ip}:{vmcore_path}",
                 str(local_vmcore),
-            ],
+            ),
             capture_output=False,
             timeout=300,
         )
     except subprocess.TimeoutExpired as e:
         local_vmcore.unlink(missing_ok=True)
-        die(
-            f"timed out after {e.timeout}s copying vmcore from '{args.name}'",
+        return _handler_error(
+            args,
+            f"timed out after {e.timeout}s copying vmcore from "
+            f"'{args.name}'",
             EXIT_TIMEOUT,
         )
     if r.returncode != 0:
         local_vmcore.unlink(missing_ok=True)
-        die("failed to copy vmcore")
+        return _handler_error(args, "failed to copy vmcore")
 
     # Make vmcore readable by non-root so triage tools (run as SUDO_USER)
     # can open it.
@@ -993,7 +1056,7 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
         print(f"vmcore dir: {local_dir}")
-        sys.exit(EXIT_NOT_FOUND)
+        return EXIT_NOT_FOUND
 
     if args.mod_dir:
         print("running lustre triage...")
@@ -1022,7 +1085,7 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
                 "triage script not found (set LTVM_TRIAGE_SCRIPT to lustre_triage.py path)"
             )
             print(f"vmcore dir: {local_dir}")
-            return
+            return EXIT_OK
         # Run triage as SUDO_USER so user-installed packages (drgn) are
         # on the Python path.  Fall back to plain python3 if not sudo.
         python_cmd = ["python3"]
@@ -1058,6 +1121,7 @@ def cmd_crash_collect(args: argparse.Namespace) -> None:
             f"--vmlinux {vmlinux} "
             f"--mod-dir <build-tree>"
         )
+    return EXIT_OK
 
 
 # ── snapshots ────────────────────────────────────────────
@@ -1071,17 +1135,17 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
     # on a stopped-or-running overlay the same way snapshot -c does.
     delete_tag = getattr(args, "delete", None)
     if delete_tag:
-        # Stop the VM before touching the overlay: qemu-img refuses to
-        # operate on an image that's currently open by another qemu
-        # process, and even if it didn't, mutating overlay metadata out
-        # from under a running guest risks corruption.  Mirror the
-        # stop/restart dance from the create path.
-        was_running = is_running(vm)
-        if was_running:
-            print(f"stopping {vm.name} to delete snapshot...")
-            kill_qemu(vm)
         delete_err: str | None = None
-        try:
+        with _with_vm_stopped(
+            vm,
+            "to delete snapshot",
+            register_before_wait=True,
+            get_error=lambda: (
+                f"snapshot delete failed: {delete_err}"
+                if delete_err
+                else None
+            ),
+        ):
             r = run(
                 [QEMU_IMG, "snapshot", "-d", delete_tag, str(vm.overlay_path)]
             )
@@ -1091,65 +1155,25 @@ def cmd_snapshot(args: argparse.Namespace) -> None:
                 print(
                     f"snapshot '{delete_tag}' deleted from {vm.name}"
                 )
-        finally:
-            if was_running:
-                print(f"restarting {vm.name}...")
-                try:
-                    launch_qemu(vm)
-                    register_ssh_name(vm.name, vm.ip)
-                    wait_for_ssh(vm.ip, SSH_TIMEOUT)
-                    deploy_ssh_key(vm.ip)
-                    _seed_kdump_boot(vm)
-                    print(f"started {vm.name}")
-                except SystemExit as e:
-                    if delete_err:
-                        print(
-                            f"error: snapshot delete failed: {delete_err}",
-                            file=sys.stderr,
-                        )
-                    raise e
         if delete_err:
             die(f"snapshot delete failed: {delete_err}")
         return
 
     tag = args.tag or f"snap-{time.strftime('%Y%m%d-%H%M%S')}"
 
-    was_running = is_running(vm)
-    if was_running:
-        print(f"stopping {vm.name} for snapshot...")
-        kill_qemu(vm)
-
     snapshot_err: str | None = None
-    try:
+    with _with_vm_stopped(
+        vm,
+        "for snapshot",
+        get_error=lambda: (
+            f"snapshot failed: {snapshot_err}" if snapshot_err else None
+        ),
+    ):
         r = run([QEMU_IMG, "snapshot", "-c", tag, str(vm.overlay_path)])
         if r.returncode != 0:
             snapshot_err = r.stderr or "snapshot failed"
         else:
             print(f"snapshot '{tag}' created for {vm.name}")
-    finally:
-        if was_running:
-            # Restart even if snapshot failed -- the user expects the
-            # VM to come back up either way.  We don't use die() here
-            # so the original snapshot error message survives.
-            print(f"restarting {vm.name}...")
-            try:
-                launch_qemu(vm)
-                wait_for_ssh(vm.ip, SSH_TIMEOUT)
-                register_ssh_name(vm.name, vm.ip)
-                # Match cmd_start: idempotent post-boot init.
-                deploy_ssh_key(vm.ip)
-                _seed_kdump_boot(vm)
-                print(f"started {vm.name}")
-            except SystemExit as e:
-                # die() inside one of the restart steps -- print
-                # both errors and exit with the snapshot error if
-                # there was one, otherwise the restart error.
-                if snapshot_err:
-                    print(
-                        f"error: snapshot failed: {snapshot_err}",
-                        file=sys.stderr,
-                    )
-                raise e
     if snapshot_err:
         die(f"snapshot failed: {snapshot_err}")
 
@@ -1202,28 +1226,13 @@ def cmd_restore(args: argparse.Namespace) -> None:
     if args.tag not in tags:
         die(f"restore failed: snapshot '{args.tag}' not found")
 
-    was_running = is_running(vm)
-    if was_running:
-        print(f"stopping {vm.name} before restore...")
-        kill_qemu(vm)
-
-    r = run(
-        [QEMU_IMG, "snapshot", "-a", args.tag, str(vm.overlay_path)],
-    )
-    if r.returncode != 0:
-        die(f"restore failed: {r.stderr}")
-    print(f"restored {vm.name} to '{args.tag}'")
-
-    if was_running:
-        print(f"restarting {vm.name}...")
-        launch_qemu(vm)
-        wait_for_ssh(vm.ip, SSH_TIMEOUT)
-        register_ssh_name(vm.name, vm.ip)
-        # Match cmd_start: re-deploy the user's SSH key and re-seed
-        # /boot for kdump.  Both are idempotent and necessary if the
-        # restored snapshot predates the most recent setup.
-        deploy_ssh_key(vm.ip)
-        _seed_kdump_boot(vm)
+    with _with_vm_stopped(vm, "before restore"):
+        r = run(
+            [QEMU_IMG, "snapshot", "-a", args.tag, str(vm.overlay_path)],
+        )
+        if r.returncode != 0:
+            die(f"restore failed: {r.stderr}")
+        print(f"restored {vm.name} to '{args.tag}'")
 
 
 # ── doctor ───────────────────────────────────────────────

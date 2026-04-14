@@ -220,7 +220,7 @@ def _lustre_inject_lines(
     )
     if modules_src.is_dir():
         dest = inject_dir / "lustre-extra"
-        shutil.copytree(str(modules_src), str(dest), symlinks=False)
+        shutil.copytree(modules_src, dest, symlinks=False)
         lines.append(f"COPY lustre-extra/ /lib/modules/{kver}/extra/")
 
     # Userland subtrees.  /usr/ is the usual catch-all (sbin, bin,
@@ -239,7 +239,7 @@ def _lustre_inject_lines(
         src = staging / rel
         if src.is_dir():
             dest = inject_dir / f"lustre-userland-{rel}"
-            shutil.copytree(str(src), str(dest), symlinks=False)
+            shutil.copytree(src, dest, symlinks=False)
             lines.append(
                 f"COPY lustre-userland-{rel}/ /{rel}/"
             )
@@ -279,12 +279,12 @@ def _kdump_inject_lines(
 
     vmlinuz_src = kdir / "vmlinuz"
     if vmlinuz_src.exists():
-        shutil.copy2(str(vmlinuz_src), str(inject_dir / "vmlinuz"))
+        shutil.copy2(vmlinuz_src, inject_dir / "vmlinuz")
         lines = [f"COPY vmlinuz /boot/vmlinuz-{kver}"]
         if os_family == "debian":
             kconfig_src = kdir / "build-tree" / ".config"
             if kconfig_src.exists():
-                shutil.copy2(str(kconfig_src), str(inject_dir / "kconfig"))
+                shutil.copy2(kconfig_src, inject_dir / "kconfig")
                 lines.append(f"COPY kconfig /boot/config-{kver}")
             lines.append(
                 "RUN rm -f /usr/share/initramfs-tools/hooks/dhcpcd && "
@@ -303,7 +303,7 @@ def _kdump_inject_lines(
 
     vmlinux_src = kdir / "vmlinux"
     if vmlinux_src.exists():
-        shutil.copy2(str(vmlinux_src), str(inject_dir / "vmlinuz"))
+        shutil.copy2(vmlinux_src, inject_dir / "vmlinuz")
         log.warning(
             "No vmlinuz for %s; skipping baked kdump initramfs -- "
             "runtime fallback will handle it",
@@ -433,8 +433,8 @@ def build_image(
             dest = build_context / name
             src = TARGETS_DIR / name
             if dest.exists():
-                shutil.rmtree(str(dest))
-            shutil.copytree(str(src), str(dest))
+                shutil.rmtree(dest)
+            shutil.copytree(src, dest)
     else:
         build_context = TARGETS_DIR
 
@@ -485,7 +485,7 @@ def build_image(
             # Build a context dir with the files to inject
             inject_dir = out_dir / "_inject"
             if inject_dir.exists():
-                shutil.rmtree(str(inject_dir))
+                shutil.rmtree(inject_dir)
             inject_dir.mkdir()
 
             # Write a tiny Dockerfile
@@ -562,7 +562,7 @@ def build_image(
                 capture_output=False,
             )
             # Clean up inject dir
-            shutil.rmtree(str(inject_dir), ignore_errors=True)
+            shutil.rmtree(inject_dir, ignore_errors=True)
 
     # ── Step 2: Export to ext4 ──
     # If the export fails, the injected image (when we built one)
@@ -586,6 +586,8 @@ def build_image(
     size_mb = image_path.stat().st_size / (1024 * 1024)
     pkg_manifest = _get_package_manifest(tag, target_config.os_family)
 
+    # Schema: see ltvm_pkg.meta_schema.ImageMeta.
+    # target/input_hash are written by TargetConfig.write_meta.
     target_config.write_meta(
         "image",
         kernel=kernel,
