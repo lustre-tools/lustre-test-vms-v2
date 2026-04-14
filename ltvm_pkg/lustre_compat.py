@@ -246,7 +246,7 @@ def parse_ldiskfs_series(tree: Path) -> set[str]:
     ``ldiskfs-6.8.0-90-ubuntu24``, ``ldiskfs-5.14.0-427.13.1.el9``).
     Returns an empty set if the directory is absent.
     """
-    series_dir = Path(tree) / "lustre/ldiskfs/kernel_patches/series"
+    series_dir = Path(tree) / "ldiskfs/kernel_patches/series"
     if not series_dir.is_dir():
         return set()
     return {p.stem for p in series_dir.glob("*.series")}
@@ -344,21 +344,25 @@ def validate_target(tc: TargetConfig, lustre_tree: Path) -> ValidationResult:
     mode = tc.lustre_mode
     series = tc.default_kernel
 
-    try:
-        ti = parse_target_in(lustre_tree, series)
-    except (FileNotFoundError, ValueError) as exc:
-        return ValidationResult(
-            status="error",
-            mode=mode,
-            kernel_version=None,
-            matched_in=None,
-            message=(
-                f"Cannot read .target.in for {series!r} under "
-                f"{lustre_tree}: {exc}"
-            ),
-        )
-
-    kver = _kver_from_target_in(ti)
+    # .target.in is a RHEL/SLES artifact; deb-source targets have no
+    # such file and get their kver from the distro source package.
+    if tc.kernel_deb_source:
+        kver = series
+    else:
+        try:
+            ti = parse_target_in(lustre_tree, series)
+        except (FileNotFoundError, ValueError) as exc:
+            return ValidationResult(
+                status="error",
+                mode=mode,
+                kernel_version=None,
+                matched_in=None,
+                message=(
+                    f"Cannot read .target.in for {series!r} under "
+                    f"{lustre_tree}: {exc}"
+                ),
+            )
+        kver = _kver_from_target_in(ti)
 
     if mode == LustreMode.SERVER_LDISKFS:
         try:

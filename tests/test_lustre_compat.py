@@ -274,7 +274,7 @@ class TestParseLdiskfsSeries:
         assert parse_ldiskfs_series(tmp_path) == set()
 
     def test_reads_series_stems(self, tmp_path: Path) -> None:
-        d = tmp_path / "lustre/ldiskfs/kernel_patches/series"
+        d = tmp_path / "ldiskfs/kernel_patches/series"
         d.mkdir(parents=True)
         (d / "ldiskfs-6.8.0-90-ubuntu24.series").write_text("")
         (d / "ldiskfs-5.14.0-427.13.1.el9.series").write_text("")
@@ -295,9 +295,15 @@ class _FakeTC:
     """Minimal stand-in for TargetConfig -- validate_target only reads
     .default_kernel and .lustre_mode."""
 
-    def __init__(self, lustre_target: str, lustre_mode: LustreMode) -> None:
+    def __init__(
+        self,
+        lustre_target: str,
+        lustre_mode: LustreMode,
+        kernel_deb_source: str = "",
+    ) -> None:
         self.default_kernel = lustre_target
         self.lustre_mode = lustre_mode
+        self.kernel_deb_source = kernel_deb_source
 
 
 def _make_tree(
@@ -319,7 +325,7 @@ def _make_tree(
             body
         )
     if ldiskfs_series:
-        ld = tree / "lustre/ldiskfs/kernel_patches/series"
+        ld = tree / "ldiskfs/kernel_patches/series"
         ld.mkdir(parents=True, exist_ok=True)
         for stem in ldiskfs_series:
             (ld / f"{stem}.series").write_text("")
