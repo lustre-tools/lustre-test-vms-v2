@@ -324,6 +324,11 @@ def export_build_container(
         )
 
     print(f"  Exporting build container '{container_tag}' -> {image_tar}")
+    # podman >=4 errors on `save -o <existing-file>` with
+    # "docker-archive doesn't support modifying existing images".
+    # Always unlink first so re-packaging is idempotent.
+    if image_tar.exists():
+        image_tar.unlink()
     r = subprocess.run(
         ["podman", "save", "-o", str(image_tar), container_tag],
         capture_output=True,
