@@ -25,10 +25,6 @@ class TestTargetConfigProperties:
         tc = _make_config(tmp_targets)
         assert tc.os_version == "9.7"
 
-    def test_server(self, tmp_targets: Path) -> None:
-        tc = _make_config(tmp_targets)
-        assert tc.server is True
-
     def test_arch(self, tmp_targets: Path) -> None:
         tc = _make_config(tmp_targets)
         assert tc.arch == "x86_64"
@@ -70,7 +66,7 @@ class TestTargetConfigUnknown:
         import ltvm_pkg.target_config as cfg
 
         data = {
-            "defaults": {"arch": "x86_64", "os_family": "rhel", "server": True},
+            "defaults": {"arch": "x86_64", "os_family": "rhel"},
             "targets": {
                 "rocky8": {
                     "os_name": "rocky",
@@ -342,45 +338,6 @@ class TestInputHash:
             h2 = tc.input_hash("image")
         assert h1 != h2
 
-    def test_image_hash_includes_server_packages_even_for_non_server(
-        self, tmp_targets: Path
-    ) -> None:
-        """Image hash includes server packages regardless of `server`.
-
-        The image Dockerfile COPYs packages-server.txt unconditionally,
-        so a change to that file invalidates the image hash via the
-        Dockerfile COPY scan even when targets.yaml says server=false.
-        The `server` field only controls Lustre build's --enable-server.
-
-        (Older behavior was 'exclude server pkgs from non-server image',
-        but that was never actually implemented in any Dockerfile and
-        the test that asserted it was passing vacuously due to a
-        _make_config patch-scope bug.)
-        """
-        import ltvm_pkg.target_config as cfg
-
-        data = yaml.safe_load(
-            (tmp_targets / "targets" / "targets.yaml").read_text()
-        )
-        data["targets"]["rocky9"]["server"] = False
-        _write_targets_yaml(tmp_targets / "targets", data)
-        with (
-            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
-            patch.object(
-                cfg,
-                "TARGETS_YAML",
-                tmp_targets / "targets" / "targets.yaml",
-            ),
-        ):
-            tc = cfg.TargetConfig("rocky9")
-            h1 = tc.input_hash("image")
-            pkg = tmp_targets / "targets" / "common" / "packages-server.txt"
-            pkg.write_text("nfs-utils\nextra-server-pkg\n")
-            h2 = tc.input_hash("image")
-        assert h1 != h2
-
-
 class TestStaleness:
     def test_stale_when_no_meta(self, tmp_targets: Path) -> None:
         tc = _make_config(tmp_targets)
@@ -623,7 +580,7 @@ class TestListTargets:
                     "os_name": "ubuntu",
                     "os_version": "24.04",
                     "container_image": "ubuntu:24.04",
-                    "server": False,
+                    "lustre": {"mode": "client"},
                     "kernels": {"default": "5.15-ubuntu24", "available": []},
                 },
             }

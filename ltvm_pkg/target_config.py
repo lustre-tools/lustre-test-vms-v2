@@ -48,7 +48,6 @@ TARGETS_YAML = TARGETS_DIR / "targets.yaml"
 _DEFAULTS = {
     "arch": "x86_64",
     "os_family": "rhel",
-    "server": True,
 }
 
 _COPY_RE = re.compile(r"^\s*COPY\s+(\S+)", re.MULTILINE)
@@ -119,14 +118,8 @@ class TargetConfig:
         self._data: dict[str, Any] = {**defaults, **raw}
 
         # Schema validation: catch type errors in targets.yaml early
-        # so we don't get confusing downstream behavior (e.g. server:
-        # "yes" silently truthy, missing kernels block raising
-        # KeyError mid-build).
-        if not isinstance(self._data.get("server"), bool):
-            raise ValueError(
-                f"target {name!r}: 'server' must be a YAML boolean "
-                f"(true/false), got {self._data.get('server')!r}"
-            )
+        # so we don't get confusing downstream behavior (e.g. missing
+        # kernels block raising KeyError mid-build).
         if "kernels" not in self._data or not isinstance(
             self._data["kernels"], dict
         ):
@@ -188,10 +181,6 @@ class TargetConfig:
     @property
     def os_version(self) -> str:
         return str(self._data["os_version"])
-
-    @property
-    def server(self) -> bool:
-        return bool(self._data["server"])
 
     @property
     def arch(self) -> str:

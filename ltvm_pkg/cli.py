@@ -28,7 +28,7 @@ from ltvm_pkg.release_package import (
     package_target,
     snapshot_lustre,
 )
-from ltvm_pkg.target_config import TargetConfig, list_targets
+from ltvm_pkg.target_config import LustreMode, TargetConfig, list_targets
 
 # Exit codes
 EXIT_OK = 0
@@ -276,7 +276,7 @@ def cmd_build_all(args: argparse.Namespace) -> int:
                 build_tree,
                 container_tag=container_tag,
                 target=args.target,
-                enable_server=tc.server,
+                enable_server=tc.lustre_mode != LustreMode.CLIENT,
                 extra_configure=list(tc.configure_args),
                 jobs=getattr(args, "jobs", None),
                 force=args.force,
@@ -486,8 +486,8 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
             f"--kernel {resolved_kernel}",
         )
 
-    # Server build follows targets.yaml unless overridden
-    enable_server = tc.server
+    # Server build follows lustre.mode unless overridden
+    enable_server = tc.lustre_mode != LustreMode.CLIENT
     if getattr(args, "disable_server", False):
         enable_server = False
     elif getattr(args, "enable_server", False):
@@ -1221,7 +1221,7 @@ def cmd_targets(args: argparse.Namespace) -> int:
             {
                 "name": name,
                 "arch": tc.arch,
-                "server": tc.server,
+                "server": tc.lustre_mode != LustreMode.CLIENT,
                 "default_kernel": tc.default_kernel,
                 "available_kernels": tc.declared_kernels(),
                 "lustre_mode": tc.lustre_mode.value,
