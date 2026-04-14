@@ -13,6 +13,7 @@ from ltvm_pkg.kernel_build import (
     _ensure_container_image,
     _shell_var,
     _srpm_fallback_urls,
+    apply_srpm_override,
     download_srpm,
     kernel_status,
     parse_lustre_target,
@@ -485,3 +486,35 @@ class TestKernelStatus:
         assert result["lnxmaj"] == "5.14.0"
         assert result["lnxrel"] == "503.26.1.el9_7"
         assert result["srpm"] == "kernel-5.14.0-503.26.1.el9_7.src.rpm"
+
+
+class TestApplySrpmOverride:
+    _TI = {
+        "lnxmaj": "6.12.0",
+        "lnxrel": "55.43.1.el10_0",
+        "srpm": "kernel-6.12.0-55.43.1.el10_0.src.rpm",
+        "series": "6.12-rhel10.0.series",
+    }
+
+    def test_no_override_returns_unchanged(self) -> None:
+        assert apply_srpm_override(self._TI, None, "6.12-rhel10.0") is self._TI
+        assert apply_srpm_override(self._TI, "", "6.12-rhel10.0") is self._TI
+
+    def test_override_rewrites_srpm(self) -> None:
+        result = apply_srpm_override(
+            self._TI, "6.12.0-55.41.1.el10_0", "6.12-rhel10.0"
+        )
+        assert result["lnxmaj"] == "6.12.0"
+        assert result["lnxrel"] == "55.41.1.el10_0"
+        assert result["srpm"] == "kernel-6.12.0-55.41.1.el10_0.src.rpm"
+        assert result["series"] == "6.12-rhel10.0.series"
+
+    def test_override_does_not_mutate_input(self) -> None:
+        apply_srpm_override(
+            self._TI, "6.12.0-55.41.1.el10_0", "6.12-rhel10.0"
+        )
+        assert self._TI["lnxrel"] == "55.43.1.el10_0"
+
+    def test_invalid_override_raises(self) -> None:
+        with pytest.raises(ValueError, match="must be '<lnxmaj>-<lnxrel>'"):
+            apply_srpm_override(self._TI, "nohyphen", "6.12-rhel10.0")

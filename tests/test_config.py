@@ -458,6 +458,72 @@ class TestDeclaredKernels:
         assert "6.1-rhel9.7" in result
 
 
+class TestKernelOverrides:
+    """Mixed string + mapping entries in kernels.available."""
+
+    def _yaml_with_override(
+        self, tmp_targets: Path, override_entry: dict
+    ) -> None:
+        data = yaml.safe_load(
+            (tmp_targets / "targets" / "targets.yaml").read_text()
+        )
+        data["targets"]["rocky9"]["kernels"]["available"] = [
+            "5.14-rhel9.7",
+            override_entry,
+        ]
+        _write_targets_yaml(tmp_targets / "targets", data)
+
+    def test_mapping_entry_declared(self, tmp_targets: Path) -> None:
+        self._yaml_with_override(
+            tmp_targets,
+            {"name": "5.14-rhel9.5", "srpm_version": "5.14.0-503.11.1.el9_5"},
+        )
+        tc = _make_config(tmp_targets)
+        assert "5.14-rhel9.5" in tc.declared_kernels()
+        assert "5.14-rhel9.7" in tc.declared_kernels()
+
+    def test_overrides_returned_for_mapping(self, tmp_targets: Path) -> None:
+        self._yaml_with_override(
+            tmp_targets,
+            {"name": "5.14-rhel9.5", "srpm_version": "5.14.0-503.11.1.el9_5"},
+        )
+        tc = _make_config(tmp_targets)
+        assert tc.kernel_overrides("5.14-rhel9.5") == {
+            "srpm_version": "5.14.0-503.11.1.el9_5"
+        }
+
+    def test_overrides_empty_for_bare_string(self, tmp_targets: Path) -> None:
+        tc = _make_config(tmp_targets)
+        assert tc.kernel_overrides("5.14-rhel9.7") == {}
+
+    def test_overrides_empty_for_unknown(self, tmp_targets: Path) -> None:
+        tc = _make_config(tmp_targets)
+        assert tc.kernel_overrides("nonexistent") == {}
+
+    def test_invalid_entry_raises(self, tmp_targets: Path) -> None:
+        data = yaml.safe_load(
+            (tmp_targets / "targets" / "targets.yaml").read_text()
+        )
+        data["targets"]["rocky9"]["kernels"]["available"] = [
+            {"srpm_version": "5.14.0-503.11.1.el9_5"},
+        ]
+        _write_targets_yaml(tmp_targets / "targets", data)
+        tc = _make_config(tmp_targets)
+        with pytest.raises(ValueError, match="Invalid kernel entry"):
+            tc.declared_kernels()
+
+    def test_short_kernel_name_matches_mapping_entry(
+        self, tmp_targets: Path
+    ) -> None:
+        self._yaml_with_override(
+            tmp_targets,
+            {"name": "5.14-rhel9.5", "srpm_version": "5.14.0-503.11.1.el9_5"},
+        )
+        tc = _make_config(tmp_targets)
+        full = "5.14-rhel9.5-5.14.0-503.11.1.el9_5"
+        assert tc._short_kernel_name(full) == "5.14-rhel9.5"
+
+
 class TestLoadMetaSafe:
     """paths.load_meta_safe tolerates corrupt/missing meta.json so a
     crashed build can't brick every subsequent status/build command."""

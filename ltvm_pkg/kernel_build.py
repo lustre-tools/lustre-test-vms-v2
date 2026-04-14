@@ -71,6 +71,38 @@ def parse_lustre_target(
     }
 
 
+def apply_srpm_override(
+    target_info: dict[str, str],
+    srpm_version: str | None,
+    lustre_target: str,
+) -> dict[str, str]:
+    """Apply a per-kernel srpm_version override to parsed .target info.
+
+    ``srpm_version`` format: ``"<lnxmaj>-<lnxrel>"`` (e.g. ``"6.12.0-55.41.1.el10_0"``).
+    Returns a new dict with lnxmaj/lnxrel/srpm replaced.  When
+    ``srpm_version`` is None/empty, returns ``target_info`` unchanged.
+    """
+    if not srpm_version:
+        return target_info
+    if "-" not in srpm_version:
+        raise ValueError(
+            f"kernel {lustre_target!r}: srpm_version override "
+            f"{srpm_version!r} must be '<lnxmaj>-<lnxrel>'"
+        )
+    new_lnxmaj, new_lnxrel = srpm_version.split("-", 1)
+    declared = f"{target_info['lnxmaj']}-{target_info['lnxrel']}"
+    log.info(
+        "Kernel SRPM override: using %s instead of %s",
+        srpm_version,
+        declared,
+    )
+    result = dict(target_info)
+    result["lnxmaj"] = new_lnxmaj
+    result["lnxrel"] = new_lnxrel
+    result["srpm"] = f"kernel-{new_lnxmaj}-{new_lnxrel}.src.rpm"
+    return result
+
+
 def _shell_var(text: str, name: str) -> str | None:
     """Extract a simple VAR=value or VAR="value" assignment.
 
@@ -555,6 +587,10 @@ def _build_kernel_srpm(
     # silently skipping the rebuild the user is iterating on (the
     # primary use case this tool exists for).
     target_info = parse_lustre_target(lustre_tree, lustre_target)
+    overrides = target_config.kernel_overrides(lustre_target)
+    target_info = apply_srpm_override(
+        target_info, overrides.get("srpm_version"), lustre_target
+    )
     log.info("Kernel SRPM: %s", target_info["srpm"])
 
     lustre_files = resolve_lustre_files(

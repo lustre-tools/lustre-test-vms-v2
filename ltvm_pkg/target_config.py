@@ -222,12 +222,45 @@ class TargetConfig:
         return str(self._kernels["default"])
 
     def declared_kernels(self) -> list[str]:
-        """Lustre target names declared as available in targets.yaml."""
-        available = self._kernels.get("available", [])
-        result = list(available)
+        """Lustre target names declared as available in targets.yaml.
+
+        Entries may be bare strings or mappings with a ``name`` key plus
+        per-kernel overrides (see :meth:`kernel_overrides`).  Only names
+        are returned here.
+        """
+        result = [self._kernel_entry_name(e) for e in self._raw_kernel_entries()]
         if self.default_kernel not in result:
             result.insert(0, self.default_kernel)
         return result
+
+    def _raw_kernel_entries(self) -> list[Any]:
+        return list(self._kernels.get("available", []))
+
+    @staticmethod
+    def _kernel_entry_name(entry: Any) -> str:
+        if isinstance(entry, str):
+            return entry
+        if isinstance(entry, dict) and "name" in entry:
+            return str(entry["name"])
+        raise ValueError(
+            f"Invalid kernel entry in targets.yaml: {entry!r} "
+            f"(expected string or mapping with 'name')"
+        )
+
+    def kernel_overrides(self, name: str) -> dict[str, Any]:
+        """Return per-kernel override dict for ``name`` (possibly empty).
+
+        Bare-string entries have no overrides.  Mapping entries carry
+        everything except ``name`` as an override -- currently only
+        ``srpm_version`` is honored (see kernel_build).
+        """
+        for entry in self._raw_kernel_entries():
+            if isinstance(entry, str):
+                if entry == name:
+                    return {}
+            elif isinstance(entry, dict) and entry.get("name") == name:
+                return {k: v for k, v in entry.items() if k != "name"}
+        return {}
 
     @property
     def kernel_config_overrides(self) -> dict[str, str]:
@@ -241,8 +274,8 @@ class TargetConfig:
         Matches against the declared short names in targets.yaml, so any
         name already in short form passes through unchanged.
         """
-        available: list[str] = self._kernels.get("available", [])
-        for short in available:
+        for entry in self._raw_kernel_entries():
+            short = self._kernel_entry_name(entry)
             if name == short or name.startswith(short + "-"):
                 return short
         # Fallback: if no match, return as-is (new kernel or unknown form)
