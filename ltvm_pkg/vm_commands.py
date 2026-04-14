@@ -385,9 +385,12 @@ def cmd_create(args: argparse.Namespace) -> None:
             if (args.mdt_disks or args.ost_disks)
             else "no data disks"
         )
+        image_meta = load_meta_safe(Path(os_arts.image).parent / "meta.json")
+        lver = (image_meta or {}).get("lustre_version")
+        lustre_desc = f" lustre={lver}" if lver else " (no lustre baked in)"
         print(
             f"using default target: {os_target} "
-            f"(kernel: {kver_short}; "
+            f"(kernel: {kver_short};{lustre_desc}; "
             f"vcpus={args.vcpus} mem={args.mem}MB {disk_desc})"
         )
 

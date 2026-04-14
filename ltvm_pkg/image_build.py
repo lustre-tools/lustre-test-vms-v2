@@ -595,6 +595,17 @@ def build_image(
     size_mb = image_path.stat().st_size / (1024 * 1024)
     pkg_manifest = _get_package_manifest(tag, target_config.os_family)
 
+    lustre_version: str | None = None
+    if lustre_staging is not None:
+        first_ko = next(lustre_staging.rglob("*.ko"), None)
+        if first_ko is not None:
+            r = subprocess.run(
+                ["modinfo", "-F", "version", str(first_ko)],
+                capture_output=True, text=True,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                lustre_version = r.stdout.strip().splitlines()[0]
+
     # Schema: see ltvm_pkg.meta_schema.ImageMeta.
     # target/input_hash are written by TargetConfig.write_meta.
     target_config.write_meta(
@@ -605,6 +616,7 @@ def build_image(
         with_lustre=str(Path(with_lustre).resolve())
         if with_lustre is not None
         else None,
+        lustre_version=lustre_version,
         build_seconds=round(elapsed, 1),
         image_size_mb=round(size_mb, 1),
         packages=pkg_manifest,
