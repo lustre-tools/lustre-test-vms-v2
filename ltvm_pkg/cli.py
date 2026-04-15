@@ -20,7 +20,11 @@ from ltvm_pkg import host_setup
 from ltvm_pkg.deploy import deploy_to_vm, lustre_mount_vm
 from ltvm_pkg.image_build import build_image, image_status
 from ltvm_pkg.kernel_build import build_kernel, kernel_status
-from ltvm_pkg.lustre_build import build_lustre, staging_path
+from ltvm_pkg.lustre_build import (
+    build_lustre,
+    read_staging_meta,
+    staging_path,
+)
 from ltvm_pkg.lustre_compat import ValidationResult, validate_target
 from ltvm_pkg.paths import load_meta_safe
 from ltvm_pkg.release_package import (
@@ -2235,7 +2239,19 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     # catch the exception leaks as a Python traceback to the user.
     import time as _time
 
-    kver = vm.kver  # already set on boot; keep existing value
+    # Record the kver we actually just deployed, not vm.kver (which is
+    # the *running* kernel at the time the VM booted).  After a deploy
+    # the on-disk /boot kernel may differ from the running one -- the
+    # VM needs a reboot to actually pick up the new kernel, but the
+    # recorded kver should reflect what's installed, not what's
+    # currently running.  Source of truth: .ltvm-staging-meta.json under
+    # the staging dir we just deployed from.
+    staging_meta = read_staging_meta(staging)
+    kver = (
+        staging_meta.get("kernel_version")
+        if isinstance(staging_meta, dict)
+        else None
+    ) or vm.kver
     try:
         vm.update_deploy(int(_time.time()), str(build_path), kver)
     except PermissionError:
