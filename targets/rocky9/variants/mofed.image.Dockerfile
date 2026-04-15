@@ -23,11 +23,8 @@ ARG MOFED_ARCH=x86_64
 ENV MOFED_VERSION=${VARIANT_MOFED_VERSION}
 
 RUN dnf -y install \
-        kernel-devel kernel-headers kernel-rpm-macros \
-        perl python3 pciutils tcl tk gcc make \
-        rpm-build elfutils-libelf-devel \
-        libnl3-devel libmnl-devel numactl-devel \
-        pkgconfig \
+        perl python3 pciutils tcl tk \
+        libnl3 libmnl numactl-libs \
     && dnf clean all
 
 RUN set -eux; \
@@ -39,16 +36,18 @@ RUN set -eux; \
     rm -f "${BUNDLE}.tgz"; \
     ln -s "${BUNDLE}" current
 
-# Install all MOFED RPMs (userspace + kmods).  Bundle kmod RPMs
-# target rhel9.5's stock kernel; they'll install fine but modprobe
-# against a Lustre-patched 9.7 kernel depends on ABI compatibility.
-# The 5.14 RHEL kABI is stable across minors, so this works in
-# practice for the rdma stack.  Image also carries `/opt/mofed-src`
-# so a boot-time DKMS-style rebuild against the booted kernel is
-# possible later.
+# Install MOFED userspace RPMs only (no kmods).  The bundle's kmod
+# RPMs require an exact kernel-core version match from the rhel9.5
+# vault, which collides with the rocky9 base image's kernel-core.
+# For v1 we install userspace only and leave kmod-building for a
+# boot-time step (or a future per-kernel kmod-build stage that
+# consumes the target's build-tree/).  The image still carries
+# /opt/mofed-src so that step has what it needs.
 RUN cd /opt/mofed-src/current/RPMS && \
-    dnf install -y --allowerasing --nogpgcheck --setopt=install_weak_deps=False *.rpm && \
-    dnf clean all
+    ls *.rpm \
+      | grep -vE '^(kmod-|kernel-mft-mlnx-|mlnx-ofed-)' \
+      | xargs dnf install -y --allowerasing --nogpgcheck --setopt=install_weak_deps=False \
+    && dnf clean all
 
 # Make sure mlx5_core / rdma_rxe / ib_uverbs etc. are loaded early.
 RUN echo -e "mlx5_core\nib_uverbs\nrdma_cm\nrdma_ucm" \
