@@ -1943,7 +1943,10 @@ class TestCmdTargetsPerKernelRows:
                 "tag_name": "rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre",
                 "assets": [
                     {
-                        "name": "rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre.tar.gz"
+                        "name": (
+                            "manifest-rocky9-x86_64-5.14.0-"
+                            "611.13.1.el9_7_lustre.json"
+                        )
                     }
                 ],
             }

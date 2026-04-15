@@ -1567,16 +1567,20 @@ def _release_status(
     arch: str,
     all_releases: list | None,
     kernel_signature: str | None = None,
+    variant: str = "base",
 ) -> tuple[str, str]:
-    """Return (local_tag, remote_tag) for a target/arch, display-trimmed.
+    """Return (local_tag, remote_tag) for a target/arch/variant.
 
     Both strip the shared ``<target>-<arch>-`` prefix so only the bit
-    that actually varies (kernel + version) shows up in the table.
-    ``-`` means "nothing"; ``?`` means "couldn't talk to GitHub".
+    that actually varies shows up in the table.  ``-`` means "nothing"
+    built/published; ``?`` means GitHub was unreachable.
 
-    If ``kernel_signature`` is given, only releases whose assets match
-    that signature (e.g. ``el9_5``) are considered for Remote, and Local
-    is ``-`` unless the stored tag contains the signature.
+    For non-base variants, only releases that ship a
+    ``manifest-*-<variant>.json`` asset are considered; base lookups
+    reject any asset that has a variant-ish suffix so a mofed
+    publish doesn't satisfy a base query.  (Matches the filter logic
+    in _find_release_url so `target list`, `target fetch`, and
+    `target show` agree on what's available.)
     """
     from ltvm_pkg.target_config import OUTPUT_DIR
 
@@ -1589,6 +1593,10 @@ def _release_status(
     if tag_file.exists():
         raw_local = tag_file.read_text().strip()
         if kernel_signature and kernel_signature not in raw_local:
+            local = "-"
+        elif variant != "base" and not raw_local.endswith(f"-{variant}"):
+            local = "-"
+        elif variant == "base" and _variant_suffix_in_tag(raw_local):
             local = "-"
         else:
             local = _trim(raw_local)
@@ -1604,10 +1612,30 @@ def _release_status(
             tag = rel.get("tag_name", "")
             if tag != target and not tag.startswith(target + "-"):
                 continue
-            if not any(
-                arch_match in a.get("name", "")
-                for a in rel.get("assets", [])
-            ):
+            # Require a manifest asset matching the variant.  This is
+            # the same rule _find_release_url uses, so list/fetch/show
+            # agree on availability.
+            manifest_match = False
+            for a in rel.get("assets", []):
+                name = a.get("name", "")
+                if not name.startswith(f"manifest-{target}{arch_match}"):
+                    continue
+                if not name.endswith(".json"):
+                    continue
+                if variant == "base":
+                    stem = name[: -len(".json")]
+                    last_seg = stem.rsplit("-", 1)[-1]
+                    # Variant suffixes are alphabetic; kvers end in digits.
+                    if last_seg and not any(
+                        ch.isdigit() for ch in last_seg
+                    ):
+                        continue
+                else:
+                    if not name.endswith(f"-{variant}.json"):
+                        continue
+                manifest_match = True
+                break
+            if not manifest_match:
                 continue
             if kernel_signature and not _release_matches_kernel(
                 rel, kernel_signature, arch
@@ -1617,6 +1645,20 @@ def _release_status(
             break
 
     return (local, remote)
+
+
+def _variant_suffix_in_tag(tag: str) -> str | None:
+    """Heuristic: does ``tag`` look like it ends with ``-<variant>``?
+
+    Only used to reject a base-variant ``local`` claim when the stored
+    .ltvm-release-tag was written by a variant fetch.  A bare kver
+    (digits+dots+underscore) returns None; ``rocky9-x86_64-...-mofed``
+    returns ``"mofed"``.
+    """
+    last = tag.rsplit("-", 1)[-1]
+    if last and not any(ch.isdigit() for ch in last):
+        return last
+    return None
 
 
 def cmd_targets(args: argparse.Namespace) -> int:
@@ -1641,45 +1683,56 @@ def cmd_targets(args: argparse.Namespace) -> int:
             rows.append({"name": name, "error": f"error: {e}"})
             continue
         declared = tc.declared_kernels()
+        declared_variants = ["base", *tc.declared_variants()]
         for kname in declared:
             signature = _kernel_release_signature(kname)
-            local, remote = _release_status(
-                name, tc.arch, all_releases, kernel_signature=signature
-            )
-            built = tc.meta_path("kernel", kname).exists()
-            if built:
-                avail = "ready"
-            elif remote not in ("-", "?"):
-                avail = "fetch"
-            else:
-                avail = "build"
-            # Flag "behind latest" when a local copy exists and differs
-            # from the published release.  "?" (GitHub unreachable) and
-            # "-" (nothing published) both mean "no comparison possible";
-            # skip the marker in those cases rather than crying wolf.
-            behind = (
-                local not in ("-", "?")
-                and remote not in ("-", "?")
-                and local != remote
-            )
-            if behind:
-                avail = f"{avail}!"
-            rows.append(
-                {
-                    "name": name,
-                    "arch": tc.arch,
-                    "status": tc.status,
-                    "kernel": kname,
-                    "is_default": kname == tc.default_kernel,
-                    "server": tc.lustre_mode != LustreMode.CLIENT,
-                    "default_kernel": tc.default_kernel,
-                    "lustre_mode": tc.lustre_mode.value,
-                    "available": avail,
-                    "built": built,
-                    "local_release": local,
-                    "remote_release": remote,
-                }
-            )
+            for variant in declared_variants:
+                local, remote = _release_status(
+                    name, tc.arch, all_releases,
+                    kernel_signature=signature, variant=variant,
+                )
+                # "Built" here = a variant-specific image meta exists on
+                # disk.  The kernel meta is variant-independent, so
+                # checking image.meta is a better proxy for "this
+                # variant is actually ready to run on this kernel".
+                if variant == "base":
+                    built = tc.meta_path("kernel", kname).exists()
+                else:
+                    img_meta = (
+                        tc.image_output_dir(kname, variant=variant)
+                        / "meta.json"
+                    )
+                    built = img_meta.exists()
+                if built:
+                    avail = "ready"
+                elif remote not in ("-", "?"):
+                    avail = "fetch"
+                else:
+                    avail = "build"
+                behind = (
+                    local not in ("-", "?")
+                    and remote not in ("-", "?")
+                    and local != remote
+                )
+                if behind:
+                    avail = f"{avail}!"
+                rows.append(
+                    {
+                        "name": name,
+                        "arch": tc.arch,
+                        "status": tc.status,
+                        "kernel": kname,
+                        "variant": variant,
+                        "is_default": kname == tc.default_kernel,
+                        "server": tc.lustre_mode != LustreMode.CLIENT,
+                        "default_kernel": tc.default_kernel,
+                        "lustre_mode": tc.lustre_mode.value,
+                        "available": avail,
+                        "built": built,
+                        "local_release": local,
+                        "remote_release": remote,
+                    }
+                )
 
     if use_json:
         print(json.dumps(rows, indent=2))
@@ -1691,11 +1744,12 @@ def cmd_targets(args: argparse.Namespace) -> int:
 
     hdr = (
         f"{'Local':<6} {'Remote':<7} {'Target':<12} {'Arch':<8} "
-        f"{'Kernel':<20} {'Mode':<16} Default?"
+        f"{'Kernel':<20} {'Variant':<8} {'Mode':<16} Default?"
     )
     print(hdr)
     print("-" * len(hdr))
     prev_key: tuple[str, str] | None = None
+    prev_kernel_key: tuple[str, str, str] | None = None
     has_experimental = False
     has_behind = False
     has_unreachable = False
@@ -1703,12 +1757,9 @@ def cmd_targets(args: argparse.Namespace) -> int:
         if "kernel" not in r:
             print(f"{r['name']:<12} {r.get('error', '')}")
             prev_key = None
+            prev_kernel_key = None
             continue
         default_mark = "yes" if r["is_default"] else ""
-        # Local: "yes" if kernel meta.json exists on disk, else "-"
-        # Remote: "yes" if a release matches, "-" if none, "?" if
-        # GitHub was unreachable.  Both present AND differing gets
-        # a "!" marker on Local to flag the local copy as stale.
         local_col = "yes" if r["built"] else "-"
         remote_raw = r["remote_release"]
         if remote_raw == "?":
@@ -1726,7 +1777,9 @@ def cmd_targets(args: argparse.Namespace) -> int:
         ):
             local_col = "yes!"
             has_behind = True
+
         key = (r["name"], r["arch"])
+        kernel_key = (r["name"], r["arch"], r["kernel"])
         if key == prev_key:
             name_col = ""
             arch_col = ""
@@ -1738,12 +1791,25 @@ def cmd_targets(args: argparse.Namespace) -> int:
             name_col = f"{r['name']}{marker}"
             arch_col = r["arch"]
             mode_col = r["lustre_mode"]
+        # Kernel collapses across variant rows so a target with
+        # multiple variants doesn't repeat the same kernel name.
+        # Default mark stays on the base row only.
+        if kernel_key == prev_kernel_key:
+            kernel_col = ""
+            default_col = ""
+        else:
+            kernel_col = r["kernel"]
+            default_col = default_mark
+        # Base variant reads as blank in the column; declared variants
+        # show their name so the row ties back to targets.yaml.
+        variant_col = "" if r["variant"] == "base" else r["variant"]
         print(
             f"{local_col:<6} {remote_col:<7} {name_col:<12} {arch_col:<8} "
-            f"{r['kernel']:<20} {mode_col:<16} "
-            f"{default_mark}"
+            f"{kernel_col:<20} {variant_col:<8} {mode_col:<16} "
+            f"{default_col}"
         )
         prev_key = key
+        prev_kernel_key = kernel_key
     if has_experimental or has_behind or has_unreachable:
         print()
         if has_experimental:
