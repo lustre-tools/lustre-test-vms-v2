@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import shlex
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -756,7 +757,7 @@ def cmd_cluster_exec(args: argparse.Namespace) -> None:
         )
         raise AssertionError("unreachable")
 
-    command = " ".join(args.command)
+    command = shlex.join(args.command)
     vm = VMInfo.load(matched.name)
     try:
         r = run_ssh(vm.ip, command, timeout=args.timeout)
