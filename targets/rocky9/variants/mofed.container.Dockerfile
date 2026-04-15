@@ -14,8 +14,8 @@ FROM ${BASE_TAG}
 # kernel_build._ensure_container_image from targets.yaml params or
 # the CLI --mofed-version override.
 
-ARG VARIANT_MOFED_VERSION=24.10-1.1.4.0
-ARG MOFED_DISTRO=rhel9.7
+ARG VARIANT_MOFED_VERSION=24.10-2.1.8.0
+ARG VARIANT_MOFED_DISTRO=rhel9.5
 ARG MOFED_ARCH=x86_64
 
 ENV MOFED_VERSION=${VARIANT_MOFED_VERSION}
@@ -34,8 +34,8 @@ RUN dnf -y install \
 # so the image overlay can reuse it (saved to /opt/mofed-src for
 # rebuild against the target kernel).
 RUN set -eux; \
-    BUNDLE="MLNX_OFED_LINUX-${MOFED_VERSION}-${MOFED_DISTRO}-${MOFED_ARCH}"; \
-    URL="https://www.mellanox.com/downloads/ofed/MLNX_OFED-${MOFED_VERSION}/${BUNDLE}.tgz"; \
+    BUNDLE="MLNX_OFED_LINUX-${MOFED_VERSION}-${VARIANT_MOFED_DISTRO}-${MOFED_ARCH}"; \
+    URL="https://content.mellanox.com/ofed/MLNX_OFED-${MOFED_VERSION}/${BUNDLE}.tgz"; \
     mkdir -p /opt/mofed-src && cd /opt/mofed-src; \
     curl -fsSL -o "${BUNDLE}.tgz" "${URL}"; \
     tar xzf "${BUNDLE}.tgz"; \
@@ -50,6 +50,7 @@ RUN cd /opt/mofed-src/current && \
         --without-fw-update \
         --force \
         --skip-repo \
+        --distro rhel9.5 \
         || true
 # `|| true` above because mlnxofedinstall's userspace-only still
 # probes for a kernel match and can exit non-zero in a stripped

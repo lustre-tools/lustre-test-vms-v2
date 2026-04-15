@@ -16,8 +16,8 @@ FROM ${BASE_IMAGE_TAG}
 # target's kernel build-tree into this overlay's context for an
 # exact match (see lustre_test_vms_v2-stp).
 
-ARG VARIANT_MOFED_VERSION=24.10-1.1.4.0
-ARG MOFED_DISTRO=rhel9.7
+ARG VARIANT_MOFED_VERSION=24.10-2.1.8.0
+ARG VARIANT_MOFED_DISTRO=rhel9.5
 ARG MOFED_ARCH=x86_64
 
 ENV MOFED_VERSION=${VARIANT_MOFED_VERSION}
@@ -31,8 +31,8 @@ RUN dnf -y install \
     && dnf clean all
 
 RUN set -eux; \
-    BUNDLE="MLNX_OFED_LINUX-${MOFED_VERSION}-${MOFED_DISTRO}-${MOFED_ARCH}"; \
-    URL="https://www.mellanox.com/downloads/ofed/MLNX_OFED-${MOFED_VERSION}/${BUNDLE}.tgz"; \
+    BUNDLE="MLNX_OFED_LINUX-${MOFED_VERSION}-${VARIANT_MOFED_DISTRO}-${MOFED_ARCH}"; \
+    URL="https://content.mellanox.com/ofed/MLNX_OFED-${MOFED_VERSION}/${BUNDLE}.tgz"; \
     mkdir -p /opt/mofed-src && cd /opt/mofed-src; \
     curl -fsSL -o "${BUNDLE}.tgz" "${URL}"; \
     tar xzf "${BUNDLE}.tgz"; \
@@ -44,7 +44,8 @@ RUN cd /opt/mofed-src/current && \
         --add-kernel-support \
         --without-fw-update \
         --force \
-        --skip-repo
+        --skip-repo \
+        --distro rhel9.5
 
 # Make sure mlx5_core / rdma_rxe / ib_uverbs etc. are loaded early.
 RUN echo -e "mlx5_core\nib_uverbs\nrdma_cm\nrdma_ucm" \

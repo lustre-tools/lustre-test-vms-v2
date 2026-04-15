@@ -53,7 +53,11 @@ targets:
         container_overlay: rocky9/variants/mofed.container.Dockerfile
         image_overlay: rocky9/variants/mofed.image.Dockerfile
         params:
-          mofed_version: 24.10-1.1.4.0
+          # NVIDIA doesn't ship an rhel9.7 MOFED bundle; the rhel9.5
+          # bundle works against the 9.7 kernel via
+          # mlnxofedinstall --add-kernel-support.
+          mofed_version: 24.10-2.1.8.0
+          mofed_distro: rhel9.5
   ubuntu2404:
     configure_args:
     - --with-o2ib=no
