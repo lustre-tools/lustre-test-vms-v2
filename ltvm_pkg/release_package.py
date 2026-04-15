@@ -598,10 +598,21 @@ def package_target(
     assets["kernel"] = kern_asset
 
     # ---- image asset ----
-    image_rel = paths["image_dir"].relative_to(tar_base)
+    # image_dir for base is <kernel>/ which also hosts sibling variant
+    # subdirs (mofed/) and any bootable-*.qcow2 emitted by `target
+    # export`.  Package only the ext4 + meta.json that belong to THIS
+    # variant -- without this filter the base asset would include the
+    # MOFED image and the export qcow2 and blow past GitHub's 2 GiB
+    # per-asset cap.
     img_asset = dest_dir / _image_asset_name(target_name, arch, kver, variant)
     print(f"  [image]     {img_asset.name}")
-    _tar_zstd(tar_base, [str(image_rel)], img_asset)
+    image_members = [
+        str(image_ext4.relative_to(tar_base)),
+    ]
+    image_meta = paths["image_dir"] / "meta.json"
+    if image_meta.exists():
+        image_members.append(str(image_meta.relative_to(tar_base)))
+    _tar_zstd(tar_base, image_members, img_asset)
     assets["image"] = img_asset
 
     # ---- lustre asset (optional) ----
