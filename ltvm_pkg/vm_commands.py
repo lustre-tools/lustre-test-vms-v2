@@ -939,9 +939,20 @@ def cmd_crash_collect(args: argparse.Namespace) -> int:
             )
         print(f"triggering crash on {args.name}...")
         try:
-            run_ssh(vm.ip, "echo c > /proc/sysrq-trigger", timeout=5)
+            r = run_ssh(vm.ip, "echo c > /proc/sysrq-trigger", timeout=5)
         except subprocess.TimeoutExpired:
-            pass
+            # Expected: ssh session dies as the kernel panics.
+            r = None
+        if r is not None and r.returncode != 0:
+            # ssh returned cleanly but the trigger command failed (auth
+            # issue, connection refused, permission error, etc).
+            # Without that trigger, waiting for kdump will hang forever.
+            return _handler_error(
+                args,
+                f"failed to trigger crash on {args.name} "
+                f"(rc={r.returncode}): "
+                f"{(r.stderr or '').strip() or '(no stderr)'}",
+            )
 
         print("waiting for kdump + reboot...", end="", flush=True)
         time.sleep(5)
