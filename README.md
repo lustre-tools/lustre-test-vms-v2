@@ -25,9 +25,9 @@ sudo vm.py create --name co1-single \
 **Build everything from scratch:**
 
 ```bash
-./ltvm build-all rocky9
+./ltvm build all rocky9
 ./ltvm install rocky9
-./ltvm build-lustre rocky9 --lustre-tree ~/lustre-release
+./ltvm build lustre rocky9 --lustre-tree ~/lustre-release
 sudo vm.py create --name co1-single \
     --vcpus 2 --mem 4096 --mdt-disks 1 --ost-disks 3
 ./ltvm deploy-lustre co1-single --build ~/lustre-release --mount
@@ -36,7 +36,7 @@ sudo vm.py create --name co1-single \
 **Day-to-day iteration:**
 
 ```bash
-./ltvm build-lustre rocky9          # incremental, fast
+./ltvm build lustre rocky9          # incremental, fast
 ./ltvm deploy-lustre co1-single --mount    # redeploy
 ```
 
@@ -103,13 +103,13 @@ ltvm                        # main CLI entry point
 ## ltvm commands
 
 ```
-ltvm build-all <target>         Build container + kernel + image
-ltvm build-container <target>   Build the build container
-ltvm build-kernel <target>      Build a kernel (--kernel <ver>)
-ltvm build-image <target>       Build the VM base image
-ltvm build-lustre [target]      Build Lustre in container (--kernel <ver>)
+ltvm build all <target>         Build container + kernel + image
+ltvm build container <target>   Build the build container
+ltvm build kernel <target>      Build a kernel (--kernel <ver>)
+ltvm build image <target>       Build the VM base image
+ltvm build lustre [target]      Build Lustre in container (--kernel <ver>)
 
-ltvm package <target>           Create distributable tarball
+ltvm target package <target>           Create distributable tarball
 ltvm target fetch <target> --url URL   Download pre-built package
 ltvm install <target>           Install kernel + image to system paths
 

@@ -174,12 +174,12 @@ class TestDirSizeMb:
 class TestExportBuildContainer:
     def test_missing_image_raises(self, tmp_path: Path) -> None:
         """No build container in podman storage -> clean error pointing
-        the user at `ltvm build-container`."""
+        the user at `ltvm build container`."""
         check_result = MagicMock()
         check_result.returncode = 1  # `podman image exists` -> not found
 
         with patch("subprocess.run", return_value=check_result):
-            with pytest.raises(RuntimeError, match="Run: ltvm build-container"):
+            with pytest.raises(RuntimeError, match="Run: ltvm build container"):
                 export_build_container("my-target", tmp_path)
 
     def test_podman_missing_raises(self, tmp_path: Path) -> None:

@@ -238,189 +238,146 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_update)
 
-    # -- build-all --
-    sp = sub.add_parser(
-        "build-all",
+    # -- build (all | container | kernel | image | lustre | shell | status) --
+    build_parser = sub.add_parser(
+        "build",
+        parents=[common],
+        help="Build artifacts (all/container/kernel/image/lustre/shell/status)",
+    )
+    build_sub = build_parser.add_subparsers(
+        dest="build_action", metavar="<action>"
+    )
+
+    bap = build_sub.add_parser(
+        "all",
         parents=[common, kernel_arg, force_arg, force_compat_arg],
         help="Build container + kernel + image from scratch",
     )
-    sp.add_argument("target")
-    sp.add_argument(
+    bap.add_argument("target")
+    bap.add_argument(
         "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
     )
-    sp.add_argument(
+    bap.add_argument(
         "--lustre-build",
         action="store_true",
         help="Also build Lustre against the target kernel",
     )
-    sp.set_defaults(func=cmd_build_all)
+    bap.set_defaults(func=cmd_build_all)
 
-    # -- build-container --
-    sp = sub.add_parser(
-        "build-container",
+    bcp = build_sub.add_parser(
+        "container",
         parents=[common],
         help="Build the build container for a target",
     )
-    sp.add_argument("target")
-    sp.set_defaults(func=cmd_build_container)
+    bcp.add_argument("target")
+    bcp.set_defaults(func=cmd_build_container)
 
-    # -- build-kernel --
-    sp = sub.add_parser(
-        "build-kernel",
+    bkp = build_sub.add_parser(
+        "kernel",
         parents=[common, kernel_arg, force_arg, force_compat_arg],
         help="Build the kernel for a target",
     )
-    sp.add_argument("target")
-    sp.add_argument(
+    bkp.add_argument("target")
+    bkp.add_argument(
         "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
     )
-    sp.set_defaults(func=cmd_build_kernel)
+    bkp.set_defaults(func=cmd_build_kernel)
 
-    # -- build-image --
-    sp = sub.add_parser(
-        "build-image",
+    bip = build_sub.add_parser(
+        "image",
         parents=[common, kernel_arg, force_arg, force_compat_arg],
         help="Build the VM base image for a target",
     )
-    sp.add_argument("target")
-    sp.add_argument(
+    bip.add_argument("target")
+    bip.add_argument(
         "--no-lustre",
         action="store_true",
         help="Do not bake Lustre modules+userland into the image, "
         "even if staging is present",
     )
-    sp.add_argument(
+    bip.add_argument(
         "--lustre-tree",
         default=None,
         metavar="PATH",
         help="Path to Lustre source tree (default: cwd) -- used to "
         "find per-kernel Lustre staging to bake into the image",
     )
-    sp.set_defaults(func=cmd_build_image)
+    bip.set_defaults(func=cmd_build_image)
 
-    # -- build-lustre --
-    # Note: build-lustre's --force has a slightly different meaning
+    # Note: build lustre's --force has a slightly different meaning
     # ("Clean and reconfigure before building") than the shared help text,
-    # but the flag behaviour is identical (force flag => force rebuild),
-    # so it still uses the shared parent parser.
-    sp = sub.add_parser(
-        "build-lustre",
+    # but the flag behaviour is identical.
+    blp = build_sub.add_parser(
+        "lustre",
         parents=[common, kernel_arg, force_arg, force_compat_arg],
         help="Build a Lustre source tree against the target kernel build-tree",
     )
-    sp.add_argument(
+    blp.add_argument(
         "target", nargs="?", default="rocky9", help="Target (default: rocky9)"
     )
-    sp.add_argument(
+    blp.add_argument(
         "lustre_tree_pos",
         nargs="?",
         default=None,
         metavar="lustre-tree",
         help="Path to Lustre source tree (positional or --lustre-tree)",
     )
-    sp.add_argument(
+    blp.add_argument(
         "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
     )
-    sp.add_argument(
+    blp.add_argument(
         "--enable-server",
         action="store_true",
         default=False,
         help="Force --enable-server (default: per targets.yaml)",
     )
-    sp.add_argument(
+    blp.add_argument(
         "--disable-server",
         action="store_true",
         default=False,
         help="Force --disable-server",
     )
-    sp.add_argument(
+    blp.add_argument(
         "--configure", help="Extra configure arguments (quoted string)"
     )
-    sp.add_argument(
+    blp.add_argument(
         "--jobs", type=int, default=None, help="Parallel jobs (default: nproc)"
     )
-    sp.set_defaults(func=cmd_build_lustre)
+    blp.set_defaults(func=cmd_build_lustre)
 
-    # -- package (hidden: maintainer use only) --
-    sp = sub.add_parser(
-        "package",
-        parents=[common, kernel_arg, force_compat_arg],
-        help=argparse.SUPPRESS,
-    )
-    sp.add_argument("target")
-    sp.add_argument(
-        "--lustre-tree",
-        help=(
-            "Path to the Lustre source tree to bundle (default: cwd, "
-            "or wherever ltvm finds a tree).  Lustre is bundled by "
-            "default; pass --no-lustre to opt out."
-        ),
-    )
-    sp.add_argument(
-        "--no-lustre",
-        action="store_true",
-        default=False,
-        help=(
-            "Publish a kernel-only package without bundled Lustre.  "
-            "Consumers will need to build Lustre themselves on first "
-            "deploy.  Only use this for interim kernel-test releases."
-        ),
-    )
-    sp.add_argument(
-        "--output",
-        default=None,
-        help="Output directory for tarball (default: output/)",
-    )
-    sp.set_defaults(func=cmd_package)
-
-
-    # -- publish (hidden: maintainer use only) --
-    sp = sub.add_parser(
-        "publish",
-        parents=[common, kernel_arg],
-        help=argparse.SUPPRESS,
-    )
-    sp.add_argument("target")
-    sp.add_argument(
-        "--tag",
-        default=None,
-        help="Release tag (default: derived from tarball name)",
-    )
-    sp.add_argument(
-        "--tarball",
-        default=None,
-        help="Path to tarball (default: auto-detect from output/)",
-    )
-    sp.set_defaults(func=cmd_publish)
-
-    # -- build-shell --
-    sp = sub.add_parser(
-        "build-shell",
+    bshp = build_sub.add_parser(
+        "shell",
         parents=[common],
         help="Enter build container with source mounted",
     )
-    sp.add_argument("target")
-    sp.add_argument(
+    bshp.add_argument("target")
+    bshp.add_argument(
         "path",
         nargs="?",
         default=".",
         help="Path to mount in container (default: cwd)",
     )
-    sp.set_defaults(func=cmd_build_shell)
+    bshp.set_defaults(func=cmd_build_shell)
 
-    # -- build-status --
-    sp = sub.add_parser(
-        "build-status",
+    bstp = build_sub.add_parser(
+        "status",
         parents=[common],
         help="Show build status of all targets",
     )
-    sp.set_defaults(func=cmd_status)
+    bstp.set_defaults(func=cmd_status)
 
-    # -- target (list | show | clean | validate | fetch) --
+    def _build_no_action(args: argparse.Namespace) -> int:
+        build_parser.print_help()
+        return EXIT_ERROR
+
+    build_parser.set_defaults(func=_build_no_action)
+
+    # -- target (list | show | clean | validate | fetch | package | publish) --
     target_parser = sub.add_parser(
         "target",
         parents=[common],
-        help="Target OS management (list/show/clean/validate/fetch)",
+        help="Target OS management "
+        "(list/show/clean/validate/fetch/package/publish)",
     )
     target_sub = target_parser.add_subparsers(
         dest="target_action", metavar="<action>"
@@ -508,6 +465,57 @@ def build_parser() -> argparse.ArgumentParser:
         "already matches the remote release.",
     )
     tfp.set_defaults(func=cmd_fetch)
+
+    # package (maintainer use)
+    tpkp = target_sub.add_parser(
+        "package",
+        parents=[common, kernel_arg, force_compat_arg],
+        help="Package built artifacts into a release tarball (maintainer)",
+    )
+    tpkp.add_argument("target")
+    tpkp.add_argument(
+        "--lustre-tree",
+        help=(
+            "Path to the Lustre source tree to bundle (default: cwd, "
+            "or wherever ltvm finds a tree).  Lustre is bundled by "
+            "default; pass --no-lustre to opt out."
+        ),
+    )
+    tpkp.add_argument(
+        "--no-lustre",
+        action="store_true",
+        default=False,
+        help=(
+            "Publish a kernel-only package without bundled Lustre.  "
+            "Consumers will need to build Lustre themselves on first "
+            "deploy.  Only use this for interim kernel-test releases."
+        ),
+    )
+    tpkp.add_argument(
+        "--output",
+        default=None,
+        help="Output directory for tarball (default: output/)",
+    )
+    tpkp.set_defaults(func=cmd_package)
+
+    # publish (maintainer use)
+    tpbp = target_sub.add_parser(
+        "publish",
+        parents=[common, kernel_arg],
+        help="Upload a packaged tarball to a GitHub release (maintainer)",
+    )
+    tpbp.add_argument("target")
+    tpbp.add_argument(
+        "--tag",
+        default=None,
+        help="Release tag (default: derived from tarball name)",
+    )
+    tpbp.add_argument(
+        "--tarball",
+        default=None,
+        help="Path to tarball (default: auto-detect from output/)",
+    )
+    tpbp.set_defaults(func=cmd_publish)
 
     def _target_no_action(args: argparse.Namespace) -> int:
         target_parser.print_help()

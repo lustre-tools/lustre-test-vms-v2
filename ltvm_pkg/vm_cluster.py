@@ -463,7 +463,7 @@ def _validate_lustre_source(path: Path) -> None:
     """Die with a clear message if path is not a Lustre source tree.
 
     Only checks that the directory looks like a Lustre tree.
-    Cluster deploy runs `ltvm build-lustre` itself, so a freshly
+    Cluster deploy runs `ltvm build lustre` itself, so a freshly
     cloned tree (no .ko files yet) is valid input.
     """
     if not path.is_dir():
@@ -534,7 +534,7 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     # Build Lustre from source before deploying.  All nodes share the
     # same target+kernel+arch, so we run build-lustre once and every
     # node rsyncs from the same staging dir.
-    build_cmd = ["ltvm", "build-lustre", target, "--lustre-tree", build]
+    build_cmd = ["ltvm", "build", "lustre", target, "--lustre-tree", build]
     if kernel_name:
         build_cmd += ["--kernel", kernel_name]
     # Forward --arch unconditionally.  Comparing against the literal

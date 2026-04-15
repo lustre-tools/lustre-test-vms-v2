@@ -8,7 +8,7 @@ Round 20 caught three real bugs (plus some lower-priority drift):
      under the "Using bundled Lustre" banner.
   3. image input_hash didn't cover kernel modules or Lustre staging
      even though image_build.py deliberately bakes both into the
-     final image, so a kernel/Lustre rebuild left `ltvm build-image`
+     final image, so a kernel/Lustre rebuild left `ltvm build image`
      early-returning with stale contents.
 
 Also pinned here:

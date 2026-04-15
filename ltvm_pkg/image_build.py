@@ -344,7 +344,7 @@ def build_image(
         with_lustre: optional path to a Lustre source tree whose
                 per-kernel staging should be baked into the image
                 alongside the kernel modules.  Requires a prior
-                `ltvm build-lustre <target> --kernel <k>`.
+                `ltvm build lustre <target> --kernel <k>`.
     """
     _check_mke2fs()
 
@@ -367,7 +367,7 @@ def build_image(
         ):
             raise FileNotFoundError(
                 f"No Lustre staging at {lustre_staging} -- "
-                f"run: ltvm build-lustre {target_config.name} "
+                f"run: ltvm build lustre {target_config.name} "
                 f"--kernel {kernel_name} --lustre-tree {lustre_tree}"
             )
         lustre_hash_input = _lustre_staging_hash_input(lustre_staging)
@@ -483,7 +483,7 @@ def build_image(
         # Lustre staging now lives per-tree under <lustre_tree>/.ltvm-staging,
         # so build_image can no longer auto-inject Lustre from a global
         # location it owns.  Maintainers who want to bake Lustre into the
-        # image should run `ltvm build-lustre` then deploy via
+        # image should run `ltvm build lustre` then deploy via
         # `ltvm deploy-lustre --build`, or rely on `ltvm fetch` which carries
         # prebuilt Lustre in the package via lustre-artifacts/.  We keep
         # injecting kernel modules because those live deterministically

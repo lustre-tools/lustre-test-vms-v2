@@ -6,14 +6,14 @@ _ltvm_completions() {
 	cur="${COMP_WORDS[COMP_CWORD]}"
 	prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-	commands="install build-all build-container build-kernel
-		build-image build-lustre build-shell build-status
+	commands="install update build target
 		create ensure destroy start stop list ssh console-log
 		nmi crash-collect snapshot restore doctor deploy-lustre exec
-		cluster target"
+		cluster llmount"
 
 	cluster_actions="create destroy deploy status exec list ssh"
-	target_actions="list show clean validate fetch"
+	target_actions="list show clean validate fetch package publish"
+	build_actions="all container kernel image lustre shell status"
 
 	# Complete subcommand name
 	if [[ $COMP_CWORD -eq 1 ]]; then
@@ -33,6 +33,12 @@ _ltvm_completions() {
 		return
 	fi
 
+	# Complete build sub-actions
+	if [[ "${COMP_WORDS[1]}" == "build" && $COMP_CWORD -eq 2 ]]; then
+		COMPREPLY=($(compgen -W "$build_actions" -- "$cur"))
+		return
+	fi
+
 	# Complete VM names for commands that take them
 	case "${COMP_WORDS[1]}" in
 		destroy|start|stop|ssh|exec|deploy-lustre|console-log| \
@@ -46,14 +52,21 @@ _ltvm_completions() {
 			;;
 	esac
 
-	# Complete flags
+	# Complete flags (for `build <action>`, key on WORDS[2])
+	if [[ "${COMP_WORDS[1]}" == "build" ]]; then
+		case "${COMP_WORDS[2]}" in
+			all|kernel|lustre)
+				COMPREPLY=($(compgen -W "--lustre-tree --force --json -v --kernel" -- "$cur"))
+				return
+				;;
+			container|image)
+				COMPREPLY=($(compgen -W "--force --json -v" -- "$cur"))
+				return
+				;;
+		esac
+	fi
+
 	case "${COMP_WORDS[1]}" in
-		build-all|build-kernel|build-lustre)
-			COMPREPLY=($(compgen -W "--lustre-tree --force --json -v --kernel" -- "$cur"))
-			;;
-		build-container|build-image)
-			COMPREPLY=($(compgen -W "--force --json -v" -- "$cur"))
-			;;
 		create|ensure)
 			COMPREPLY=($(compgen -W "--vcpus --mem --ip --target --mdt-disks --ost-disks --disk-size --json -v" -- "$cur"))
 			;;

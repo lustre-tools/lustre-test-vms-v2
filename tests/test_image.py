@@ -492,7 +492,7 @@ class TestBuildImageWithLustre:
         tc = _make_config(tmp_targets)
         lt = tmp_path / "empty-tree"
         lt.mkdir()
-        with pytest.raises(FileNotFoundError, match="ltvm build-lustre"):
+        with pytest.raises(FileNotFoundError, match="ltvm build lustre"):
             image.build_image(
                 tc, force=True, kernel="5.14-rhel9.7", with_lustre=lt
             )

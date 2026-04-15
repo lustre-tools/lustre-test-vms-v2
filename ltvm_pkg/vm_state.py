@@ -186,7 +186,7 @@ def resolve_os_artifacts(
                 raise FileNotFoundError(
                     f"No kernel matching {kernel!r} for '{os_name}' "
                     f"(arch={effective_arch})\n"
-                    f"Run: ltvm build-kernel {os_name} "
+                    f"Run: ltvm build kernel {os_name} "
                     f"--kernel {kernel}{arch_hint}  "
                     f"(or: ltvm target fetch {os_name}{arch_hint})"
                 )
@@ -221,7 +221,7 @@ def resolve_os_artifacts(
                     f"'{os_name}' (arch={effective_arch}) is not "
                     f"built.\n"
                     f"Built kernels: {built_list}\n"
-                    f"Run: ltvm build-kernel {os_name} "
+                    f"Run: ltvm build kernel {os_name} "
                     f"--kernel {kernel_suffix}{arch_hint}  "
                     f"(to build the default), or re-run with "
                     f"--kernel <existing> to use one of the "
@@ -233,7 +233,7 @@ def resolve_os_artifacts(
             f"No kernels built for '{os_name}' "
             f"(arch={effective_arch})\n"
             f"Run: ltvm target fetch {os_name}{arch_hint}  "
-            f"(or: ltvm build-kernel {os_name}{arch_hint})"
+            f"(or: ltvm build kernel {os_name}{arch_hint})"
         )
 
     # Pick the actual kernel binary file if the caller didn't pass a path.
@@ -249,7 +249,7 @@ def resolve_os_artifacts(
                 f"Kernel directory exists but has no vmlinuz/vmlinux: "
                 f"{kdir}\n"
                 f"A build may be in progress, was interrupted, or "
-                f"failed partway through.  Check: ltvm build-status"
+                f"failed partway through.  Check: ltvm build status"
             )
 
     # ── Step 2: Locate the image paired with this kernel. ──
@@ -259,7 +259,7 @@ def resolve_os_artifacts(
         raise FileNotFoundError(
             f"No image for '{os_name}' kernel={kernel_dirname} "
             f"(arch={effective_arch})\n"
-            f"Run: ltvm build-image {os_name} "
+            f"Run: ltvm build image {os_name} "
             f"--kernel {kernel_dirname}{arch_hint}  "
             f"(or: ltvm target fetch {os_name}{arch_hint})"
         )

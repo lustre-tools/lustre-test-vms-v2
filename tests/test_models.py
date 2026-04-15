@@ -351,6 +351,6 @@ class TestResolveOsArtifactsPerKernel:
             patch.object(tc_mod, "TARGETS_DIR", root / "targets"),
             patch.object(tc_mod, "OUTPUT_DIR", root / "output"),
         ):
-            with pytest.raises(FileNotFoundError, match="build-image"):
+            with pytest.raises(FileNotFoundError, match="build image"):
                 vm_state.resolve_os_artifacts("rocky9", kernel="6.1-rhel9.7")
 

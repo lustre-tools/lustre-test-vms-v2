@@ -107,7 +107,7 @@ but kexec_load fails silently on the microvm machine type.
 ### Phase 0: Prerequisites
 
 ```bash
-ltvm build-status
+ltvm build status
 sudo ltvm list
 sudo vm.py doctor
 ```

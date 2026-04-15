@@ -10,14 +10,14 @@ Layout inside a tarball, rooted at <target>/<arch>/:
   - kernels/<kernel-full-name>/build-tree/
   - kernels/<kernel-full-name>/lustre-artifacts/ (optional:
     prebuilt Lustre modules + binaries built against this kernel;
-    output of `ltvm build-lustre` snapshotted via `snapshot_lustre`)
+    output of `ltvm build lustre` snapshotted via `snapshot_lustre`)
   - kernels/<kernel-full-name>/meta.json
   - images/<kernel-full-name>/base.ext4 (VM rootfs, keyed per kernel)
   - images/<kernel-full-name>/meta.json
 
 Multiple kernels per target are supported; each kernel has its
 own paired image directory.  Users can replace the kernel later
-with `ltvm build-kernel` if they need custom patches or a
+with `ltvm build kernel` if they need custom patches or a
 different version.
 
 Lustre prebuilds live UNDER each kernel because Lustre modules
@@ -54,7 +54,7 @@ def _resolve_kernel(output_dir: Path, kernel: str | None) -> tuple[str, Path]:
     if not kernels_dir.is_dir():
         raise ValueError(
             f"No kernels/ directory in {output_dir}. "
-            f"Run 'ltvm build-kernel <target>' to build one."
+            f"Run 'ltvm build kernel <target>' to build one."
         )
 
     candidates = sorted(
@@ -65,7 +65,7 @@ def _resolve_kernel(output_dir: Path, kernel: str | None) -> tuple[str, Path]:
     if not candidates:
         raise ValueError(
             f"No kernel with vmlinux found under {kernels_dir}. "
-            f"Run 'ltvm build-kernel <target>' to build one."
+            f"Run 'ltvm build kernel <target>' to build one."
         )
 
     chosen = candidates[-1]
@@ -85,14 +85,14 @@ def _find_artifacts(
 
     The container/image.tar file is a `podman save` of the build
     container (e.g. ltvm-build-rocky9) and is mandatory: a fetched
-    target without it would fail at the next `ltvm build-lustre`
+    target without it would fail at the next `ltvm build lustre`
     step with a confusing missing-container error.  We require it at
     package time so the failure surfaces at the publisher, not the
     consumer.
 
     Optional:
       lustre-artifacts: prebuilt Lustre install tree, included if
-      `ltvm build-lustre` was run before packaging.
+      `ltvm build lustre` was run before packaging.
 
     If kernel is None, auto-detects by scanning output_dir/kernels/
     for a subdirectory containing vmlinux.
@@ -131,14 +131,14 @@ def _find_artifacts(
         hints = []
         if "container" in missing:
             hints.append(
-                "  Container image: run `ltvm build-container <target>`"
+                "  Container image: run `ltvm build container <target>`"
                 " (package_target will export it automatically)"
             )
         if any(
             m in missing
             for m in ("vmlinux", "vmlinuz", "build-tree", "modules", "image")
         ):
-            hints.append("  Build artifacts: run `ltvm build-all <target>`")
+            hints.append("  Build artifacts: run `ltvm build all <target>`")
         hint_text = "\n" + "\n".join(hints) if hints else ""
         raise ValueError(
             f"Missing artifacts in {output_dir} (kernel={kernel_name}): "
@@ -163,7 +163,7 @@ def snapshot_lustre(
 ) -> Path:
     """Snapshot the Lustre staging tree for shipping in a fetch tarball.
 
-    Sources from the per-tree staging dir written by `ltvm build-lustre`
+    Sources from the per-tree staging dir written by `ltvm build lustre`
     (``<lustre_tree>/.ltvm-staging/<target>[/<arch>]/``).  rsyncs the
     DESTDIR install layout (usr/, lib/modules/, sbin/) into
     ``kernels/<kernel>/lustre-artifacts/`` under the canonical
@@ -171,7 +171,7 @@ def snapshot_lustre(
     matching prebuilt Lustre.
 
     Raises ValueError if no staging dir exists for the tree+target --
-    the caller is expected to run `ltvm build-lustre` first.
+    the caller is expected to run `ltvm build lustre` first.
 
     Returns the output lustre-artifacts directory path.
     """
@@ -190,7 +190,7 @@ def snapshot_lustre(
     if not staging_src.is_dir():
         raise ValueError(
             f"No staging directory at {staging_src} -- "
-            f"run `ltvm build-lustre {target} --kernel {kernel_name} "
+            f"run `ltvm build lustre {target} --kernel {kernel_name} "
             f"--lustre-tree {lustre_tree}` first"
         )
 
@@ -198,7 +198,7 @@ def snapshot_lustre(
     if not ko_files:
         raise ValueError(
             f"Staging dir {staging_src} has no .ko files -- "
-            f"`ltvm build-lustre` may have failed"
+            f"`ltvm build lustre` may have failed"
         )
 
     # Verify the staging modules match the target kernel
@@ -223,7 +223,7 @@ def snapshot_lustre(
             raise ValueError(
                 f"Lustre modules built for {actual_kver} but target "
                 f"kernel is {expected_kver}\n"
-                f"  Rebuild: ltvm build-lustre <target> --force"
+                f"  Rebuild: ltvm build lustre <target> --force"
             )
 
     dest = kernel_dir / "lustre-artifacts"
@@ -295,7 +295,7 @@ def export_build_container(
     automatically before packaging.
 
     Raises RuntimeError if the container image doesn't exist (the
-    publisher must have built it via `ltvm build-container <target>`)
+    publisher must have built it via `ltvm build container <target>`)
     or if podman is missing/fails.
     """
     from ltvm_pkg.target_config import build_container_tag
@@ -320,7 +320,7 @@ def export_build_container(
     if check.returncode != 0:
         raise RuntimeError(
             f"Build container '{container_tag}' not found in podman storage.\n"
-            f"  Run: ltvm build-container {target_name}"
+            f"  Run: ltvm build container {target_name}"
         )
 
     print(f"  Exporting build container '{container_tag}' -> {image_tar}")
@@ -370,7 +370,7 @@ def package_target(
 
     # Export the build container before _find_artifacts checks for it.
     # This is unconditional: every published package must include its
-    # build container so the consumer can run `ltvm build-lustre` after
+    # build container so the consumer can run `ltvm build lustre` after
     # `ltvm fetch`.
     export_build_container(target_name, output_dir, arch=arch)
 
@@ -545,14 +545,14 @@ def fetch_target(
     # way that happens with a properly published tarball is if someone
     # uploaded a stale package built before container packaging was
     # mandatory.  Refusing to proceed is correct: a fetched target
-    # without a build container is half-broken (no `ltvm build-lustre`).
+    # without a build container is half-broken (no `ltvm build lustre`).
     artifacts = _find_artifacts(target_dir)
     print(f"    Artifacts verified in {target_dir}")
     if "lustre-artifacts" in artifacts:
         print("    Includes prebuilt Lustre")
 
     # Load the build container into podman storage so subsequent
-    # `ltvm build-lustre <target>` finds it.  We use `podman load`
+    # `ltvm build lustre <target>` finds it.  We use `podman load`
     # which preserves the original tag (ltvm-build-<target>).
     container_image = artifacts["container"]
     print(f"    Loading build container from {container_image}")

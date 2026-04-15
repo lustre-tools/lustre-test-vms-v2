@@ -49,21 +49,21 @@ mounted Lustre filesystem.
 cd ~/lustre-test-vms-v2
 
 # Build container + kernel + image for the target's default kernel
-ltvm build-all rocky9 --lustre-tree ~/lustre-release
+ltvm build all rocky9 --lustre-tree ~/lustre-release
 
 # Or a non-default kernel (must be in targets/targets.yaml
 # kernels.available).  SRPM auto-falls-back to Rocky vault
 # for older minors.
-ltvm build-kernel rocky9 --kernel 5.14-rhel9.5 \
+ltvm build kernel rocky9 --kernel 5.14-rhel9.5 \
     --lustre-tree ~/lustre-release
-ltvm build-image rocky9 --kernel 5.14-rhel9.5
+ltvm build image rocky9 --kernel 5.14-rhel9.5
 
 # Build Lustre against a specific kernel (staging lives at
 # <tree>/.ltvm-staging/<target>/<arch>/).
-ltvm build-lustre rocky9 ~/lustre-release --kernel 5.14-rhel9.5
+ltvm build lustre rocky9 ~/lustre-release --kernel 5.14-rhel9.5
 
 # See what's built (one image row per built kernel)
-ltvm build-status
+ltvm build status
 ```
 
 ## Compatibility Gate
@@ -79,7 +79,7 @@ doesn't declare supported.
 ltvm target validate rocky9 --lustre-tree ~/lustre-release
 
 # Override a refusal for a one-off build
-ltvm build-lustre rocky9 ~/lustre-release --force-compat
+ltvm build lustre rocky9 ~/lustre-release --force-compat
 ```
 
 `--force-compat` is wired into `build-all`, `build-kernel`,
@@ -90,10 +90,10 @@ ltvm build-lustre rocky9 ~/lustre-release --force-compat
 ```bash
 # Bundle kernel + image + Lustre into a tarball (per kernel,
 # named <target>-<kver>_lustre.tar.gz)
-ltvm package rocky9
+ltvm target package rocky9
 
 # Publish to GitHub releases (tag derived from tarball name)
-ltvm publish rocky9
+ltvm target publish rocky9
 ```
 
 `ltvm target fetch <target>` discovers the latest release tag for
@@ -135,7 +135,7 @@ Never bare names like `testvm`.
 
 ```bash
 # Build Lustre, then copy modules + userland into a running VM
-ltvm build-lustre rocky9 ~/lustre-release
+ltvm build lustre rocky9 ~/lustre-release
 ltvm deploy-lustre co1-single --build ~/lustre-release
 ltvm llmount co1-single
 ```
@@ -213,22 +213,22 @@ large is fine.
 # Build
 ltvm install                    One-time host setup (sudo)
 ltvm update                     git fast-forward ltvm itself
-ltvm build-all <target>         Container + kernel + image (+ --kernel)
-ltvm build-container <target>   Rebuild the build container
-ltvm build-kernel <target>      Kernel (+ --kernel, --lustre-tree)
-ltvm build-image <target>       Per-kernel VM image (+ --kernel)
-ltvm build-lustre <t> <tree>    Lustre against target kernel (+ --kernel)
-ltvm build-status               Staleness table (one image row per kernel)
-ltvm build-shell <target>       Interactive shell in build container
+ltvm build all <target>         Container + kernel + image (+ --kernel)
+ltvm build container <target>   Rebuild the build container
+ltvm build kernel <target>      Kernel (+ --kernel, --lustre-tree)
+ltvm build image <target>       Per-kernel VM image (+ --kernel)
+ltvm build lustre <t> <tree>    Lustre against target kernel (+ --kernel)
+ltvm build status               Staleness table (one image row per kernel)
+ltvm build shell <target>       Interactive shell in build container
 
 # Compat
 ltvm target validate <target>          Lustre/kernel compat check (read-only)
                                 --force-compat overrides refusal
 
 # Package / distribute
-ltvm package <target>           Bundle into tarball (+ --kernel)
+ltvm target package <target>           Bundle into tarball (+ --kernel)
 ltvm target fetch <target>             Download latest release tarball
-ltvm publish <target>           Upload tarball to GitHub release
+ltvm target publish <target>           Upload tarball to GitHub release
 
 # VM lifecycle
 ltvm create <name>              Create / idempotent-create

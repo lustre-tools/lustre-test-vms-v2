@@ -74,35 +74,35 @@ class TestBuildParser:
 
     def test_json_flag_default_false(self) -> None:
         p = ltvm.build_parser()
-        args = p.parse_args(["build-status"])
+        args = p.parse_args(["build", "status"])
         assert args.json is False
 
     def test_json_flag_true_when_passed(self) -> None:
         # --json is defined on each subparser (via parents=[common]),
         # so it must appear after the subcommand name.
         p = ltvm.build_parser()
-        args = p.parse_args(["build-status", "--json"])
+        args = p.parse_args(["build", "status", "--json"])
         assert args.json is True
 
     def test_verbose_flag(self) -> None:
         p = ltvm.build_parser()
-        args = p.parse_args(["build-status", "-v"])
+        args = p.parse_args(["build", "status", "-v"])
         assert args.verbose is True
 
     def test_status_subcommand_sets_func(self) -> None:
         p = ltvm.build_parser()
-        args = p.parse_args(["build-status"])
+        args = p.parse_args(["build", "status"])
         assert args.func is cmd_status
 
     def test_build_all_target_positional(self) -> None:
         p = ltvm.build_parser()
-        args = p.parse_args(["build-all", "rocky9"])
+        args = p.parse_args(["build", "all", "rocky9"])
         assert args.target == "rocky9"
         assert args.force is False
 
     def test_build_all_force_flag(self) -> None:
         p = ltvm.build_parser()
-        args = p.parse_args(["build-all", "rocky9", "--force"])
+        args = p.parse_args(["build", "all", "rocky9", "--force"])
         assert args.force is True
 
     def test_list_subcommand_parsed(self) -> None:
@@ -132,7 +132,7 @@ class TestHelp:
     def test_subcommand_help_exits_zero(self) -> None:
         p = ltvm.build_parser()
         with pytest.raises(SystemExit) as exc_info:
-            p.parse_args(["build-status", "--help"])
+            p.parse_args(["build", "status", "--help"])
         assert exc_info.value.code == 0
 
 
@@ -261,7 +261,7 @@ class TestCmdStatus:
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         with patch("ltvm_pkg.cli.list_targets", return_value=[]):
-            rc = _run_main(["build-status"], capsys)
+            rc = _run_main(["build", "status"], capsys)
         assert rc == EXIT_OK
         assert "No targets" in capsys.readouterr().out
 
@@ -270,7 +270,7 @@ class TestCmdStatus:
     ) -> None:
         # --json must follow the subcommand name
         with patch("ltvm_pkg.cli.list_targets", return_value=[]):
-            rc = _run_main(["build-status", "--json"], capsys)
+            rc = _run_main(["build", "status", "--json"], capsys)
         assert rc == EXIT_OK
         payload = json.loads(capsys.readouterr().out)
         assert payload == {"targets": []}
@@ -305,7 +305,7 @@ class TestCmdStatus:
                 return_value={"built": False, "stale": True},
             ),
         ):
-            rc = _run_main(["build-status"], capsys)
+            rc = _run_main(["build", "status"], capsys)
 
         assert rc == EXIT_OK
         out = capsys.readouterr().out
@@ -346,7 +346,7 @@ class TestCmdStatusJson:
                 return_value={"built": False, "stale": True},
             ),
         ):
-            rc = _run_main(["build-status", "--json"], capsys)
+            rc = _run_main(["build", "status", "--json"], capsys)
 
         assert rc == EXIT_OK
         payload = json.loads(capsys.readouterr().out)
@@ -385,7 +385,7 @@ class TestCmdStatusJson:
                 return_value={"built": False, "stale": True},
             ),
         ):
-            rc = _run_main(["build-status", "--json"], capsys)
+            rc = _run_main(["build", "status", "--json"], capsys)
 
         assert rc == EXIT_OK
         payload = json.loads(capsys.readouterr().out)
@@ -811,7 +811,7 @@ class TestValidationGating:
         ):
             rc = _run_main(
                 [
-                    "build-all",
+                    "build", "all",
                     "rocky9",
                     "--lustre-tree",
                     str(lustre_tree),
@@ -841,7 +841,7 @@ class TestValidationGating:
             with pytest.raises(SystemExit) as exc:
                 _run_main(
                     [
-                        "build-all",
+                        "build", "all",
                         "rocky9",
                         "--lustre-tree",
                         str(lustre_tree),
@@ -873,7 +873,7 @@ class TestValidationGating:
         ):
             rc = _run_main(
                 [
-                    "build-all",
+                    "build", "all",
                     "rocky9",
                     "--lustre-tree",
                     str(lustre_tree),
@@ -904,7 +904,7 @@ class TestValidationGating:
         ):
             rc = _run_main(
                 [
-                    "build-all",
+                    "build", "all",
                     "rocky9",
                     "--lustre-tree",
                     str(lustre_tree),
@@ -933,7 +933,7 @@ class TestValidationGating:
             with pytest.raises(SystemExit) as exc:
                 _run_main(
                     [
-                        "build-all",
+                        "build", "all",
                         "rocky9",
                         "--lustre-tree",
                         str(lustre_tree),
@@ -965,7 +965,7 @@ class TestValidationGating:
             with pytest.raises(SystemExit) as exc:
                 _run_main(
                     [
-                        "build-kernel",
+                        "build", "kernel",
                         "rocky9",
                         "--lustre-tree",
                         str(lustre_tree),
@@ -995,7 +995,7 @@ class TestValidationGating:
         ):
             rc = _run_main(
                 [
-                    "build-kernel",
+                    "build", "kernel",
                     "rocky9",
                     "--lustre-tree",
                     str(lustre_tree),
@@ -1026,7 +1026,7 @@ class TestValidationGating:
             with pytest.raises(SystemExit) as exc:
                 _run_main(
                     [
-                        "build-lustre",
+                        "build", "lustre",
                         "rocky9",
                         str(lustre_tree),
                     ],
@@ -1065,7 +1065,7 @@ class TestValidationGating:
         ):
             rc = _run_main(
                 [
-                    "build-lustre",
+                    "build", "lustre",
                     "rocky9",
                     str(lustre_tree),
                     "--force-compat",
@@ -1097,6 +1097,7 @@ class TestValidationGating:
             with pytest.raises(SystemExit) as exc:
                 _run_main(
                     [
+                        "target",
                         "package",
                         "rocky9",
                         "--lustre-tree",
@@ -1131,6 +1132,7 @@ class TestValidationGating:
         ):
             rc = _run_main(
                 [
+                    "target",
                     "package",
                     "rocky9",
                     "--lustre-tree",
@@ -1202,7 +1204,9 @@ class TestValidationGating:
             if c.args
             and isinstance(c.args[0], list)
             and len(c.args[0]) > 1
-            and c.args[0][1] == "build-lustre"
+            and len(c.args[0]) > 2
+            and c.args[0][1] == "build"
+            and c.args[0][2] == "lustre"
         ]
         assert calls == []
 
@@ -1410,7 +1414,7 @@ class TestKernelArgPropagation:
             mock_bi.return_value = Path("/fake/base.ext4")
             rc = _run_main(
                 [
-                    "build-image",
+                    "build", "image",
                     "rocky9",
                     "--kernel",
                     "5.14-rhel9.5",
@@ -1445,7 +1449,7 @@ class TestKernelArgPropagation:
             mock_bi.return_value = Path("/fake/base.ext4")
             rc = _run_main(
                 [
-                    "build-image",
+                    "build", "image",
                     "rocky9",
                     "--kernel",
                     "5.14-rhel9.7",
@@ -1481,7 +1485,7 @@ class TestKernelArgPropagation:
             mock_bi.return_value = Path("/fake/base.ext4")
             rc = _run_main(
                 [
-                    "build-image",
+                    "build", "image",
                     "rocky9",
                     "--lustre-tree",
                     str(lt),
@@ -1511,7 +1515,7 @@ class TestKernelArgPropagation:
         ):
             mock_bi.return_value = Path("/fake/base.ext4")
             rc = _run_main(
-                ["build-image", "rocky9", "--lustre-tree", str(lt)],
+                ["build", "image", "rocky9", "--lustre-tree", str(lt)],
                 capsys,
             )
 
@@ -1549,7 +1553,7 @@ class TestKernelArgPropagation:
         ):
             rc = _run_main(
                 [
-                    "build-all",
+                    "build", "all",
                     "rocky9",
                     "--kernel",
                     "5.14-rhel9.5",
@@ -1606,7 +1610,7 @@ class TestKernelArgPropagation:
         ):
             rc = _run_main(
                 [
-                    "build-all",
+                    "build", "all",
                     "rocky9",
                     "--lustre-tree",
                     str(lustre_tree),

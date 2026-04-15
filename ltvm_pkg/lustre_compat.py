@@ -514,7 +514,7 @@ def validate_target(
                 )
             no_bt_note = (
                 "patch dry-apply not run (kernel not built yet); "
-                "rerun validate after `ltvm build-kernel`"
+                "rerun validate after `ltvm build kernel`"
                 if bt is None
                 else "patch dry-apply not run (kernel build-tree incomplete)"
             )

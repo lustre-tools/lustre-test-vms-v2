@@ -66,7 +66,7 @@ sudo ltvm deploy-lustre co1-single --mount
 To test your own Lustre changes, build from source and deploy:
 
 ```bash
-ltvm build-lustre rocky9 ~/lustre-release
+ltvm build lustre rocky9 ~/lustre-release
 sudo ltvm deploy-lustre co1-single --build ~/lustre-release --mount
 ```
 
@@ -86,7 +86,7 @@ ssh co1-single \
 Edit Lustre source, then:
 
 ```bash
-ltvm build-lustre rocky9 ~/lustre-release
+ltvm build lustre rocky9 ~/lustre-release
 sudo ltvm deploy-lustre co1-single --mount
 ```
 
@@ -103,7 +103,7 @@ version.
 ### 1. Build the build container
 
 ```bash
-ltvm build-container rocky9
+ltvm build container rocky9
 ```
 
 Creates a podman image (`ltvm-build-rocky9`) with GCC,
@@ -113,7 +113,7 @@ is the environment used for all subsequent builds.
 ### 2. Build the kernel
 
 ```bash
-ltvm build-kernel rocky9 --lustre-tree ~/lustre-release
+ltvm build kernel rocky9 --lustre-tree ~/lustre-release
 ```
 
 The Lustre tree is needed because it contains the kernel
@@ -128,7 +128,7 @@ compilation.
 ### 3. Build the VM base image
 
 ```bash
-ltvm build-image rocky9
+ltvm build image rocky9
 ```
 
 Builds a container image with all packages, exports it
@@ -138,7 +138,7 @@ to a raw ext4 filesystem via `mke2fs -d` under fakeroot
 ### 4. Build Lustre
 
 ```bash
-ltvm build-lustre rocky9 ~/lustre-release
+ltvm build lustre rocky9 ~/lustre-release
 ```
 
 ### 5. Create VM, deploy, test
@@ -155,7 +155,7 @@ sudo ltvm deploy-lustre co1-single --build ~/lustre-release --mount
 Steps 1-3 can be combined:
 
 ```bash
-ltvm build-all rocky9 --lustre-tree ~/lustre-release
+ltvm build all rocky9 --lustre-tree ~/lustre-release
 ```
 
 
@@ -177,14 +177,14 @@ rocky9:
 Build a non-default kernel:
 
 ```bash
-ltvm build-kernel rocky9 --lustre-tree ~/lustre-release \
+ltvm build kernel rocky9 --lustre-tree ~/lustre-release \
     --kernel 5.14-rhel9.5
 ```
 
 Build Lustre against it:
 
 ```bash
-ltvm build-lustre rocky9 ~/lustre-release --kernel 5.14-rhel9.5
+ltvm build lustre rocky9 ~/lustre-release --kernel 5.14-rhel9.5
 ```
 
 Deploy with it:
@@ -226,7 +226,7 @@ VM names must include the checkout number: `co<N>-<role>`.
 For debugging build issues:
 
 ```bash
-ltvm build-shell rocky9
+ltvm build shell rocky9
 ```
 
 Opens a shell inside the build container with the Lustre
@@ -272,13 +272,13 @@ debugging cleanup issues.
 
 ### One Staging Dir Per Target
 
-`ltvm build-lustre` installs to `output/<target>/lustre/staging/`.
+`ltvm build lustre` installs to `output/<target>/lustre/staging/`.
 The last build wins. If you need two Lustre versions simultaneously,
 use two source trees:
 
 ```bash
-ltvm build-lustre rocky9 ~/lustre-v1    # staging overwritten
-ltvm build-lustre rocky9 ~/lustre-v2    # staging overwritten again
+ltvm build lustre rocky9 ~/lustre-v1    # staging overwritten
+ltvm build lustre rocky9 ~/lustre-v2    # staging overwritten again
 ```
 
 In practice: build, deploy, test, iterate.

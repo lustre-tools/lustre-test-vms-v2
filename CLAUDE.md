@@ -31,13 +31,13 @@ Unless the user wants to build from source, fetch is faster:
 
 ```bash
 ltvm target fetch rocky9
-ltvm build-status
+ltvm build status
 ```
 
 To build from source instead (e.g. custom kernel config):
 
 ```bash
-ltvm build-all rocky9 --lustre-tree ~/lustre-release
+ltvm build all rocky9 --lustre-tree ~/lustre-release
 ```
 
 ### Step 3 -- Find out where their Lustre tree lives
@@ -114,7 +114,7 @@ output/                   Build artifacts (gitignored)
 ```bash
 ltvm install
 ltvm target fetch rocky9
-ltvm build-status
+ltvm build status
 ```
 
 ## Artifacts
@@ -126,7 +126,7 @@ autotools, kernel build deps, and Lustre build deps.
 Uses ccache via a persistent podman volume.
 
 ```bash
-ltvm build-container rocky9
+ltvm build container rocky9
 ```
 
 - Dockerfile: `targets/<target>/container.Dockerfile`
@@ -139,7 +139,7 @@ Custom kernel built from a distro SRPM with Lustre
 patches applied and microvm config merged.
 
 ```bash
-ltvm build-kernel rocky9 --lustre-tree /path/to/lustre-release
+ltvm build kernel rocky9 --lustre-tree /path/to/lustre-release
 ```
 
 **How it works:**
@@ -167,7 +167,7 @@ To build a non-default kernel minor (e.g., for compat
 testing), pass `--kernel`:
 
 ```bash
-ltvm build-kernel rocky9 --kernel 5.14-rhel9.5 \
+ltvm build kernel rocky9 --kernel 5.14-rhel9.5 \
     --lustre-tree ~/lustre-release
 ```
 
@@ -179,8 +179,8 @@ Built as a container image, then exported to raw ext4.
 gets its own image under `output/<target>/<arch>/images/<kernel>/`.
 
 ```bash
-ltvm build-image rocky9                         # default kernel
-ltvm build-image rocky9 --kernel 5.14-rhel9.5  # specific kernel
+ltvm build image rocky9                         # default kernel
+ltvm build image rocky9 --kernel 5.14-rhel9.5  # specific kernel
 ```
 
 Runs as the invoking user (mke2fs -d under fakeroot --
@@ -201,9 +201,9 @@ No kernel in image -- QEMU passes it via `-kernel`.
 ### Build Status and Staleness
 
 ```bash
-ltvm build-status
-ltvm build-all rocky9              # rebuild stale artifacts
-ltvm build-all rocky9 --force      # rebuild everything
+ltvm build status
+ltvm build all rocky9              # rebuild stale artifacts
+ltvm build all rocky9 --force      # rebuild everything
 ```
 
 Each artifact tracks an input hash in `meta.json`.
@@ -221,9 +221,9 @@ authoritative (values: `server_ldiskfs`, `server_zfs`).
 ltvm target validate rocky9 --lustre-tree ~/lustre-release
 
 # Override a compatibility refusal (not hard errors)
-ltvm build-all rocky9 --lustre-tree ~/lustre-release --force-compat
-ltvm build-kernel rocky9 --lustre-tree ~/lustre-release --force-compat
-ltvm build-lustre rocky9 ~/lustre-release --force-compat
+ltvm build all rocky9 --lustre-tree ~/lustre-release --force-compat
+ltvm build kernel rocky9 --lustre-tree ~/lustre-release --force-compat
+ltvm build lustre rocky9 ~/lustre-release --force-compat
 ltvm deploy-lustre co1-single --build ~/lustre-release --force-compat
 ```
 
@@ -327,14 +327,14 @@ translate RHEL package names to distro-specific ones.
    - `image.Dockerfile` -- VM root filesystem
 3. Add `packages-os.txt` for OS-specific packages
 4. Add `package-map.txt` if non-RHEL
-5. Test: `ltvm build-all <name> --lustre-tree <path>`
+5. Test: `ltvm build all <name> --lustre-tree <path>`
 
 ## Development
 
 ### Interactive Container Shell
 
 ```bash
-ltvm build-shell rocky9
+ltvm build shell rocky9
 ```
 
 Opens a shell in the build container with the Lustre
@@ -343,7 +343,7 @@ source tree bind-mounted.
 ### Cross-building Lustre
 
 ```bash
-ltvm build-lustre rocky9 ~/lustre-release
+ltvm build lustre rocky9 ~/lustre-release
 ```
 
 Builds Lustre inside the target's build container

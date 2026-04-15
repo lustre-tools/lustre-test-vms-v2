@@ -190,7 +190,7 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
         if not vmlinuz or not vmlinuz.exists():
             die(
                 f"no vmlinuz next to {vm.kernel!r} to seed to VM; "
-                f"rebuild the image with `ltvm build-image` "
+                f"rebuild the image with `ltvm build image` "
                 f"or restore the kernel output dir."
             )
         scp_r = run(

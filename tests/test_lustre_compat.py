@@ -796,7 +796,7 @@ class TestValidateTargetLdiskfsBuildTree:
         r = validate_target(tc, tree, kernel_build_tree=None)
         assert r.status == "ok"
         assert r.matched_in == "ldiskfs_series"
-        assert "build-kernel" in r.message
+        assert "build kernel" in r.message
 
     def test_build_tree_clean_patches_ok(self, tmp_path: Path) -> None:
         tree = _make_ldiskfs_validate_tree(

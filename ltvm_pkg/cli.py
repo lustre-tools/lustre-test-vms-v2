@@ -404,7 +404,7 @@ def cmd_build_image(args: argparse.Namespace) -> int:
                 f"no Lustre staging at {candidate}",
                 use_json,
                 hint=(
-                    f"run `ltvm build-lustre {args.target} --kernel "
+                    f"run `ltvm build lustre {args.target} --kernel "
                     f"{resolved_kernel}` first, or pass --no-lustre to "
                     f"bake a kernel-only image"
                 ),
@@ -586,7 +586,7 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
         return _error(
             f"Kernel build-tree not found: {build_tree}",
             use_json,
-            hint=f"Run: ltvm build-kernel {args.target} "
+            hint=f"Run: ltvm build kernel {args.target} "
             f"--kernel {resolved_kernel}",
         )
 
@@ -623,7 +623,7 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
             f"Build container '{container_tag}' not found in podman storage",
             use_json,
             hint=(
-                f"Run: ltvm build-container {args.target}\n"
+                f"Run: ltvm build container {args.target}\n"
                 f"  Or fetch a published target: ltvm target fetch {args.target}"
             ),
         )
@@ -1155,7 +1155,7 @@ def cmd_publish(args: argparse.Namespace) -> int:
             return _error(
                 f"No tarball found matching {pattern}",
                 use_json,
-                hint=f"Run 'ltvm package {args.target}' first",
+                hint=f"Run 'ltvm target package {args.target}' first",
             )
         tarball = candidates[-1]  # newest
 
@@ -1295,7 +1295,7 @@ def cmd_build_shell(args: argparse.Namespace) -> int:
         return _error(
             f"Container image {tag} not found",
             use_json,
-            hint=f"Run: ltvm build-container {args.target}",
+            hint=f"Run: ltvm build container {args.target}",
         )
 
     if not use_json:
@@ -1948,7 +1948,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         return _error(f"Build path not found: {build_path}", use_json)
 
     # Validate that --build points at an actual Lustre source tree
-    # before we try to feed it to `ltvm build-lustre`.  Skip this when
+    # before we try to feed it to `ltvm build lustre`.  Skip this when
     # we picked up a bundled snapshot, which is a DESTDIR layout (usr/,
     # lib/modules/), not a source tree.  Without this validation a typo
     # like `--build /wrong/dir` produces a confusing error several
@@ -1990,11 +1990,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     # populates it.  Otherwise, if the user is deploying against a
     # source tree without having built Lustre for this kernel, refuse
     # with a clear hint rather than falling through to an automatic
-    # `ltvm build-lustre` that might target the wrong kernel.
+    # `ltvm build lustre` that might target the wrong kernel.
     # If we picked up a bundled snapshot, mirror it into staging
     # unconditionally.  Previously we skipped the mirror whenever
     # staging already contained .ko files, but that silently shipped
-    # stale modules from an earlier `ltvm build-lustre` run under the
+    # stale modules from an earlier `ltvm build lustre` run under the
     # "Using bundled Lustre" banner -- the user thought they were
     # deploying what they fetched but actually got what was last built
     # locally.  rsync --delete is the right tool here: the bundled
@@ -2118,7 +2118,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if userspace_only:
         if not staging.is_dir():
             return _error(
-                f"No staging for {target} -- run: ltvm build-lustre "
+                f"No staging for {target} -- run: ltvm build lustre "
                 f"{target} --lustre-tree {build_path}",
                 use_json,
             )
@@ -2128,7 +2128,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         # Bundled snapshot: staging was either just mirrored or already
         # populated.  Don't run _staging_is_fresh -- build_path here is
         # the snapshot's DESTDIR layout, NOT a Lustre source tree, so
-        # falling through to `ltvm build-lustre --lustre-tree <snapshot>`
+        # falling through to `ltvm build lustre --lustre-tree <snapshot>`
         # would error out with "not a Lustre source tree".
         if not use_json:
             print("  Using bundled staging, skipping source build")
@@ -2147,7 +2147,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             )
             build_cmd = [
                 "ltvm",
-                "build-lustre",
+                "build",
+                "lustre",
                 target,
                 "--lustre-tree",
                 str(build_path),

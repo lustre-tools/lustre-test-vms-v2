@@ -11,7 +11,7 @@ tree, so incremental builds are fast -- make sees the same .o
 files from last time.
 
 The container image (e.g., ltvm-build-rocky9) is retained by
-podman after `ltvm build-container` or `ltvm build-all`.
+podman after `ltvm build container` or `ltvm build all`.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ from .vm_state import DEFAULT_TARGET
 def _tree_build_lock(lustre_tree: Path):
     """Serialize concurrent builds on a shared Lustre source tree.
 
-    Two pipelines (e.g. `ltvm build-all rocky9` and `ltvm build-all
+    Two pipelines (e.g. `ltvm build all rocky9` and `ltvm build all
     rocky10`) invoked against the same ~/lustre-release both bind-
     mount the tree into a build container and run `make` against
     the same in-tree object files.  That races and produces partial
@@ -50,7 +50,7 @@ def _tree_build_lock(lustre_tree: Path):
         except BlockingIOError:
             print(
                 f"waiting for lustre build lock at {lock_path} "
-                f"(another ltvm build-lustre/build-all is in flight)..."
+                f"(another ltvm build lustre/build-all is in flight)..."
             )
             t0 = time.time()
             fcntl.flock(fp, fcntl.LOCK_EX)
@@ -108,7 +108,7 @@ def staging_path(
     (``usr/sbin``, ``usr/bin``, ``etc``, etc.) into the same paths
     regardless of kver -- only ``lib/modules/<kver>/`` naturally
     co-exists.  Without per-kernel keying two sequential
-    `ltvm build-lustre` runs against different kernels would silently
+    `ltvm build lustre` runs against different kernels would silently
     clobber each other's userland.
     """
     return Path(lustre_tree) / ".ltvm-staging" / target / arch / kernel
@@ -250,7 +250,7 @@ def build_lustre(
     if not build_tree.is_dir():
         raise ValueError(
             f"Kernel build-tree not found: {build_tree}\n"
-            f"Run 'ltvm build-kernel <target>' first"
+            f"Run 'ltvm build kernel <target>' first"
         )
     if not (build_tree / "Module.symvers").exists():
         raise ValueError(
@@ -265,12 +265,12 @@ def build_lustre(
 
     if not container_tag:
         raise RuntimeError(
-            "No build container specified. Run: ltvm build-container <target>"
+            "No build container specified. Run: ltvm build container <target>"
         )
     if not _container_exists(container_tag):
         raise RuntimeError(
             f"Build container '{container_tag}' not found.\n"
-            f"Run: ltvm build-container <target>"
+            f"Run: ltvm build container <target>"
         )
 
     with _tree_build_lock(lustre_tree):
@@ -552,7 +552,7 @@ fi""")
         # 10 minute ceiling: a clean rocky9 build runs in ~5 minutes,
         # double that catches stuck builds without false-positive killing
         # slow-but-progressing ones.  Without this, a hung autoconf or
-        # mkdir lock loop blocks the entire `ltvm build-lustre` invocation
+        # mkdir lock loop blocks the entire `ltvm build lustre` invocation
         # forever instead of failing cleanly.
         "--timeout",
         "600",
