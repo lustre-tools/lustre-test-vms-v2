@@ -396,10 +396,10 @@ When reviewing or auditing this codebase, watch for:
 
 - **Root-required operations.** VM lifecycle commands
   that touch host networking or QEMU launch (create,
-  destroy, start, stop, restart, snapshot,
-  restore, nmi, doctor, cluster create, cluster destroy)
-  require root. Read/observe commands (console-log,
-  deploy, llmount, crash-collect, cluster deploy,
+  destroy, start, stop, vm snapshot, vm restore,
+  vm nmi, doctor, cluster create, cluster destroy)
+  require root. Read/observe commands (vm console-log,
+  deploy-lustre, llmount, vm crash-collect, cluster deploy,
   cluster exec, cluster status, list) do not. Build
   commands do not need root.
 
