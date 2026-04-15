@@ -62,6 +62,7 @@ class ImageMeta(_BaseMeta, total=False):
     build_seconds: float
     packages: Any
     with_lustre: str | None
+    lustre_version: str | None
 
 
 _KERNEL_REQUIRED = ("kernel_version", "lustre_target")
