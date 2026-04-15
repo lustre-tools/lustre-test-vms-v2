@@ -1162,11 +1162,17 @@ def cmd_publish(args: argparse.Namespace) -> int:
     if not use_json:
         print(f"Publishing {tarball.name}...")
 
-    # Generate tag if not provided.  For "foo.tar.gz",
-    # tarball.stem is "foo.tar", so .replace(".tar", "") is enough --
-    # the suffix is already gone by the time we look at the stem.
+    # Generate tag if not provided. Strip the exact suffix only; using
+    # str.replace(".tar", "") would also mangle names that happen to
+    # contain ".tar" earlier in the basename.
     if not tag:
-        tag = tarball.stem.replace(".tar", "")
+        name = tarball.name
+        for suffix in (".tar.gz", ".tar.xz", ".tar.bz2", ".tgz", ".tar"):
+            if name.endswith(suffix):
+                tag = name[: -len(suffix)]
+                break
+        else:
+            tag = tarball.stem
 
     # Create release + upload via gh CLI
     if not use_json:
