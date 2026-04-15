@@ -48,6 +48,85 @@ _DEFAULTS = {
 
 _COPY_RE = re.compile(r"^\s*COPY\s+(\S+)", re.MULTILINE)
 
+DEFAULT_VARIANT = "base"
+
+
+class Variant:
+    """Optional add-on layered on top of a target's base artifacts.
+
+    A variant carries its own Dockerfile overlay(s), extra packages,
+    and free-form params (e.g. ``mofed_version``) that fold into the
+    artifact input hash.  The base variant is implicit and has no
+    overlay; its paths match the pre-variant layout so existing
+    on-disk caches keep working.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        data: dict[str, Any] | None,
+        target_dir: Path,
+    ) -> None:
+        self.name = name
+        self._data = data or {}
+        co = self._data.get("container_overlay")
+        io = self._data.get("image_overlay")
+        # Overlay paths in YAML are relative to the repo's targets/
+        # directory so they can reference shared snippets.  We resolve
+        # relative to TARGETS_DIR, not target_dir, for that reason.
+        self.container_overlay: Path | None = (
+            (TARGETS_DIR / co) if co else None
+        )
+        self.image_overlay: Path | None = (TARGETS_DIR / io) if io else None
+        self.packages: list[str] = list(self._data.get("packages", []))
+        self.params: dict[str, Any] = dict(self._data.get("params", {}))
+
+    @property
+    def is_base(self) -> bool:
+        return self.name == DEFAULT_VARIANT
+
+    def with_param_overrides(self, overrides: dict[str, Any]) -> Variant:
+        """Return a copy of this variant with ``overrides`` merged into
+        ``params``.  Used to thread CLI overrides (e.g. --mofed-version)
+        into the variant's input hash without mutating shared state.
+        """
+        new_data = dict(self._data)
+        new_params = {**self.params, **overrides}
+        new_data["params"] = new_params
+        v = Variant.__new__(Variant)
+        v.name = self.name
+        v._data = new_data
+        v.container_overlay = self.container_overlay
+        v.image_overlay = self.image_overlay
+        v.packages = list(self.packages)
+        v.params = new_params
+        return v
+
+    def hash_bytes(self, artifact: str) -> bytes:
+        """Extra bytes folded into the variant's input hash for
+        ``artifact`` (``container`` or ``image``).  Only the overlay
+        relevant to that artifact is mixed in; packages and params
+        apply to both (a MOFED version bump should invalidate both
+        the build container and the image)."""
+        h = hashlib.sha256()
+        h.update(b"variant:")
+        h.update(self.name.encode())
+        if artifact == "container" and self.container_overlay is not None:
+            if self.container_overlay.exists():
+                h.update(b"container_overlay:")
+                h.update(self.container_overlay.read_bytes())
+        if artifact == "image" and self.image_overlay is not None:
+            if self.image_overlay.exists():
+                h.update(b"image_overlay:")
+                h.update(self.image_overlay.read_bytes())
+        for p in sorted(self.packages):
+            h.update(b"pkg:")
+            h.update(p.encode())
+        for k, v in sorted(self.params.items()):
+            h.update(b"param:")
+            h.update(f"{k}={v}".encode())
+        return h.digest()
+
 
 def build_container_tag(name: str, arch: str = "x86_64") -> str:
     """Compute the podman build-container tag for a target + arch.
@@ -173,6 +252,31 @@ class TargetConfig:
                 f"target {name!r}: unknown lustre.mode {mode_raw!r} in "
                 f"{TARGETS_YAML} (valid modes: {valid})"
             ) from exc
+
+        # Parse variants.  The base variant is always present implicitly,
+        # with no overlay — its artifact paths match the pre-variant
+        # layout so existing on-disk caches keep working.
+        raw_variants = self._data.get("variants") or {}
+        if not isinstance(raw_variants, dict):
+            raise ValueError(
+                f"target {name!r}: 'variants' must be a mapping, got "
+                f"{type(raw_variants).__name__}"
+            )
+        if DEFAULT_VARIANT in raw_variants:
+            raise ValueError(
+                f"target {name!r}: 'base' is a reserved variant name "
+                f"and cannot be declared in targets.yaml"
+            )
+        self._variants: dict[str, Variant] = {
+            DEFAULT_VARIANT: Variant(DEFAULT_VARIANT, None, self.target_dir),
+        }
+        for vname, vdata in raw_variants.items():
+            if not isinstance(vdata, dict):
+                raise ValueError(
+                    f"target {name!r}: variant {vname!r} must be a "
+                    f"mapping, got {type(vdata).__name__}"
+                )
+            self._variants[vname] = Variant(vname, vdata, self.target_dir)
 
     # ------------------------------------------------------------------
     # OS metadata
@@ -353,20 +457,29 @@ class TargetConfig:
             return []
         return sorted(d.name for d in kernels_dir.iterdir() if d.is_dir())
 
-    def image_output_dir(self, kernel: str | None = None) -> Path:
+    def image_output_dir(
+        self, kernel: str | None = None, variant: str = DEFAULT_VARIANT
+    ) -> Path:
         """Return the output directory for an image, keyed by kernel.
 
         Images are per-kernel because `/lib/modules/<kver>/` is baked
         into the rootfs at build time and must match the kernel the VM
-        will boot against.
+        will boot against.  Non-base variants nest under a subdir so
+        base-variant paths keep their pre-variant layout and existing
+        on-disk caches don't get orphaned.
         """
-        return self.output_dir / "images" / self.resolve_kernel(kernel)
+        base = self.output_dir / "images" / self.resolve_kernel(kernel)
+        return base if variant == DEFAULT_VARIANT else base / variant
 
-    def container_output_dir(self) -> Path:
-        return self.output_dir / "container"
+    def container_output_dir(self, variant: str = DEFAULT_VARIANT) -> Path:
+        base = self.output_dir / "container"
+        return base if variant == DEFAULT_VARIANT else base / variant
 
     def meta_path(
-        self, artifact: str, kernel: str | None = None
+        self,
+        artifact: str,
+        kernel: str | None = None,
+        variant: str = DEFAULT_VARIANT,
     ) -> Path:
         """Path to meta.json for an artifact ('kernel'|'image'|'container').
 
@@ -376,12 +489,37 @@ class TargetConfig:
         which silently diverged once image_output_dir grew per-kernel keying.
         """
         if artifact == "kernel":
+            # Kernel is variant-independent; variant arg is accepted but
+            # ignored so callers can thread it uniformly without branching.
             return self.kernel_output_dir(kernel) / "meta.json"
         if artifact == "image":
-            return self.image_output_dir(kernel) / "meta.json"
+            return self.image_output_dir(kernel, variant=variant) / "meta.json"
         if artifact == "container":
-            return self.container_output_dir() / "meta.json"
+            return self.container_output_dir(variant=variant) / "meta.json"
         raise ValueError(f"unknown artifact: {artifact!r}")
+
+    # ------------------------------------------------------------------
+    # Variants
+    # ------------------------------------------------------------------
+
+    def variants(self) -> dict[str, Variant]:
+        """Return all variants for this target, including ``base``."""
+        return dict(self._variants)
+
+    def declared_variants(self) -> list[str]:
+        """Variant names declared in targets.yaml (excludes the
+        implicit ``base``)."""
+        return [v for v in self._variants if v != DEFAULT_VARIANT]
+
+    def variant(self, name: str) -> Variant:
+        """Return the named variant, raising if it isn't declared."""
+        if name not in self._variants:
+            declared = ", ".join(sorted(self._variants)) or DEFAULT_VARIANT
+            raise ValueError(
+                f"target {self.name!r}: unknown variant {name!r} "
+                f"(declared: {declared})"
+            )
+        return self._variants[name]
 
     # ------------------------------------------------------------------
     # Staleness and metadata
@@ -392,6 +530,7 @@ class TargetConfig:
         artifact: str,
         kernel: str | None = None,
         extra: bytes = b"",
+        variant: str = DEFAULT_VARIANT,
     ) -> str:
         """Hash inputs for an artifact to detect staleness.
 
@@ -410,10 +549,14 @@ class TargetConfig:
 
         # Always fold in this target's slice of targets.yaml so changes
         # to container_image, srpm_url, kernel_deb_source, configure
-        # args, etc. invalidate every artifact for this target.
+        # args, etc. invalidate every artifact for this target.  The
+        # ``variants`` block is excluded here and mixed in separately
+        # below (only for the relevant variant), so declaring a new
+        # variant doesn't invalidate the base cache.
         h.update(self.name.encode())
         h.update(self.arch.encode())
-        h.update(json.dumps(self._data, sort_keys=True).encode())
+        base_data = {k: v for k, v in self._data.items() if k != "variants"}
+        h.update(json.dumps(base_data, sort_keys=True).encode())
 
         if artifact == "container":
             dockerfile = self.target_dir / "container.Dockerfile"
@@ -508,6 +651,15 @@ class TargetConfig:
         if extra:
             h.update(extra)
 
+        # Fold variant inputs last so the base hash composition above
+        # remains byte-identical for variant="base" -- i.e. adding the
+        # variant feature does not invalidate any existing base caches.
+        # Kernel artifacts ignore variant (kernel is shared across
+        # variants; see image_build for module injection).
+        if variant != DEFAULT_VARIANT and artifact in ("container", "image"):
+            v = self.variant(variant)
+            h.update(v.hash_bytes(artifact))
+
         return h.hexdigest()[:16]
 
     def _kernel_meta_file(self, kernel: str | None) -> Path:
@@ -518,13 +670,14 @@ class TargetConfig:
         artifact: str,
         kernel: str | None = None,
         extra_hash: bytes = b"",
+        variant: str = DEFAULT_VARIANT,
     ) -> bool:
         """Check if an artifact needs rebuilding.
 
         ``extra_hash`` is forwarded to ``input_hash`` so callers can fold
         in inputs target_config doesn't know about (see ``input_hash``).
         """
-        meta_file = self.meta_path(artifact, kernel)
+        meta_file = self.meta_path(artifact, kernel, variant=variant)
         meta = load_meta_safe(meta_file)
         if meta is None:
             # Missing or corrupt meta -- treat as stale so the next
@@ -533,7 +686,9 @@ class TargetConfig:
             return True
         return bool(
             meta.get("input_hash")
-            != self.input_hash(artifact, kernel=kernel, extra=extra_hash)
+            != self.input_hash(
+                artifact, kernel=kernel, extra=extra_hash, variant=variant
+            )
         )
 
     def write_meta(
@@ -541,6 +696,7 @@ class TargetConfig:
         artifact: str,
         kernel: str | None = None,
         extra_hash: bytes = b"",
+        variant: str = DEFAULT_VARIANT,
         **extra: object,
     ) -> None:
         """Write build metadata after a successful build.
@@ -553,17 +709,21 @@ class TargetConfig:
         if artifact == "kernel":
             out_dir = self._kernel_meta_file(kernel).parent
         elif artifact == "image":
-            out_dir = self.image_output_dir(kernel)
+            out_dir = self.image_output_dir(kernel, variant=variant)
+        elif artifact == "container":
+            out_dir = self.container_output_dir(variant=variant)
         else:
             out_dir = self.output_dir / artifact
         out_dir.mkdir(parents=True, exist_ok=True)
         meta = {
             "target": self.name,
             "input_hash": self.input_hash(
-                artifact, kernel=kernel, extra=extra_hash
+                artifact, kernel=kernel, extra=extra_hash, variant=variant
             ),
             **extra,
         }
+        if variant != DEFAULT_VARIANT:
+            meta["variant"] = variant
         # Atomic write via tempfile + rename so a concurrent reader
         # (load_meta_safe) can't see a half-written JSON blob -- which
         # would fail to parse, return None, and trigger a spurious
