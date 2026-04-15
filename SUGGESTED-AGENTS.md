@@ -26,7 +26,7 @@ cd ~/lustre-test-vms-v2
 sudo ./ltvm install
 
 # Download pre-built kernel + image + Lustre (~1.3 GB)
-ltvm fetch rocky9
+ltvm target fetch rocky9
 
 # Create and boot a single-node VM (root needed for QEMU + tap)
 # create is idempotent: starts if stopped, no-ops if running
@@ -76,7 +76,7 @@ doesn't declare supported.
 
 ```bash
 # Standalone check -- exit 0 ok/best_effort, 1 refuse, 2 error
-ltvm validate rocky9 --lustre-tree ~/lustre-release
+ltvm target validate rocky9 --lustre-tree ~/lustre-release
 
 # Override a refusal for a one-off build
 ltvm build-lustre rocky9 ~/lustre-release --force-compat
@@ -96,7 +96,7 @@ ltvm package rocky9
 ltvm publish rocky9
 ```
 
-`ltvm fetch <target>` discovers the latest release tag for
+`ltvm target fetch <target>` discovers the latest release tag for
 that target and downloads it.  Running again when the local
 tree is current finishes in well under a second.
 
@@ -222,12 +222,12 @@ ltvm build-status               Staleness table (one image row per kernel)
 ltvm build-shell <target>       Interactive shell in build container
 
 # Compat
-ltvm validate <target>          Lustre/kernel compat check (read-only)
+ltvm target validate <target>          Lustre/kernel compat check (read-only)
                                 --force-compat overrides refusal
 
 # Package / distribute
 ltvm package <target>           Bundle into tarball (+ --kernel)
-ltvm fetch <target>             Download latest release tarball
+ltvm target fetch <target>             Download latest release tarball
 ltvm publish <target>           Upload tarball to GitHub release
 
 # VM lifecycle

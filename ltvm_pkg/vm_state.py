@@ -188,7 +188,7 @@ def resolve_os_artifacts(
                     f"(arch={effective_arch})\n"
                     f"Run: ltvm build-kernel {os_name} "
                     f"--kernel {kernel}{arch_hint}  "
-                    f"(or: ltvm fetch {os_name}{arch_hint})"
+                    f"(or: ltvm target fetch {os_name}{arch_hint})"
                 )
     else:
         # No override: use default kernel suffix. If the default
@@ -232,7 +232,7 @@ def resolve_os_artifacts(
         raise FileNotFoundError(
             f"No kernels built for '{os_name}' "
             f"(arch={effective_arch})\n"
-            f"Run: ltvm fetch {os_name}{arch_hint}  "
+            f"Run: ltvm target fetch {os_name}{arch_hint}  "
             f"(or: ltvm build-kernel {os_name}{arch_hint})"
         )
 
@@ -261,7 +261,7 @@ def resolve_os_artifacts(
             f"(arch={effective_arch})\n"
             f"Run: ltvm build-image {os_name} "
             f"--kernel {kernel_dirname}{arch_hint}  "
-            f"(or: ltvm fetch {os_name}{arch_hint})"
+            f"(or: ltvm target fetch {os_name}{arch_hint})"
         )
 
     return OSArtifacts(

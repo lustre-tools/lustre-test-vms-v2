@@ -1053,7 +1053,7 @@ def run_setup(
         log.info("Install complete.")
         log.info("")
         log.info("Next:")
-        log.info("  ltvm fetch rocky9")
+        log.info("  ltvm target fetch rocky9")
         log.info(
             "  sudo ltvm create co1-test --target rocky9 --vcpus 2 --mdt-disks 1 --ost-disks 2"
         )

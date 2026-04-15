@@ -485,7 +485,7 @@ class TestCmdValidate:
         tc = self._tc(tmp_targets)
         with patch("ltvm_pkg.cli.TargetConfig", return_value=tc):
             rc = _run_main(
-                ["validate", "rocky9", "--lustre-tree", str(lt)], capsys
+                ["target", "validate", "rocky9", "--lustre-tree", str(lt)], capsys
             )
         assert rc == EXIT_OK
         out = capsys.readouterr().out
@@ -506,7 +506,7 @@ class TestCmdValidate:
         tc = self._tc(tmp_targets)
         with patch("ltvm_pkg.cli.TargetConfig", return_value=tc):
             rc = _run_main(
-                ["validate", "rocky9", "--lustre-tree", str(lt)], capsys
+                ["target", "validate", "rocky9", "--lustre-tree", str(lt)], capsys
             )
         assert rc == EXIT_ERROR
         out = capsys.readouterr().out
@@ -527,7 +527,7 @@ class TestCmdValidate:
         tc = self._tc(tmp_targets)
         with patch("ltvm_pkg.cli.TargetConfig", return_value=tc):
             rc = _run_main(
-                ["validate", "rocky9", "--lustre-tree", str(lt), "--force-compat"],
+                ["target", "validate", "rocky9", "--lustre-tree", str(lt), "--force-compat"],
                 capsys,
             )
         assert rc == EXIT_OK
@@ -551,6 +551,7 @@ class TestCmdValidate:
         with patch("ltvm_pkg.cli.TargetConfig", return_value=tc) as mock_tc:
             _run_main(
                 [
+                    "target",
                     "validate",
                     "rocky9",
                     "--arch",
@@ -580,7 +581,7 @@ class TestCmdValidate:
         tc = self._tc(tmp_targets)
         with patch("ltvm_pkg.cli.TargetConfig", return_value=tc):
             rc = _run_main(
-                ["validate", "--json", "rocky9", "--lustre-tree", str(lt)],
+                ["target", "validate", "--json", "rocky9", "--lustre-tree", str(lt)],
                 capsys,
             )
         assert rc == EXIT_OK
@@ -1706,7 +1707,7 @@ class TestCmdClean:
     def test_clean_wipes_target_arch_dir(
         self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
     ) -> None:
-        """`ltvm clean rocky9` removes output/rocky9/x86_64/ but not other arches."""
+        """`ltvm target clean rocky9` removes output/rocky9/x86_64/ but not other arches."""
         import ltvm_pkg.cli as cli_mod
         import ltvm_pkg.target_config as cfg
 
@@ -1801,7 +1802,7 @@ class TestCmdClean:
 
 
 # ---------------------------------------------------------------------------
-# Feature 2: ltvm fetch --kernel
+# Feature 2: ltvm target fetch --kernel
 # ---------------------------------------------------------------------------
 
 

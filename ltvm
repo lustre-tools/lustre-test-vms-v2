@@ -70,6 +70,7 @@ from ltvm_pkg.cli import (  # noqa: E402
     cmd_setup,
     cmd_snapshot,
     cmd_status,
+    cmd_target_show,
     cmd_targets,
     cmd_update,
     cmd_validate,
@@ -372,48 +373,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_package)
 
-    # -- fetch --
-    sp = sub.add_parser(
-        "fetch",
-        parents=[common],
-        help="Download pre-built target artifacts from GitHub",
-    )
-    sp.add_argument(
-        "target", nargs="?", default=None, help="Target name (e.g. rocky9)"
-    )
-    sp.add_argument(
-        "filter",
-        nargs="?",
-        default=None,
-        help="Optional filter (e.g. '5.14', '611')",
-    )
-    sp.add_argument(
-        "--list", action="store_true", help="List available releases"
-    )
-    sp.add_argument(
-        "--url", default=None, help="Direct URL (skip GitHub lookup)"
-    )
-    sp.add_argument(
-        "--kernel",
-        default=None,
-        help="Specific kernel name from targets.yaml kernels.available "
-        "(e.g. 5.14-rhel9.5)",
-    )
-    sp.add_argument(
-        "--replace",
-        action="store_true",
-        help="Wipe the target's existing output dir before fetching. "
-        "By default refuses if the local tag already matches the "
-        "remote release (no-op).  Combine with --force to re-fetch "
-        "an identical release anyway.",
-    )
-    sp.add_argument(
-        "--force",
-        action="store_true",
-        help="With --replace, re-fetch even when the local tag "
-        "already matches the remote release.",
-    )
-    sp.set_defaults(func=cmd_fetch)
 
     # -- publish (hidden: maintainer use only) --
     sp = sub.add_parser(
@@ -457,41 +416,104 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_status)
 
-    # -- targets --
-    sp = sub.add_parser(
-        "targets",
+    # -- target (list | show | clean | validate | fetch) --
+    target_parser = sub.add_parser(
+        "target",
+        parents=[common],
+        help="Target OS management (list/show/clean/validate/fetch)",
+    )
+    target_sub = target_parser.add_subparsers(
+        dest="target_action", metavar="<action>"
+    )
+
+    tlp = target_sub.add_parser(
+        "list",
         parents=[common],
         help="List configured target OSes",
     )
-    sp.set_defaults(func=cmd_targets)
+    tlp.set_defaults(func=cmd_targets)
 
-    # -- clean --
-    sp = sub.add_parser(
+    tshp = target_sub.add_parser(
+        "show",
+        parents=[common],
+        help="Show details for one target",
+    )
+    tshp.add_argument("target")
+    tshp.set_defaults(func=cmd_target_show)
+
+    tcp = target_sub.add_parser(
         "clean",
         parents=[common],
         help="Remove built artifacts for a target",
     )
-    sp.add_argument("target")
-    sp.add_argument(
+    tcp.add_argument("target")
+    tcp.add_argument(
         "--all-arches",
         action="store_true",
         default=False,
         help="Wipe every arch under output/<target>/",
     )
-    sp.set_defaults(func=cmd_clean)
+    tcp.set_defaults(func=cmd_clean)
 
-    # -- validate --
-    sp = sub.add_parser(
+    tvp = target_sub.add_parser(
         "validate",
         parents=[common, force_compat_arg],
         help="Check Lustre-tree compatibility for a target (read-only)",
     )
-    sp.add_argument("target")
-    sp.add_argument(
+    tvp.add_argument("target")
+    tvp.add_argument(
         "--lustre-tree",
         help="Path to Lustre source tree (default: ~/lustre-release)",
     )
-    sp.set_defaults(func=cmd_validate)
+    tvp.set_defaults(func=cmd_validate)
+
+    tfp = target_sub.add_parser(
+        "fetch",
+        parents=[common],
+        help="Download pre-built target artifacts from GitHub",
+    )
+    tfp.add_argument(
+        "target", nargs="?", default=None, help="Target name (e.g. rocky9)"
+    )
+    tfp.add_argument(
+        "filter",
+        nargs="?",
+        default=None,
+        help="Optional filter (e.g. '5.14', '611')",
+    )
+    tfp.add_argument(
+        "--list", action="store_true", help="List available releases"
+    )
+    tfp.add_argument(
+        "--url", default=None, help="Direct URL (skip GitHub lookup)"
+    )
+    tfp.add_argument(
+        "--kernel",
+        default=None,
+        help="Specific kernel name from targets.yaml kernels.available "
+        "(e.g. 5.14-rhel9.5)",
+    )
+    tfp.add_argument(
+        "--replace",
+        action="store_true",
+        help="Wipe the target's existing output dir before fetching. "
+        "By default refuses if the local tag already matches the "
+        "remote release (no-op).  Combine with --force to re-fetch "
+        "an identical release anyway.",
+    )
+    tfp.add_argument(
+        "--force",
+        action="store_true",
+        help="With --replace, re-fetch even when the local tag "
+        "already matches the remote release.",
+    )
+    tfp.set_defaults(func=cmd_fetch)
+
+    def _target_no_action(args: argparse.Namespace) -> int:
+        target_parser.print_help()
+        return EXIT_ERROR
+
+    target_parser.set_defaults(func=_target_no_action)
 
     # -- VM lifecycle: create --
     _vm_create_args = argparse.ArgumentParser(add_help=False)

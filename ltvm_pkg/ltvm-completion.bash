@@ -7,12 +7,13 @@ _ltvm_completions() {
 	prev="${COMP_WORDS[COMP_CWORD-1]}"
 
 	commands="install build-all build-container build-kernel
-		build-image build-lustre build-shell build-status fetch
+		build-image build-lustre build-shell build-status
 		create ensure destroy start stop list ssh console-log
 		nmi crash-collect snapshot restore doctor deploy-lustre exec
-		cluster"
+		cluster target"
 
 	cluster_actions="create destroy deploy status exec list ssh"
+	target_actions="list show clean validate fetch"
 
 	# Complete subcommand name
 	if [[ $COMP_CWORD -eq 1 ]]; then
@@ -23,6 +24,12 @@ _ltvm_completions() {
 	# Complete cluster sub-actions
 	if [[ "${COMP_WORDS[1]}" == "cluster" && $COMP_CWORD -eq 2 ]]; then
 		COMPREPLY=($(compgen -W "$cluster_actions" -- "$cur"))
+		return
+	fi
+
+	# Complete target sub-actions
+	if [[ "${COMP_WORDS[1]}" == "target" && $COMP_CWORD -eq 2 ]]; then
+		COMPREPLY=($(compgen -W "$target_actions" -- "$cur"))
 		return
 	fi
 

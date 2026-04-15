@@ -15,7 +15,7 @@ Multiple kernel versions are supported per target (e.g., Rocky 9.5 and 9.7).
 **Download pre-built artifacts (no building):**
 
 ```bash
-./ltvm fetch rocky9 --url <tarball-url>
+./ltvm target fetch rocky9 --url <tarball-url>
 ./ltvm install rocky9
 sudo vm.py create --name co1-single \
     --vcpus 2 --mem 4096 --mdt-disks 1 --ost-disks 3
@@ -110,7 +110,7 @@ ltvm build-image <target>       Build the VM base image
 ltvm build-lustre [target]      Build Lustre in container (--kernel <ver>)
 
 ltvm package <target>           Create distributable tarball
-ltvm fetch <target> --url URL   Download pre-built package
+ltvm target fetch <target> --url URL   Download pre-built package
 ltvm install <target>           Install kernel + image to system paths
 
 ltvm deploy-lustre <vm>                Deploy Lustre to a VM

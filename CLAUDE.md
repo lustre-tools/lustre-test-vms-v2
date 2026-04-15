@@ -30,7 +30,7 @@ sudo ./ltvm install
 Unless the user wants to build from source, fetch is faster:
 
 ```bash
-ltvm fetch rocky9
+ltvm target fetch rocky9
 ltvm build-status
 ```
 
@@ -113,7 +113,7 @@ output/                   Build artifacts (gitignored)
 
 ```bash
 ltvm install
-ltvm fetch rocky9
+ltvm target fetch rocky9
 ltvm build-status
 ```
 
@@ -218,7 +218,7 @@ authoritative (values: `server_ldiskfs`, `server_zfs`).
 
 ```bash
 # Standalone check (read-only, exit 0/1/2)
-ltvm validate rocky9 --lustre-tree ~/lustre-release
+ltvm target validate rocky9 --lustre-tree ~/lustre-release
 
 # Override a compatibility refusal (not hard errors)
 ltvm build-all rocky9 --lustre-tree ~/lustre-release --force-compat

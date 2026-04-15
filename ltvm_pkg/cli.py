@@ -624,7 +624,7 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
             use_json,
             hint=(
                 f"Run: ltvm build-container {args.target}\n"
-                f"  Or fetch a published target: ltvm fetch {args.target}"
+                f"  Or fetch a published target: ltvm target fetch {args.target}"
             ),
         )
 
@@ -736,7 +736,7 @@ def _gh_api(endpoint: str) -> dict | list:
     pagination header so callers see the full result set.  GitHub's
     default per_page is 30; we ask for 100 to minimize round trips.
     Without this, anything past the first 30 releases vanished from
-    `ltvm fetch --list` and produced "no release found" for older
+    `ltvm target fetch --list` and produced "no release found" for older
     targets.
     """
     sep = "&" if "?" in endpoint else "?"
@@ -914,7 +914,7 @@ def _find_release_url(
     raise RuntimeError(
         f"No release found for '{target}'{hint}\n"
         f"  Available releases: {', '.join(avail)}\n"
-        f"  Try: ltvm fetch --list"
+        f"  Try: ltvm target fetch --list"
     )
 
 
@@ -970,7 +970,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     if kernel:
         if not target:
             return _error(
-                "--kernel requires a target (e.g. ltvm fetch rocky9 "
+                "--kernel requires a target (e.g. ltvm target fetch rocky9 "
                 "--kernel 5.14-rhel9.5)",
                 use_json,
             )
@@ -1012,7 +1012,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         return EXIT_OK
 
     if not target:
-        return _error("target required (e.g. ltvm fetch rocky9)", use_json)
+        return _error("target required (e.g. ltvm target fetch rocky9)", use_json)
 
     from ltvm_pkg.target_config import OUTPUT_DIR
 
@@ -1561,8 +1561,88 @@ def cmd_targets(args: argparse.Namespace) -> int:
         if has_behind:
             print(
                 "! local copy behind latest release -- "
-                "`sudo ltvm fetch --replace <target>` to refresh"
+                "`sudo ltvm target fetch --replace <target>` to refresh"
             )
+    return EXIT_OK
+
+
+# ------------------------------------------------------------------
+# Subcommand: target show (one-target detail view)
+# ------------------------------------------------------------------
+
+
+def cmd_target_show(args: argparse.Namespace) -> int:
+    use_json = args.json
+    tc, err = _load_target_args(args, use_json)
+    if err is not None:
+        return err
+    assert tc is not None
+
+    try:
+        resp = _gh_api("releases")
+        all_releases: list | None = resp if isinstance(resp, list) else [resp]
+    except Exception:
+        all_releases = None
+
+    kernels = []
+    for kname in tc.declared_kernels():
+        signature = _kernel_release_signature(kname)
+        local, remote = _release_status(
+            tc.name, tc.arch, all_releases, kernel_signature=signature
+        )
+        built = tc.meta_path("kernel", kname).exists()
+        if built:
+            avail = "ready"
+        elif remote not in ("-", "?"):
+            avail = "fetch"
+        else:
+            avail = "build"
+        kernels.append({
+            "kernel": kname,
+            "is_default": kname == tc.default_kernel,
+            "available": avail,
+            "built": built,
+            "local_release": local,
+            "remote_release": remote,
+        })
+
+    payload = {
+        "name": tc.name,
+        "status": tc.status,
+        "arch": tc.arch,
+        "os_family": tc.os_family,
+        "os_name": tc.os_name,
+        "os_version": tc.os_version,
+        "container_image": tc.container_image,
+        "lustre_mode": tc.lustre_mode.value,
+        "default_mem": tc.default_mem,
+        "default_kernel": tc.default_kernel,
+        "kernels": kernels,
+        "output_dir": str(tc.output_dir),
+    }
+
+    if use_json:
+        print(json.dumps(payload, indent=2))
+        return EXIT_OK
+
+    print(f"target:           {payload['name']}"
+          + (f"  ({payload['status']})" if payload['status'] != 'working' else ""))
+    print(f"arch:             {payload['arch']}")
+    print(f"os:               {payload['os_family']} / "
+          f"{payload['os_name']} {payload['os_version']}")
+    print(f"container image:  {payload['container_image']}")
+    print(f"lustre mode:      {payload['lustre_mode']}")
+    print(f"default mem:      {payload['default_mem']} MB")
+    print(f"output dir:       {payload['output_dir']}")
+    print()
+    print("kernels:")
+    for k in kernels:
+        mark = "  (default)" if k["is_default"] else ""
+        print(f"  {k['available']:<8} {k['kernel']}{mark}")
+        if k["local_release"] != "-":
+            print(f"            local:  {k['local_release']}")
+        if k["remote_release"] not in ("-", "?"):
+            print(f"            remote: {k['remote_release']}")
     return EXIT_OK
 
 

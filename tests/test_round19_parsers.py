@@ -5,7 +5,7 @@ Round 19 found two parsing bugs in the existing code:
     against the full `qemu-img snapshot -l` output, which falsely
     accepted any string that happened to appear in any column.
   - _gh_api fetched only the first 30 releases (no pagination), so
-    older releases vanished from `ltvm fetch --list`.
+    older releases vanished from `ltvm target fetch --list`.
 
 The fixes added _parse_snapshot_tags() and _gh_next_link(), both
 of which involve fragile text parsing.  Pin their behavior here so

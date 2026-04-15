@@ -27,7 +27,7 @@ GitHub, optionally build Lustre from source, and run a VM.
 ### 1. Fetch pre-built artifacts
 
 ```bash
-ltvm fetch rocky9
+ltvm target fetch rocky9
 ```
 
 This downloads a tarball containing the kernel (vmlinux,
