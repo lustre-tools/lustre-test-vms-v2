@@ -169,35 +169,23 @@ def _prebuild_tools_native(
 
 def _lustre_staging_hash_input(staging: Path) -> bytes:
     """Return bytes to fold into the image input hash when --with-lustre
-    is active.  Uses Module.symvers sha256 when present (written by
-    build_lustre) and falls back to a walk of the staging tree so the
-    hash still invalidates on rebuild even for a legacy staging dir.
+    is active. Uses Module.symvers sha256 recorded in the staging meta.
+
+    Staging meta MUST exist for any modern build; the old rglob+sha256
+    fallback over the entire staging tree was multi-GB-expensive and
+    has been removed.
     """
     from .lustre_build import read_staging_meta
 
-    parts = [b"with-lustre:"]
     meta = read_staging_meta(staging)
-    if meta and isinstance(meta.get("module_symvers_sha256"), str):
-        parts.append(b"symvers:")
-        parts.append(meta["module_symvers_sha256"].encode())
-    else:
-        # Fallback: hash sorted (relpath, sha256) of every file under
-        # staging.  Expensive but correct -- only exercised for pre-
-        # existing staging dirs without meta.
-        import hashlib as _hash
-
-        h = _hash.sha256()
-        for f in sorted(staging.rglob("*")):
-            if not f.is_file():
-                continue
-            h.update(str(f.relative_to(staging)).encode())
-            h.update(b"\0")
-            with f.open("rb") as fp:
-                for chunk in iter(lambda: fp.read(65536), b""):
-                    h.update(chunk)
-        parts.append(b"tree:")
-        parts.append(h.hexdigest().encode())
-    return b"|".join(parts)
+    if not meta or not isinstance(meta.get("module_symvers_sha256"), str):
+        raise FileNotFoundError(
+            f"missing or invalid .ltvm-staging-meta.json under {staging}; "
+            "run `ltvm build-lustre` to regenerate staging meta"
+        )
+    return b"|".join(
+        [b"with-lustre:", b"symvers:", meta["module_symvers_sha256"].encode()]
+    )
 
 
 def _lustre_inject_lines(
