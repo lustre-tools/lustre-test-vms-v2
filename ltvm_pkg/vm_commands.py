@@ -681,6 +681,7 @@ def cmd_llmount(args: argparse.Namespace) -> None:
                 vm.mdt_disks,
                 vm.ost_disks,
                 disk_size_bytes=vm.disk_size,
+                os_family=os_family,
             )
         except RuntimeError as e:
             print(f"error: {e}", file=sys.stderr)
