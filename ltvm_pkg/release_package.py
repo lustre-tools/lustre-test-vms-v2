@@ -57,6 +57,62 @@ ZSTD_THREADS = "0"  # "0" = all cores
 DEFAULT_VARIANT = "base"
 
 
+# Release manifest schema version.  Bump when anything about the
+# published artifact layout changes -- asset names, per-variant
+# scoping, compression, extraction target, kernel/module injection,
+# meta.json shape, or the manifest itself.  Fetch refuses any version
+# it does not explicitly recognize; there is no "we'll muddle through"
+# forward-compat path.
+#
+# Bump history:
+#   1  initial single-tarball gzip layout (never shipped to master)
+#   2  split per-asset zstd tarballs, variant-scoped assets, image
+#      asset restricted to ext4+meta.json, lustre-artifacts nested
+#      under variant subdir.  All releases in master today are v2.
+SCHEMA_VERSION = 2
+SCHEMA_NAME = "ltvm-release"
+
+
+def _schema_id() -> str:
+    return f"{SCHEMA_NAME}/{SCHEMA_VERSION}"
+
+
+def _producer_metadata() -> dict[str, str]:
+    """Descriptive info about which ltvm wrote this manifest.
+
+    Not part of the compat check -- purely for debugging ("which build
+    published this?") when a release looks wrong.  Consumers MUST NOT
+    key behavior off these fields; use SCHEMA_VERSION for that.
+    """
+    from datetime import datetime, timezone
+
+    info: dict[str, str] = {
+        "built_at": datetime.now(timezone.utc).isoformat(),
+    }
+    # Try an in-tree build-info module first (populated at install time
+    # by `sudo ./ltvm install`), then fall back to a git describe.
+    try:
+        from . import _build_info  # type: ignore[attr-defined]
+
+        v = getattr(_build_info, "VERSION", None)
+        if v:
+            info["ltvm_version"] = str(v)
+    except ImportError:
+        pass
+    if "ltvm_version" not in info:
+        try:
+            r = subprocess.run(
+                ["git", "-C", str(Path(__file__).parent), "describe",
+                 "--always", "--dirty"],
+                capture_output=True, text=True, check=False,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                info["ltvm_version"] = r.stdout.strip()
+        except FileNotFoundError:
+            pass
+    return info
+
+
 # ---------------------------------------------------------------------------
 # Key composition
 # ---------------------------------------------------------------------------
@@ -643,7 +699,8 @@ def package_target(
 
     # ---- manifest ----
     manifest = {
-        "schema": "ltvm-release/1",
+        "schema": _schema_id(),
+        "producer": _producer_metadata(),
         "target": target_name,
         "arch": arch,
         "kernel": kernel_name,
@@ -811,10 +868,15 @@ def fetch_target(
         _download(manifest_url, manifest_path, quiet=True)
         manifest = json.loads(manifest_path.read_text())
 
-        if manifest.get("schema") != "ltvm-release/1":
+        m_schema = manifest.get("schema")
+        if m_schema != _schema_id():
             raise RuntimeError(
                 f"unrecognized manifest schema in {manifest_url}: "
-                f"{manifest.get('schema')!r}"
+                f"got {m_schema!r}, this ltvm understands {_schema_id()!r}.\n"
+                f"  Either the published release was produced by a newer "
+                f"ltvm and this one can't read it (upgrade ltvm), or by an "
+                f"older ltvm whose format is no longer supported (publish "
+                f"a fresh release with a current ltvm)."
             )
         if manifest.get("target") != target_name:
             raise RuntimeError(

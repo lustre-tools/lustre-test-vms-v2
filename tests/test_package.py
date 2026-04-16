@@ -204,7 +204,10 @@ class TestPackageTarget:
             assert path.exists(), f"{kind} asset missing at {path}"
 
         manifest = json.loads(assets["manifest"].read_text())
-        assert manifest["schema"] == "ltvm-release/1"
+        from ltvm_pkg.release_package import SCHEMA_VERSION, SCHEMA_NAME
+
+        assert manifest["schema"] == f"{SCHEMA_NAME}/{SCHEMA_VERSION}"
+        assert "producer" in manifest
         assert manifest["target"] == "rocky9"
         assert manifest["variant"] == DEFAULT_VARIANT
         assert manifest["kernel_version"] == "5.14.0-611.test"
