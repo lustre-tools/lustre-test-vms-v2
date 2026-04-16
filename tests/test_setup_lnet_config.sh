@@ -38,16 +38,22 @@ check() {
 }
 
 # --- Direct emit_lnet_conf cases -----------------------------------
+#
+# Semantics: the first positional arg is the mgmt slot (eth0).  'tcp'
+# there means mgmt doubles as LNet tcp0 (status quo, no --nic flag).
+# 'none' means mgmt is SSH-only and drops out of LNet (the new
+# --nic-present behaviour).  tcp indices renumber per-type, so
+# tcp(none, tcp, tcp) -> tcp0(eth1),tcp1(eth2).
 
-check "tcp only" \
+check "tcp only (mgmt doubles as tcp0)" \
 	'options lnet networks="tcp0(eth0)"' \
 	"$(emit_lnet_conf tcp)"
 
-check "tcp + tcp" \
+check "tcp + tcp (mgmt + extra tcp)" \
 	'options lnet networks="tcp0(eth0),tcp1(eth1)"' \
 	"$(emit_lnet_conf tcp tcp)"
 
-check "tcp + softroce" \
+check "tcp + softroce (mgmt + softroce)" \
 	'options lnet networks="tcp0(eth0),o2ib0(rxe0)"' \
 	"$(emit_lnet_conf tcp softroce)"
 
@@ -59,6 +65,36 @@ check "tcp + passthrough" \
 	'options lnet networks="tcp0(eth0),o2ib0(@ib-of-eth1))"' \
 	"$(emit_lnet_conf tcp passthrough)"
 
+# 'none' sentinel: mgmt slot reserved but excluded from LNet.
+
+check "none only -> empty LNet" \
+	'options lnet networks=""' \
+	"$(emit_lnet_conf none)"
+
+check "none + softroce (mgmt SSH-only, rxe on eth1)" \
+	'options lnet networks="o2ib0(rxe0)"' \
+	"$(emit_lnet_conf none softroce)"
+
+check "none + tcp (mgmt SSH-only, extra tcp on eth1)" \
+	'options lnet networks="tcp0(eth1)"' \
+	"$(emit_lnet_conf none tcp)"
+
+check "none + tcp + softroce (mgmt + tcp + softroce)" \
+	'options lnet networks="tcp0(eth1),o2ib0(rxe0)"' \
+	"$(emit_lnet_conf none tcp softroce)"
+
+check "none + tcp + tcp (multi-rail tcp without mgmt)" \
+	'options lnet networks="tcp0(eth1),tcp1(eth2)"' \
+	"$(emit_lnet_conf none tcp tcp)"
+
+check "none + softroce + softroce" \
+	'options lnet networks="o2ib0(rxe0),o2ib1(rxe1)"' \
+	"$(emit_lnet_conf none softroce softroce)"
+
+check "none + passthrough" \
+	'options lnet networks="o2ib0(@ib-of-eth1))"' \
+	"$(emit_lnet_conf none passthrough)"
+
 # --- End-to-end via --stdin ----------------------------------------
 
 run_cli() {
@@ -66,22 +102,36 @@ run_cli() {
 	printf '%s\n' "$1" | "$UUT" --stdin
 }
 
-# fc_nics on the cmdline carries *extras* only; the mgmt NIC (eth0=tcp)
-# is implicit and prepended by main() before calling emit_lnet_conf.
-check "cli: fc_nics=tcp (one extra)" \
-	'options lnet networks="tcp0(eth0),tcp1(eth1)"' \
-	"$(run_cli 'ro fc_ip=1.2.3.4 fc_nics=tcp console=ttyS0')"
-
-check "cli: fc_nics=softroce" \
-	'options lnet networks="tcp0(eth0),o2ib0(rxe0)"' \
-	"$(run_cli 'fc_nics=softroce quiet')"
+# fc_nics on the cmdline carries *extras* only (eth1+).  Semantics:
+#   - fc_nics missing   => mgmt doubles as tcp0 (main() prepends 'tcp')
+#   - fc_nics non-empty => mgmt is SSH-only   (main() prepends 'none')
 
 check "cli: fc_nics missing -> mgmt tcp only" \
 	'options lnet networks="tcp0(eth0)"' \
 	"$(run_cli 'ro quiet console=ttyS0')"
 
-check "cli: fc_nics=passthrough" \
-	'options lnet networks="tcp0(eth0),o2ib0(@ib-of-eth1))"' \
+check "cli: fc_nics=tcp (extra tcp on eth1, mgmt SSH-only)" \
+	'options lnet networks="tcp0(eth1)"' \
+	"$(run_cli 'ro fc_ip=1.2.3.4 fc_nics=tcp console=ttyS0')"
+
+check "cli: fc_nics=tcp,tcp (multi-rail tcp without mgmt)" \
+	'options lnet networks="tcp0(eth1),tcp1(eth2)"' \
+	"$(run_cli 'fc_nics=tcp,tcp')"
+
+check "cli: fc_nics=softroce (mgmt SSH-only)" \
+	'options lnet networks="o2ib0(rxe0)"' \
+	"$(run_cli 'fc_nics=softroce quiet')"
+
+check "cli: fc_nics=softroce,softroce" \
+	'options lnet networks="o2ib0(rxe0),o2ib1(rxe1)"' \
+	"$(run_cli 'fc_nics=softroce,softroce')"
+
+check "cli: fc_nics=tcp,softroce" \
+	'options lnet networks="tcp0(eth1),o2ib0(rxe0)"' \
+	"$(run_cli 'fc_nics=tcp,softroce')"
+
+check "cli: fc_nics=passthrough (mgmt SSH-only)" \
+	'options lnet networks="o2ib0(@ib-of-eth1))"' \
 	"$(run_cli 'fc_nics=passthrough')"
 
 # --- Write-to-file mode --------------------------------------------
@@ -91,7 +141,7 @@ trap 'rm -f "$tmp"' EXIT
 printf '%s\n' 'fc_nics=softroce,softroce' | "$UUT" --stdin "$tmp"
 got_file=$(cat "$tmp")
 check "cli: writes to path arg" \
-	'options lnet networks="tcp0(eth0),o2ib0(rxe0),o2ib1(rxe1)"' \
+	'options lnet networks="o2ib0(rxe0),o2ib1(rxe1)"' \
 	"$got_file"
 
 # --- Unknown type fails --------------------------------------------

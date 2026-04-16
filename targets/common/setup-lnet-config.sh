@@ -12,20 +12,25 @@
 #         setup-lnet-config.sh --stdin          # reads cmdline from stdin
 #
 # fc_nics= is a comma-separated list of NIC types.  The first element
-# is always the mgmt NIC type ('tcp' on eth0).  Subsequent elements
+# is always the mgmt NIC type: 'tcp' (mgmt doubles as tcp0) or 'none'
+# (mgmt is SSH-only, excluded from LNet -- set when the user passed
+# --nic, so LNet is exactly the --nic list).  Subsequent elements
 # apply to eth1, eth2, ...
 #
 # Net-name assignment:
-#   tcp         -> tcpN(ethN)              N = tcp index (eth index)
-#   softroce    -> o2ibN(rxeM)             N = o2ib index, M = softroce
+#   none        -> (skipped; keeps eth slot for later entries)
+#   tcp         -> tcpK(ethI)              I = eth index (slot), K =
+#                                          tcp index (per-type counter)
+#   softroce    -> o2ibK(rxeM)             K = o2ib index, M = softroce
 #                                          index (rxe link on ethI)
-#   passthrough -> o2ibN(@ib-of-ethI))     N = o2ib index, I = eth
+#   passthrough -> o2ibK(@ib-of-ethI))     K = o2ib index, I = eth
 #                                          index; '@' marker replaced
 #                                          at runtime by -5a0.
 set -euo pipefail
 
 emit_lnet_conf() {
-	# Args: NIC type strings, one per positional argument.
+	# Args: NIC type strings, one per positional argument.  Position I
+	# corresponds to ethI.  'none' skips the slot (mgmt SSH-only).
 	# Writes the full lnet.conf body (one line + trailing newline) to
 	# stdout.
 	local -a nics=("$@")
@@ -34,12 +39,19 @@ emit_lnet_conf() {
 	local nic
 	local rxe_idx=0
 	local o2ib_idx=0
+	local tcp_idx=0
 
 	for ((i=0; i < ${#nics[@]}; i++)); do
 		nic=${nics[$i]}
 		case "$nic" in
+		none)
+			# Placeholder: keep eth slot (ethI) reserved but
+			# don't emit an LNet entry.  Used for mgmt (eth0)
+			# when --nic is set so it's SSH-only.
+			;;
 		tcp)
-			parts+=("tcp${i}(eth${i})")
+			parts+=("tcp${tcp_idx}(eth${i})")
+			tcp_idx=$((tcp_idx + 1))
 			;;
 		softroce)
 			parts+=("o2ib${o2ib_idx}(rxe${rxe_idx})")
@@ -113,11 +125,18 @@ main() {
 	fc_nics=$(printf '%s' "$cmdline" | parse_fc_nics)
 
 	# fc_nics on the cmdline carries the *extras* (eth1+) only -- the
-	# mgmt NIC (eth0 = tcp, configured from fc_ip/fc_gw) is implicit.
-	# The emit_lnet_conf function expects every NIC listed, mgmt first,
-	# so prepend 'tcp' here.  Empty fc_nics -> just the mgmt NIC.
-	local -a nic_array=(tcp)
-	if [[ -n $fc_nics ]]; then
+	# mgmt NIC (eth0) is implicit.  Semantics:
+	#   - No --nic flag (empty fc_nics)  => mgmt doubles as tcp0
+	#     (status quo).  Prepend 'tcp' so mgmt appears in LNet.
+	#   - Any --nic flag (non-empty fc_nics)  => mgmt is SSH-only
+	#     and must drop out of LNet.  Prepend 'none' so the eth0
+	#     slot is reserved (positional eth indices preserved) but
+	#     no LNet entry is emitted for it.
+	local -a nic_array
+	if [[ -z $fc_nics ]]; then
+		nic_array=(tcp)
+	else
+		nic_array=(none)
 		local -a _extras
 		IFS=',' read -r -a _extras <<<"$fc_nics"
 		nic_array+=("${_extras[@]}")
