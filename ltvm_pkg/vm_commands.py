@@ -426,6 +426,60 @@ def _handle_existing_vm(name: str, args: argparse.Namespace) -> bool:
     return True
 
 
+def _validate_create_bounds(args: argparse.Namespace) -> tuple[list[str], list[str]]:
+    """Validate bounds/specs that must die() before any on-disk VM
+    state is touched.  Returns (extra_nic_types, passthrough_bdfs).
+    """
+    # Validate vCPU and memory bounds.  argparse accepts any int (and
+    # 0/negative values would crash QEMU AFTER vm.save() committed
+    # the .info file -- leaving a half-created VM that requires
+    # manual destroy).
+    if args.vcpus is not None and args.vcpus <= 0:
+        die(f"--vcpus must be > 0 (got {args.vcpus})")
+    if args.mem is not None and args.mem <= 0:
+        die(f"--mem must be > 0 (got {args.mem})")
+
+    # Disk count bounds: vda is the rootfs, leaving vdb..vdz for
+    # MDT+OST.  Past 25 letters we'd write /dev/vd{ etc. into the
+    # test framework's cfg/local.sh.
+    total_data_disks = (args.mdt_disks or 0) + (args.ost_disks or 0)
+    if total_data_disks > 25:
+        die(
+            f"too many data disks ({total_data_disks}) -- "
+            f"max 25 (vdb..vdz); got mdt={args.mdt_disks} "
+            f"ost={args.ost_disks}"
+        )
+
+    # Parse + validate any extra NICs.  The mgmt NIC (eth0) is always
+    # created; --nic adds NICs on top of it.  Invalid specs die() now
+    # so we don't half-create the VM.  validate_nic_spec rejects
+    # softroce/passthrough with a pointer at the follow-up issues.
+    raw_nics = getattr(args, "nic", None) or []
+    extra_nic_types = [validate_nic_spec(n) for n in raw_nics]
+
+    # Passthrough NICs: pre-flight checks (no side effects) so a bad
+    # spec or a missing IOMMU fails before we touch VM state on disk.
+    # The actual vfio bind happens later in the launch block, inside
+    # the rollback umbrella so a failed create rebinds the device.
+    passthrough_bdfs = [
+        spec.split(":", 1)[1] for spec in extra_nic_types
+        if spec.startswith("passthrough:")
+    ]
+    if passthrough_bdfs:
+        from ltvm_pkg import vfio as _vfio
+        if not _vfio.iommu_enabled():
+            die(
+                "passthrough requires host IOMMU; boot with "
+                "intel_iommu=on (or amd_iommu=on) on the host kernel cmdline "
+                "and ensure /sys/kernel/iommu_groups/ is non-empty."
+            )
+        for bdf in passthrough_bdfs:
+            if not (Path("/sys/bus/pci/devices") / bdf).is_dir():
+                die(f"passthrough device {bdf!r} not found in /sys/bus/pci/devices")
+
+    return extra_nic_types, passthrough_bdfs
+
+
 def _create_disks(vm: VMInfo, image: str) -> None:
     """Create overlay + backing disks for *vm*.  On any failure,
     unlink everything already created (best-effort) and re-raise so
@@ -594,55 +648,10 @@ def cmd_create(args: argparse.Namespace) -> None:
     if _handle_existing_vm(name, args):
         return
 
-    # Validate vCPU and memory bounds.  argparse accepts any int (and
-    # 0/negative values would crash QEMU AFTER vm.save() committed
-    # the .info file -- leaving a half-created VM that requires
-    # manual destroy).
-    if args.vcpus is not None and args.vcpus <= 0:
-        die(f"--vcpus must be > 0 (got {args.vcpus})")
-    if args.mem is not None and args.mem <= 0:
-        die(f"--mem must be > 0 (got {args.mem})")
-
-    # Disk count bounds: vda is the rootfs, leaving vdb..vdz for
-    # MDT+OST.  Past 25 letters we'd write /dev/vd{ etc. into the
-    # test framework's cfg/local.sh.
-    total_data_disks = (args.mdt_disks or 0) + (args.ost_disks or 0)
-    if total_data_disks > 25:
-        die(
-            f"too many data disks ({total_data_disks}) -- "
-            f"max 25 (vdb..vdz); got mdt={args.mdt_disks} "
-            f"ost={args.ost_disks}"
-        )
+    extra_nic_types, passthrough_bdfs = _validate_create_bounds(args)
 
     tap = tap_for_name(name)
     mac = mac_for_name(name)
-
-    # Parse + validate any extra NICs.  The mgmt NIC (eth0) is always
-    # created; --nic adds NICs on top of it.  Invalid specs die() now
-    # so we don't half-create the VM.  validate_nic_spec rejects
-    # softroce/passthrough with a pointer at the follow-up issues.
-    raw_nics = getattr(args, "nic", None) or []
-    extra_nic_types = [validate_nic_spec(n) for n in raw_nics]
-
-    # Passthrough NICs: pre-flight checks (no side effects) so a bad
-    # spec or a missing IOMMU fails before we touch VM state on disk.
-    # The actual vfio bind happens later in the launch block, inside
-    # the rollback umbrella so a failed create rebinds the device.
-    passthrough_bdfs = [
-        spec.split(":", 1)[1] for spec in extra_nic_types
-        if spec.startswith("passthrough:")
-    ]
-    if passthrough_bdfs:
-        from ltvm_pkg import vfio as _vfio
-        if not _vfio.iommu_enabled():
-            die(
-                "passthrough requires host IOMMU; boot with "
-                "intel_iommu=on (or amd_iommu=on) on the host kernel cmdline "
-                "and ensure /sys/kernel/iommu_groups/ is non-empty."
-            )
-        for bdf in passthrough_bdfs:
-            if not (Path("/sys/bus/pci/devices") / bdf).is_dir():
-                die(f"passthrough device {bdf!r} not found in /sys/bus/pci/devices")
 
     os_target = getattr(args, "os", "")
     explicit_image = getattr(args, "image", "")
