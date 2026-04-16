@@ -1,8 +1,12 @@
 """Command implementations for ltvm CLI.
 
 Each cmd_* function takes an argparse.Namespace and returns an int
-exit code.  Private helpers shared across commands live here too.
-The top-level ``ltvm`` script owns argparse setup and dispatch.
+exit code.  Implementation now lives in per-concern submodules
+(util, build, targets, fetch, deploy, cluster, vm, setup); this
+package's __init__ re-exports every public name those submodules
+expose so ``from ltvm_pkg.cli import cmd_build_all`` keeps working
+and attribute-patching tests (``patch.object(cli_mod, "X")``) still
+find every name they expect.
 """
 
 from __future__ import annotations
@@ -35,20 +39,26 @@ from ltvm_pkg.release_package import (
 )
 from ltvm_pkg.target_config import LustreMode, TargetConfig, list_targets
 
-# Exit codes
-EXIT_OK = 0
-EXIT_ERROR = 1
-EXIT_NOT_FOUND = 2
+from ltvm_pkg.cli.util import (
+    EXIT_ERROR,
+    EXIT_NOT_FOUND,
+    EXIT_OK,
+    _artifact_label,
+    _container_status,
+    _emit_error,
+    _error,
+    _load_target,
+    _load_target_args,
+    _maybe_print_traceback,
+    _output,
+    _qemu_ns,
+    _require_root,
+)
 
 # GitHub repo for release downloads.  Override with LTVM_GITHUB_REPO
 # so a fork can use `ltvm fetch` / `ltvm publish` without editing
 # source.
 GITHUB_REPO = os.environ.get("LTVM_GITHUB_REPO", "lustre-tools/lustre-test-vms")
-
-
-# ------------------------------------------------------------------
-# Output helpers
-# ------------------------------------------------------------------
 
 
 def _resolve_lustre_tree(
@@ -69,169 +79,6 @@ def _resolve_lustre_tree(
             f"{p} does not look like a Lustre tree (no lustre/kernel_patches/)"
         )
     return p, None
-
-
-def _output(data: Any, use_json: bool) -> None:
-    """Print data as JSON or as a human-readable string."""
-    if use_json:
-        print(json.dumps(data, indent=2))
-    else:
-        if isinstance(data, str):
-            print(data)
-        elif isinstance(data, dict):
-            for k, v in data.items():
-                print(f"  {k}: {v}")
-        elif isinstance(data, list):
-            for item in data:
-                print(item)
-
-
-def _emit_error(
-    msg: str,
-    use_json: bool,
-    hint: str | None = None,
-    code: int = EXIT_ERROR,
-) -> int:
-    """Print an error message and return the given exit code.
-
-    When called from inside an ``except`` block with LTVM_VERBOSE=1 (or
-    --verbose flipped the root logger to DEBUG), append the in-flight
-    traceback so programming bugs (TypeError, AttributeError) surface
-    their real origin instead of being flattened into
-    ``"<Cmd> failed: <str(exc)>"`` mystery strings.
-    """
-    if use_json:
-        err = {"error": msg}
-        if hint:
-            err["hint"] = hint
-        print(json.dumps(err, indent=2), file=sys.stderr)
-    else:
-        print(f"error: {msg}", file=sys.stderr)
-        if hint:
-            print(f"hint: {hint}", file=sys.stderr)
-        _maybe_print_traceback()
-    return code
-
-
-def _maybe_print_traceback() -> None:
-    """Print the active exception's traceback iff verbose logging is on.
-
-    Reads the root logger level so --verbose (which sets DEBUG in the
-    main entry point) enables tracebacks without requiring callers to
-    thread a flag through.  LTVM_VERBOSE=1 is honored as an alternative
-    for contexts where argparse state isn't reachable.
-    """
-    import os as _os
-    import traceback as _tb
-
-    if sys.exc_info()[0] is None:
-        return
-    verbose = (
-        logging.getLogger().isEnabledFor(logging.DEBUG)
-        or _os.environ.get("LTVM_VERBOSE") == "1"
-    )
-    if verbose:
-        _tb.print_exc(file=sys.stderr)
-
-
-def _error(msg: str, use_json: bool, hint: str | None = None) -> int:
-    return _emit_error(msg, use_json, hint=hint, code=EXIT_ERROR)
-
-
-def _load_target(
-    name: str,
-    use_json: bool,
-    arch: str | None = None,
-    variant: str = "base",
-) -> tuple[TargetConfig | None, int | None]:
-    """Load a TargetConfig, returning (config, None) or
-    (None, exit_code) on failure."""
-    try:
-        return TargetConfig(name, arch=arch, variant=variant), None
-    except ValueError as e:
-        targets = list_targets()
-        hint = (
-            f"Available targets: {', '.join(targets)}"
-            if targets
-            else "No targets configured"
-        )
-        code = _emit_error(str(e), use_json, hint=hint, code=EXIT_NOT_FOUND)
-        return None, code
-
-
-def _load_target_args(
-    args: argparse.Namespace, use_json: bool
-) -> tuple[TargetConfig | None, int | None]:
-    """Load TargetConfig from args.target + optional args.arch + --variant.
-
-    Applies CLI param overrides (e.g. --mofed-version) onto the variant
-    so they fold into the input hash.
-    """
-    variant = getattr(args, "variant", "base") or "base"
-    tc, err = _load_target(
-        args.target, use_json, arch=getattr(args, "arch", None), variant=variant
-    )
-    if tc is None:
-        return None, err
-    # Thread ad-hoc param overrides into the bound variant.
-    overrides: dict[str, Any] = {}
-    if getattr(args, "mofed_version", None):
-        overrides["mofed_version"] = args.mofed_version
-    if overrides and variant != "base":
-        tc._variants[variant] = tc._variants[variant].with_param_overrides(
-            overrides
-        )
-    return tc, None
-
-
-# ------------------------------------------------------------------
-# Container status helper
-# ------------------------------------------------------------------
-
-
-def _container_status(target_config: TargetConfig) -> dict[str, Any]:
-    """Return status dict for the build container artifact."""
-    meta_file = target_config.container_output_dir() / "meta.json"
-    meta = load_meta_safe(meta_file)
-    if meta is None:
-        return {"built": False, "stale": True}
-    stale = target_config.is_stale("container")
-    return {"built": True, "stale": stale, **meta}
-
-
-def _artifact_label(status_dict: dict[str, Any]) -> str:
-    """Produce a human label like 'current', 'stale (config changed)',
-    or 'not built'.
-
-    `stale` may be None for kernel artifacts when called from cmd_status,
-    which has no Lustre tree on hand to recompute the round-17
-    Lustre-inputs hash -- in that case we can't honestly say whether the
-    cached vmlinuz is stale, so we render "built (?)" rather than lying
-    in either direction.
-    """
-    if not status_dict.get("built", False):
-        return "not built"
-    stale = status_dict.get("stale", False)
-    if stale is None:
-        return "built (?)"
-    if stale:
-        return "stale"
-    return "current"
-
-
-def _require_root(use_json: bool, hint: str = "") -> int | None:
-    """Return an error code if not root, or None if root."""
-    if os.getuid() != 0:
-        msg = "This command requires root. Use: sudo ltvm ..."
-        if hint:
-            msg += f"\n  {hint}"
-        return _error(msg, use_json)
-    return None
-
-
-def _qemu_ns(**kwargs: Any) -> argparse.Namespace:
-    """Build a minimal argparse.Namespace for qemu command functions."""
-    return argparse.Namespace(**kwargs)
 
 
 # ------------------------------------------------------------------
