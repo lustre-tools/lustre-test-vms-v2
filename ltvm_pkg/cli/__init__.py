@@ -58,7 +58,7 @@ def _resolve_lustre_tree(
 
     Returns (Path, error_string).  error_string is None on success.
     """
-    from .lustre_tree import kp_root
+    from ltvm_pkg.lustre_tree import kp_root
 
     p = Path(arg_value).resolve() if arg_value else Path.cwd()
     if not p.is_dir():
