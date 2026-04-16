@@ -385,6 +385,67 @@ to the Lustre source tree as usual.
 - `ltvm_pkg/vm_commands.py` + `ltvm_pkg/vm_cluster.py` --
   VM and cluster lifecycle handlers called by `cli.py`.
 
+## Release Manifest Schema
+
+Each published release carries a ``schema`` field
+(``ltvm-release/<N>``) in its ``manifest-*.json``.  Fetch
+rejects any version it does not explicitly recognize --
+there is no forward/backward-compat muddling.  A single
+integer, bumped when the layout changes.
+
+Source of truth: ``SCHEMA_VERSION`` in
+[ltvm_pkg/release_package.py](ltvm_pkg/release_package.py).
+The writer and the fetch-side check both read it, so they
+cannot drift.
+
+### When to bump
+
+Bump for any change that an older ltvm couldn't make sense
+of.  Err on the side of bumping: a confused fetcher is
+worse than a forced republish.  Examples:
+
+- Asset name changes (new prefix, new suffix, split one
+  asset into two).
+- Asset content changes (ext4 vs qcow2, zstd vs gzip,
+  added/removed files inside a tarball).
+- Per-variant scoping rules (where in the tarball a
+  variant's files land).
+- Extraction path changes (``output/<target>/<arch>/...``
+  layout moves).
+- Manifest shape changes (new required field, renamed
+  field, different semantic for an existing field).
+- Module injection, kernel-cmdline, or init changes that
+  older VM images can't consume.
+
+### When NOT to bump
+
+Don't bump for additive changes an old fetcher safely
+ignores:
+
+- New *optional* manifest fields a fetcher can skip (e.g.
+  ``producer`` metadata).
+- New target OSes or kernel minors (those show up in
+  ``targets.yaml``, not in release format).
+- Publishing a new variant under an existing scheme.
+
+### Bump procedure
+
+1. Edit ``SCHEMA_VERSION`` in [ltvm_pkg/release_package.py](ltvm_pkg/release_package.py).
+2. Add a one-line entry to the bump-history comment right
+   above it.  Describe what changed, so a future reader
+   can tell whether a v7 → v8 bump broke their release.
+3. Update the fetch-side test in
+   [tests/test_package.py](tests/test_package.py) only if
+   it pins the version literally (it shouldn't -- prefer
+   importing ``SCHEMA_VERSION``).
+4. Re-publish every release that should remain
+   fetchable.  Old releases at the lower version are now
+   orphaned; either delete them from GitHub or leave them
+   so archaeology works.
+5. Old ltvm clients hitting the new release get a clear
+   "upgrade ltvm" error and (if interactive) the daily
+   update-check prompt kicks in.
+
 ## Code Review Guidance
 
 When reviewing or auditing this codebase, watch for:
