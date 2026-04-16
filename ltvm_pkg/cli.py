@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import os
 import shlex
 import subprocess
@@ -91,7 +92,14 @@ def _emit_error(
     hint: str | None = None,
     code: int = EXIT_ERROR,
 ) -> int:
-    """Print an error message and return the given exit code."""
+    """Print an error message and return the given exit code.
+
+    When called from inside an ``except`` block with LTVM_VERBOSE=1 (or
+    --verbose flipped the root logger to DEBUG), append the in-flight
+    traceback so programming bugs (TypeError, AttributeError) surface
+    their real origin instead of being flattened into
+    ``"<Cmd> failed: <str(exc)>"`` mystery strings.
+    """
     if use_json:
         err = {"error": msg}
         if hint:
@@ -101,7 +109,29 @@ def _emit_error(
         print(f"error: {msg}", file=sys.stderr)
         if hint:
             print(f"hint: {hint}", file=sys.stderr)
+        _maybe_print_traceback()
     return code
+
+
+def _maybe_print_traceback() -> None:
+    """Print the active exception's traceback iff verbose logging is on.
+
+    Reads the root logger level so --verbose (which sets DEBUG in the
+    main entry point) enables tracebacks without requiring callers to
+    thread a flag through.  LTVM_VERBOSE=1 is honored as an alternative
+    for contexts where argparse state isn't reachable.
+    """
+    import os as _os
+    import traceback as _tb
+
+    if sys.exc_info()[0] is None:
+        return
+    verbose = (
+        logging.getLogger().isEnabledFor(logging.DEBUG)
+        or _os.environ.get("LTVM_VERBOSE") == "1"
+    )
+    if verbose:
+        _tb.print_exc(file=sys.stderr)
 
 
 def _error(msg: str, use_json: bool, hint: str | None = None) -> int:
@@ -1253,7 +1283,12 @@ def cmd_fetch(args: argparse.Namespace) -> int:
                 from ltvm_pkg.update_check import maybe_check_for_updates
 
                 maybe_check_for_updates(force=True, use_json=False)
-            except Exception:  # noqa: BLE001
+            except (ImportError, OSError):
+                # The update check is advisory -- a missing module
+                # or a network/IO hiccup must not mask the actual
+                # fetch failure we're already reporting.  Genuine
+                # programming bugs (TypeError, AttributeError) still
+                # propagate so they surface with a traceback.
                 pass
         return _error(f"Fetch failed: {e}", use_json)
 
@@ -1273,7 +1308,10 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             tc_hint = TargetConfig(target)
             avail = tc_hint.declared_kernels()
             default_k = tc_hint.default_kernel
-        except Exception:
+        except (ValueError, FileNotFoundError):
+            # Best-effort hint -- if the target isn't parseable we
+            # just drop the "try another kernel" line rather than
+            # failing the fetch that already succeeded.
             avail = []
             default_k = ""
         if len(avail) > 1:
