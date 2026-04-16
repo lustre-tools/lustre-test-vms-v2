@@ -1152,6 +1152,9 @@ class TestCmdStart:
         _seed_vm_files(tmp_vmdir, "b")
         args = argparse.Namespace(names=["a", "b"])
         with (
+            patch(
+                "ltvm_pkg.vm_commands.is_running", return_value=False
+            ),
             patch("ltvm_pkg.vm_commands.launch_qemu") as mock_launch,
             patch("ltvm_pkg.vm_commands.provision_vm_ssh") as mock_prov,
             patch("ltvm_pkg.vm_commands._seed_kdump_boot"),
@@ -1162,6 +1165,61 @@ class TestCmdStart:
         # All provisioning calls must pass register_before_wait=True.
         for call in mock_prov.call_args_list:
             assert call.kwargs.get("register_before_wait") is True
+
+    def test_already_running_short_circuits(
+        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """Regression: pre-fix output was contradictory, e.g.:
+
+            $ sudo ltvm start pafvm
+            VM 'pafvm' is already running
+            started pafvm
+
+        cmd_start now short-circuits on is_running so neither
+        provision_vm_ssh, _seed_kdump_boot, nor the "started <name>"
+        log fire when the VM is already up.
+        """
+        _seed_vm_files(tmp_vmdir, "up")
+        args = argparse.Namespace(names=["up"])
+        with (
+            patch(
+                "ltvm_pkg.vm_commands.is_running", return_value=True
+            ),
+            patch("ltvm_pkg.vm_commands.launch_qemu") as mock_launch,
+            patch("ltvm_pkg.vm_commands.provision_vm_ssh") as mock_prov,
+            patch("ltvm_pkg.vm_commands._seed_kdump_boot") as mock_seed,
+        ):
+            vm_commands.cmd_start(args)
+        assert mock_launch.call_count == 0
+        assert mock_prov.call_count == 0
+        assert mock_seed.call_count == 0
+        out = capsys.readouterr().out
+        assert "up: already running" in out
+        # Crucially the contradictory "started" log must not appear.
+        assert "started up" not in out
+
+    def test_mixed_running_and_stopped(self, tmp_vmdir: Path) -> None:
+        """Two VMs: one already up, one down.  The down one launches,
+        the up one just prints 'already running' -- no cross-contamination."""
+        _seed_vm_files(tmp_vmdir, "up")
+        _seed_vm_files(tmp_vmdir, "down")
+        args = argparse.Namespace(names=["up", "down"])
+        # is_running(vm) -> True for 'up', False for 'down'.
+        def fake_is_running(vm: VMInfo) -> bool:
+            return vm.name == "up"
+        with (
+            patch(
+                "ltvm_pkg.vm_commands.is_running",
+                side_effect=fake_is_running,
+            ),
+            patch("ltvm_pkg.vm_commands.launch_qemu") as mock_launch,
+            patch("ltvm_pkg.vm_commands.provision_vm_ssh"),
+            patch("ltvm_pkg.vm_commands._seed_kdump_boot"),
+        ):
+            vm_commands.cmd_start(args)
+        # launch_qemu called exactly once, for 'down'.
+        assert mock_launch.call_count == 1
+        assert mock_launch.call_args.args[0].name == "down"
 
 
 # ── cmd_nmi ──────────────────────────────────────────────

@@ -62,7 +62,14 @@ def _make_vm(
 
 
 class TestIsRunning:
-    """is_running probes the kernel for the saved PID."""
+    """is_running reads /proc/<pid>/comm to confirm a live qemu process.
+
+    The probe is deliberately os.kill-free: kill(0) returns EPERM when
+    the target pid is owned by another user (commonly root, because
+    qemu runs as root), which would make an unprivileged `ltvm list`
+    misreport every VM as stopped.  /proc/<pid>/comm is world-readable
+    on standard Linux and doubles as the PID-reuse guard.
+    """
 
     def test_zero_pid_is_not_running(self) -> None:
         vm = VMInfo(name="x", ip="1.2.3.4", pid=0)
@@ -75,49 +82,52 @@ class TestIsRunning:
     def test_live_qemu_pid_is_running(self) -> None:
         """A live PID whose /proc/<pid>/comm starts with qemu-system is running."""
         vm = VMInfo(name="x", ip="1.2.3.4", pid=42)
+        with patch("ltvm_pkg.qemu_run.Path") as mock_path:
+            mock_path.return_value.read_text.return_value = "qemu-system-x86\n"
+            assert qemu_run.is_running(vm) is True
+
+    def test_live_qemu_pid_owned_by_other_user_is_running(self) -> None:
+        """Regression: `ltvm list` as non-root against a root-owned qemu.
+
+        Before the fix, is_running() called os.kill(pid, 0) first, got
+        EPERM (OSError), returned False, and the caller saw "stopped"
+        for a clearly-running VM.  The new implementation doesn't touch
+        os.kill at all -- only /proc/<pid>/comm.  This test asserts
+        that's still true by failing loudly if anyone re-adds os.kill
+        back in without handling EPERM.
+        """
+        vm = VMInfo(name="x", ip="1.2.3.4", pid=42)
         with (
-            patch("ltvm_pkg.qemu_run.os.kill", return_value=None),
             patch("ltvm_pkg.qemu_run.Path") as mock_path,
+            patch(
+                "ltvm_pkg.qemu_run.os.kill",
+                side_effect=PermissionError("EPERM"),
+            ),
         ):
             mock_path.return_value.read_text.return_value = "qemu-system-x86\n"
             assert qemu_run.is_running(vm) is True
 
     def test_live_pid_but_not_qemu_is_not_running(self) -> None:
-        """PID reuse: kill(0) succeeds but the process isn't qemu."""
+        """PID reuse: the pid is live but the process isn't qemu."""
         vm = VMInfo(name="x", ip="1.2.3.4", pid=42)
-        with (
-            patch("ltvm_pkg.qemu_run.os.kill", return_value=None),
-            patch("ltvm_pkg.qemu_run.Path") as mock_path,
-        ):
+        with patch("ltvm_pkg.qemu_run.Path") as mock_path:
             mock_path.return_value.read_text.return_value = "bash\n"
             assert qemu_run.is_running(vm) is False
 
     def test_dead_pid_is_not_running(self) -> None:
-        """ProcessLookupError from kill(0) means the process is gone."""
+        """A dead PID's /proc/<pid>/comm read raises FileNotFoundError."""
         vm = VMInfo(name="x", ip="1.2.3.4", pid=42)
-        with patch(
-            "ltvm_pkg.qemu_run.os.kill",
-            side_effect=ProcessLookupError,
-        ):
-            assert qemu_run.is_running(vm) is False
-
-    def test_oserror_is_not_running(self) -> None:
-        """OSError (EPERM et al) is treated the same as 'not running'."""
-        vm = VMInfo(name="x", ip="1.2.3.4", pid=42)
-        with patch(
-            "ltvm_pkg.qemu_run.os.kill",
-            side_effect=OSError("eperm"),
-        ):
-            assert qemu_run.is_running(vm) is False
-
-    def test_proc_comm_unreadable_is_not_running(self) -> None:
-        """If /proc/<pid>/comm can't be read, treat as not running."""
-        vm = VMInfo(name="x", ip="1.2.3.4", pid=42)
-        with (
-            patch("ltvm_pkg.qemu_run.os.kill", return_value=None),
-            patch("ltvm_pkg.qemu_run.Path") as mock_path,
-        ):
+        with patch("ltvm_pkg.qemu_run.Path") as mock_path:
             mock_path.return_value.read_text.side_effect = FileNotFoundError
+            assert qemu_run.is_running(vm) is False
+
+    def test_proc_comm_permission_error_is_not_running(self) -> None:
+        """Edge case: hardened /proc mounts (hidepid=2) may make comm
+        unreadable to non-root even when the process exists.  Treat that
+        as 'can't tell, assume not running' rather than crash."""
+        vm = VMInfo(name="x", ip="1.2.3.4", pid=42)
+        with patch("ltvm_pkg.qemu_run.Path") as mock_path:
+            mock_path.return_value.read_text.side_effect = PermissionError
             assert qemu_run.is_running(vm) is False
 
 
