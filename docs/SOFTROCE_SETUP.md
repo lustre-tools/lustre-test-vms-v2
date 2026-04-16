@@ -39,15 +39,17 @@ No MDT/OST disks needed unless you also intend to run Lustre on them.
 Confirm L2 connectivity with a ping between the two assigned IPs before
 going further.
 
-### 2. Install perftest and verbs utilities (both VMs)
+### 2. Verbs tooling is preinstalled
 
-```bash
-ssh co<N>-rdma-a 'dnf install -y perftest libibverbs-utils'
-ssh co<N>-rdma-b 'dnf install -y perftest libibverbs-utils'
-```
-
-`rdma-core` (which provides the `rdma` link tool) is already installed
-in the Rocky 9 base image.
+`rdma-core` (which provides the `rdma` link tool), `libibverbs-utils`
+(`ibv_devices`, `ibv_devinfo`), and `perftest` (`ib_{read,write,send}_bw`,
+`..._lat`) all ship in the base image -- no on-demand install needed.
+The kernel modules `rdma_rxe`, `rdma_cm`, `ib_core`, `ib_uverbs`,
+`rdma_ucm`, and `mlx5_ib` are built into the kernel under
+`/lib/modules/$(uname -r)/kernel/drivers/infiniband/` and are only
+loaded when you `modprobe` them explicitly (or when matching
+hardware probes), so this preinstall is zero-cost on VMs that never
+enable RDMA.
 
 ### 3. Load `rdma_rxe` and create the RXE link (both VMs)
 

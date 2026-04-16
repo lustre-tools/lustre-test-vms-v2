@@ -35,6 +35,23 @@ quota
 # Networking test tools
 iperf3
 
+# RDMA / InfiniBand userspace -- preinstalled so that softroce (rdma_rxe)
+# or PCI-passthrough HCA setups work out of the box without an on-demand
+# dnf install at VM boot.  The kernel modules (rdma_rxe, rdma_cm, ib_core,
+# rdma_ucm, ib_uverbs, mlx5_ib) ship with the kernel itself under
+# /lib/modules/.../kernel/drivers/infiniband/ -- nothing to install for
+# those.  rdma-core ships the `rdma` iproute2 subcommand plus udev rules
+# that only auto-load kmods when matching hardware probes, so this is a
+# no-op on VMs that never enable RDMA.  libibverbs and librdmacm provide
+# the verbs/CM userspace libraries; libibverbs-utils (ibv_devices,
+# ibv_devinfo) and perftest (ib_{read,write,send}_{bw,lat}) are the
+# standard verbs smoke-test tools.
+rdma-core
+libibverbs
+librdmacm
+libibverbs-utils
+perftest
+
 # Misc test deps
 rsync
 jq

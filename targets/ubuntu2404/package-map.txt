@@ -35,6 +35,14 @@ json-c            libjson-c5
 pdsh-rcmd-ssh     -
 nfs-utils         nfs-common
 sg3_utils         sg3-utils
+# RDMA userspace.  Debian splits rdma-core into libibverbs1 + librdmacm1
+# + ibverbs-providers (user space provider drivers for libibverbs).
+# The rdma-core metapackage itself exists on Ubuntu and pulls the iproute2
+# `rdma` tool plus the udev autoload rules, same as on RHEL.
+libibverbs        libibverbs1 ibverbs-providers
+librdmacm         librdmacm1
+libibverbs-utils  ibverbs-utils
+# perftest and rdma-core map 1:1 -- no entry needed.
 
 # --- packages-debug.txt --------------------------------------------
 kernel-tools      -
