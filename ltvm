@@ -934,6 +934,22 @@ def main() -> int:
         parser.print_help()
         return EXIT_ERROR
 
+    # Daily self-update nag (interactive TTYs only, skipped for
+    # --json, and skipped entirely for `install` to avoid recursing
+    # during the install that just wrote our baked version).  See
+    # ltvm_pkg/update_check.py for the full state machine.
+    if args.command != "install":
+        try:
+            from ltvm_pkg.update_check import maybe_check_for_updates
+
+            maybe_check_for_updates(use_json=bool(getattr(args, "json", False)))
+        except Exception as e:  # noqa: BLE001
+            # Update check is cosmetic -- a failure here must never
+            # block the user's actual command.
+            logging.getLogger("ltvm.update_check").debug(
+                "update check skipped: %s", e
+            )
+
     result: int = args.func(args)
     return result
 

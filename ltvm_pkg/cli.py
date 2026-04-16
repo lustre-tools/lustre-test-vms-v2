@@ -1244,6 +1244,17 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         tag_file.parent.mkdir(parents=True, exist_ok=True)
         tag_file.write_text(release_tag + "\n")
     except Exception as e:
+        # A schema-mismatch error means the published manifest was
+        # produced by a newer (or older) ltvm.  Force an immediate
+        # update-check prompt so the user can self-heal instead of
+        # just reading a cryptic error.
+        if "unrecognized manifest schema" in str(e) and not use_json:
+            try:
+                from ltvm_pkg.update_check import maybe_check_for_updates
+
+                maybe_check_for_updates(force=True, use_json=False)
+            except Exception:  # noqa: BLE001
+                pass
         return _error(f"Fetch failed: {e}", use_json)
 
     result = {"target": target, "path": str(target_dir)}
