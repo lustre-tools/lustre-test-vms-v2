@@ -178,24 +178,28 @@ def _run_launch(vm: VMInfo, harness: _LaunchHarness) -> None:
 class TestLaunchQemuCommand:
     """launch_qemu builds the expected QEMU args for each arch."""
 
-    def test_x86_64_microvm_with_virtio_mmio(self, tmp_vmdir: Path) -> None:
-        """x86_64 uses our custom binary + microvm machine + MMIO devices."""
+    def test_x86_64_q35_with_virtio_pci(self, tmp_vmdir: Path) -> None:
+        """x86_64 uses our custom binary + q35 machine + PCI devices.
+
+        q35 replaced microvm; see qemu_machine_for_arch docstring for
+        the rationale (~300 ms boot cost, enables vfio / hotplug /
+        older QEMU compat).
+        """
         vm = _make_vm(tmp_vmdir, arch="x86_64", mem=2048)
         h = _LaunchHarness()
         _run_launch(vm, h)
         args = h.qemu_args
         assert args is not None
         assert args[0].endswith("qemu-system-x86_64")
-        # microvm machine with KVM on x86 host
         assert "-machine" in args
         machine = args[args.index("-machine") + 1]
-        assert machine.startswith("microvm")
-        # virtio-*-device (MMIO bus)
+        assert machine.startswith("q35")
+        # virtio-*-pci on the PCI bus
         joined = " ".join(args)
-        assert "virtio-blk-device" in joined
-        assert "virtio-net-device" in joined
-        assert "virtio-rng-device" in joined
-        assert "virtio-blk-pci" not in joined
+        assert "virtio-blk-pci" in joined
+        assert "virtio-net-pci" in joined
+        assert "virtio-rng-pci" in joined
+        assert "virtio-blk-device" not in joined
 
     def test_aarch64_virt_with_pci(self, tmp_vmdir: Path) -> None:
         """aarch64 uses virt + virtio-*-pci devices."""
