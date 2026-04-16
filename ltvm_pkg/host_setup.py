@@ -197,6 +197,18 @@ def check_prerequisites(host: HostInfo) -> None:
         log.info("Installing podman (needed for container/image builds)...")
         _pkg_install(host, "podman")
 
+    # iptables-nft is needed by the qemu-bridge.service NAT/FORWARD
+    # rules.  EL9 ships it preinstalled; EL8 does not, so `ltvm install`
+    # fails at the bridge step with "iptables: command not found" unless
+    # we install it here (bug lustre_test_vms_v2-yh9).  The install in
+    # setup_network() also covers this, but doing it here at the prereq
+    # stage keeps failure modes consistent across EL8/EL9 and makes
+    # `ltvm doctor` / partial-step runs work.  Only applies to dnf --
+    # Debian/Ubuntu's `iptables` package uses nft transparently.
+    if host.pkg_mgr == "dnf" and not shutil.which("iptables"):
+        log.info("Installing iptables-nft (needed for host bridge NAT)...")
+        _pkg_install(host, "iptables-nft")
+
     # python3-pyyaml needed by ltvm fetch/resolve
     try:
         import yaml  # noqa: F401
