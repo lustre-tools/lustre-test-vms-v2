@@ -426,6 +426,80 @@ def _handle_existing_vm(name: str, args: argparse.Namespace) -> bool:
     return True
 
 
+def _create_disks(vm: VMInfo, image: str) -> None:
+    """Create overlay + backing disks for *vm*.  On any failure,
+    unlink everything already created (best-effort) and re-raise so
+    we don't leave orphan files for the next `ltvm create <same name>`
+    to trip on.  The .info file isn't written yet so cmd_doctor can't
+    see these orphans either, which makes manual recovery awkward.
+    """
+    try:
+        run(
+            [
+                QEMU_IMG,
+                "create",
+                "-f",
+                "qcow2",
+                "-b",
+                image,
+                "-F",
+                "raw",
+                str(vm.overlay_path),
+            ],
+            capture_output=True,
+            check=True,
+        )
+
+        # Grow the qcow2 virtual disk so the VM has room for Lustre
+        # modules, logs, etc.  The ext4 filesystem is resized on first
+        # boot (rc.local).
+        run(
+            [QEMU_IMG, "resize", str(vm.overlay_path), "8G"],
+            capture_output=True,
+            check=True,
+        )
+
+        # Create backing disks
+        total = vm.mdt_disks + vm.ost_disks
+        for n in range(1, total + 1):
+            run(
+                ["truncate", "-s", str(vm.disk_size), str(vm.disk_path(n))],
+                check=True,
+            )
+    except BaseException:
+        try:
+            vm.overlay_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        for n in range(1, vm.mdt_disks + vm.ost_disks + 1):
+            try:
+                vm.disk_path(n).unlink(missing_ok=True)
+            except OSError:
+                pass
+        raise
+
+
+def _chown_disks_to_sudo_user(vm: VMInfo) -> None:
+    """When invoked via sudo, hand ownership of the disk images to the
+    real user so snapshot/restore (which run qemu-img) work without root.
+    """
+    sudo_user = os.environ.get("SUDO_USER")
+    if sudo_user:
+        import pwd as _pwd
+        try:
+            pw = _pwd.getpwnam(sudo_user)
+            files_to_chown = [vm.overlay_path]
+            for n in range(1, vm.mdt_disks + vm.ost_disks + 1):
+                files_to_chown.append(vm.disk_path(n))
+            for f in files_to_chown:
+                try:
+                    os.chown(f, pw.pw_uid, pw.pw_gid)
+                except OSError:
+                    pass
+        except KeyError:
+            pass
+
+
 def _rollback_launch_failure(vm: VMInfo) -> None:
     """Unwind the post-vm.save() phase on failure: preserve QEMU log,
     kill QEMU, destroy artifacts, unregister SSH name, rebind any
@@ -636,73 +710,8 @@ def cmd_create(args: argparse.Namespace) -> None:
             passthrough_drivers={},
         )
 
-        # Create overlay + backing disks.  If any step fails partway,
-        # unlink everything we already created so we don't leave orphan
-        # files behind for the next `ltvm create <same name>` to trip on.
-        # The .info file isn't written yet so cmd_doctor can't see these
-        # orphans either, which makes manual recovery awkward.
-        try:
-            run(
-                [
-                    QEMU_IMG,
-                    "create",
-                    "-f",
-                    "qcow2",
-                    "-b",
-                    image,
-                    "-F",
-                    "raw",
-                    str(vm.overlay_path),
-                ],
-                capture_output=True,
-                check=True,
-            )
-
-            # Grow the qcow2 virtual disk so the VM has room for Lustre
-            # modules, logs, etc.  The ext4 filesystem is resized on first
-            # boot (rc.local).
-            run(
-                [QEMU_IMG, "resize", str(vm.overlay_path), "8G"],
-                capture_output=True,
-                check=True,
-            )
-
-            # Create backing disks
-            total = vm.mdt_disks + vm.ost_disks
-            for n in range(1, total + 1):
-                run(
-                    ["truncate", "-s", str(vm.disk_size), str(vm.disk_path(n))],
-                    check=True,
-                )
-        except BaseException:
-            try:
-                vm.overlay_path.unlink(missing_ok=True)
-            except OSError:
-                pass
-            for n in range(1, vm.mdt_disks + vm.ost_disks + 1):
-                try:
-                    vm.disk_path(n).unlink(missing_ok=True)
-                except OSError:
-                    pass
-            raise
-
-        # When invoked via sudo, hand ownership of the disk images to the
-        # real user so snapshot/restore (which run qemu-img) work without root.
-        sudo_user = os.environ.get("SUDO_USER")
-        if sudo_user:
-            import pwd as _pwd
-            try:
-                pw = _pwd.getpwnam(sudo_user)
-                files_to_chown = [vm.overlay_path]
-                for n in range(1, vm.mdt_disks + vm.ost_disks + 1):
-                    files_to_chown.append(vm.disk_path(n))
-                for f in files_to_chown:
-                    try:
-                        os.chown(f, pw.pw_uid, pw.pw_gid)
-                    except OSError:
-                        pass
-            except KeyError:
-                pass
+        _create_disks(vm, image)
+        _chown_disks_to_sudo_user(vm)
 
         vm.save()
     # Lock released; IP is now committed.
