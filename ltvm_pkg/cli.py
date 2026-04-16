@@ -2846,10 +2846,34 @@ def cmd_cluster(args: argparse.Namespace) -> int:
             return _error(
                 "cluster create requires a name and at least one node spec",
                 use_json,
-                hint="ltvm cluster create <name> [--target TARGET] "
+                hint="ltvm cluster create <name> [TARGET | --target TARGET] "
                 "[--arch ARCH] [--vcpus N] [--mem MB] "
                 "<role:vm[:disks]> ...",
             )
+        # Accept a positional target after the cluster name: any
+        # bare token (no ':') between the name and the first node
+        # spec is treated as the OS target.  Node specs always
+        # contain ':' (role:vm[:disks]) so this is unambiguous.  If
+        # both the positional and --target are given, they must agree.
+        pos_target: str | None = None
+        if len(positional) >= 2 and ":" not in positional[1]:
+            pos_target = positional[1]
+            positional = [positional[0]] + positional[2:]
+            if len(positional) < 2:
+                return _error(
+                    "cluster create requires at least one node spec",
+                    use_json,
+                    hint="ltvm cluster create <name> "
+                    "[TARGET | --target TARGET] <role:vm[:disks]> ...",
+                )
+        if pos_target is not None and os_target is not None \
+                and pos_target != os_target:
+            return _error(
+                f"--target {os_target!r} conflicts with positional "
+                f"target {pos_target!r}; pass only one",
+                use_json,
+            )
+        final_target = pos_target if pos_target is not None else os_target
         return _call(
             _qc_create,
             _qemu_ns(
@@ -2857,7 +2881,7 @@ def cmd_cluster(args: argparse.Namespace) -> int:
                 nodes=positional[1:],
                 vcpus=vcpus,
                 mem=mem,
-                os=os_target,
+                os=final_target,
                 arch=arch,
                 disk_size=disk_size,
                 nic=nics,
