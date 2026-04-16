@@ -537,7 +537,10 @@ def _build_kernel_deb(
     No Lustre kernel patches or .target file needed -- this is for
     client-only targets where we build against the stock distro kernel.
     """
-    lustre_target = kernel or target_config.default_kernel
+    # Normalise full -> short form (see _build_kernel_srpm for rationale).
+    lustre_target = target_config._short_kernel_name(
+        kernel or target_config.default_kernel
+    )
     deb_source = target_config.kernel_deb_source
     assert deb_source is not None
 
@@ -624,7 +627,14 @@ def _build_kernel_srpm(
     This is the original RHEL/SLES build path.
     """
     lustre_tree = Path(lustre_tree)
-    lustre_target = kernel or target_config.default_kernel
+    # Normalise to the short form ("5.14-rhel9.7") since
+    # parse_lustre_target + the series/config lookups below are all
+    # keyed on the short name.  Callers may legitimately pass either
+    # form (e.g. resolve_kernel returns the full cached dir name once
+    # a build exists).
+    lustre_target = target_config._short_kernel_name(
+        kernel or target_config.default_kernel
+    )
 
     # Resolve Lustre patches/config FIRST so we can fold them into the
     # staleness check.  Without this, editing a patch in place doesn't

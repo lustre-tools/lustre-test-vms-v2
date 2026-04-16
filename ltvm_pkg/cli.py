@@ -249,8 +249,16 @@ def cmd_build_all(args: argparse.Namespace) -> int:
         )
     assert lustre_tree is not None
 
-    kernel = getattr(args, "kernel", None)
-    resolved_kernel = tc.resolve_kernel(kernel)
+    # Honor the variant's kernel pin when --kernel is omitted: without
+    # this, the per-step calls below fall through to tc.default_kernel
+    # inside kernel_build / image_build, silently building the wrong
+    # kernel for a variant pinned to a non-default (e.g. mofed-24 pinned
+    # to rhel9.5 while default is rhel9.7).  Mirrors the fix applied to
+    # vm_state.resolve_os_artifacts in commit 107b73b.  resolve_kernel
+    # returns the pin when --kernel is None and a variant pin exists,
+    # otherwise default_kernel; build_kernel / build_image both accept
+    # the full cached-dir name or the short form.
+    resolved_kernel = tc.resolve_kernel(getattr(args, "kernel", None))
 
     _gate_lustre_validation(
         tc,
@@ -278,7 +286,7 @@ def cmd_build_all(args: argparse.Namespace) -> int:
             tc,
             lustre_tree,
             force=args.force,
-            kernel=kernel,
+            kernel=resolved_kernel,
         )
         results["kernel"] = kmeta
     except Exception as e:
@@ -320,7 +328,7 @@ def cmd_build_all(args: argparse.Namespace) -> int:
         build_image(
             tc,
             force=args.force,
-            kernel=kernel,
+            kernel=resolved_kernel,
             with_lustre=str(lustre_tree) if lustre_build else None,
         )
         results["image"] = "ok"
