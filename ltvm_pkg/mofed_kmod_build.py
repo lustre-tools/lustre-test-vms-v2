@@ -33,6 +33,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .paths import load_meta_safe
+from .podman_run import run_podman_with_cleanup
 
 if TYPE_CHECKING:
     from .target_config import TargetConfig
@@ -185,7 +186,7 @@ def build_mofed_kmods(
         container_tag,
         "/mofed-kmod-build-inner.sh",
     ]
-    r = subprocess.run(cmd)
+    r = run_podman_with_cleanup(cmd)
     if r.returncode != 0:
         raise RuntimeError(
             f"MOFED kmod build failed (rc={r.returncode})"

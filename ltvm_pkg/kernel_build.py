@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, TypedDict
 
 from .lustre_tree import kp_configs, kp_patches, kp_series, kp_targets
 from .paths import load_meta_safe
+from .podman_run import run_podman_with_cleanup
 from .target_config import TARGETS_DIR
 
 if TYPE_CHECKING:
@@ -604,7 +605,7 @@ def _build_kernel_deb(
             jobs,
             deb_source,
         )
-        subprocess.run(container_cmd, check=True)
+        run_podman_with_cleanup(container_cmd, check=True)
 
     return _finalize_kernel_build(
         target_config,
@@ -751,7 +752,7 @@ def _build_kernel_srpm(
         ]
 
         log.info("Starting kernel build in container (j%d)...", jobs)
-        subprocess.run(container_cmd, check=True)
+        run_podman_with_cleanup(container_cmd, check=True)
 
     # extra_hash MUST match what was used in the is_stale check above,
     # otherwise the persisted hash and the next-run input_hash diverge

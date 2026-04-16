@@ -27,6 +27,7 @@ import time
 from pathlib import Path
 from typing import TypedDict
 
+from .podman_run import run_podman_with_cleanup
 from .vm_state import DEFAULT_TARGET
 
 
@@ -603,7 +604,7 @@ fi""")
     # SUDO_USER after the build so the user can git pull, edit, and
     # rerun the build without sudo if they want.
     print(f"--- Building in container (j{jobs})...")
-    r = subprocess.run(cmd)
+    r = run_podman_with_cleanup(cmd)
     if r.returncode != 0:
         raise RuntimeError(f"Container build failed (rc={r.returncode})")
 

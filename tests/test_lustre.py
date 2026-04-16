@@ -441,6 +441,10 @@ class TestKernelChangeDistclean:
         with (
             patch("ltvm_pkg.lustre_build.subprocess.run", side_effect=mock_run),
             patch(
+                "ltvm_pkg.lustre_build.run_podman_with_cleanup",
+                side_effect=mock_run,
+            ),
+            patch(
                 "ltvm_pkg.lustre_build._container_exists", return_value=True
             ),
             patch(
