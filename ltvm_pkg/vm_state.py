@@ -146,7 +146,12 @@ def resolve_os_artifacts(
         # expect FileNotFoundError from this helper.
         raise FileNotFoundError(str(e)) from e
 
-    kernel_suffix = tc.default_kernel
+    # resolve_kernel honours a variant kernel pin (e.g. mofed-24 pins
+    # to rhel9.5 because MOFED 24.10's source predates rhel9.7's
+    # NETIF_F_NETNS_LOCAL backport) and falls back to default_kernel
+    # for base / unpinned variants.  Bare default_kernel would ignore
+    # the pin and route the VM to the wrong image.
+    kernel_suffix = tc.resolve_kernel(None)
     default_mem = tc.default_mem
 
     effective_arch = tc.arch
