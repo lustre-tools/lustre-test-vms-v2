@@ -426,6 +426,74 @@ def _handle_existing_vm(name: str, args: argparse.Namespace) -> bool:
     return True
 
 
+def _allocate_and_persist_vm(
+    args: argparse.Namespace,
+    info_path: Path,
+    tap: str,
+    mac: str,
+    os_arts: Any,
+    image: str,
+    kernel: str,
+    kver: str,
+    os_id: str,
+    base_name: str,
+    variant: str,
+    extra_nic_types: list[str],
+    disk_size: int,
+) -> VMInfo:
+    """Under the alloc_ip file lock, re-check for a racing create,
+    construct the VMInfo, create overlay+backing disks (with inner
+    rollback), chown them to the sudo user, and commit the .info
+    file.  Returns the saved VMInfo.  The lock is released on exit.
+    """
+    name = args.name
+    # Allocate an IP under a file lock so that concurrent creates cannot
+    # race and claim the same address.  The lock is held until vm.save()
+    # commits the .info file, at which point the IP is visible to peers.
+    with alloc_ip(name, explicit_ip=getattr(args, "ip", None) or None) as ip:
+        # Re-check existence under the alloc_ip lock: the earlier check
+        # at the top of the function is unsynchronized so two concurrent
+        # `ltvm create <same name>` could both pass it.
+        if info_path.exists():
+            die(f"VM '{name}' already exists")
+        vm = VMInfo(
+            name=name,
+            ip=ip,
+            tap=tap,
+            mac=mac,
+            vcpus=args.vcpus,
+            mem=args.mem,
+            mdt_disks=args.mdt_disks,
+            ost_disks=args.ost_disks,
+            disk_size=disk_size,
+            image=image,
+            kernel=kernel,
+            created=int(time.time()),
+            base_image=base_name,
+            os_id=os_id,
+            kver=kver,
+            arch=os_arts.arch,
+            # Track the human who ran `sudo ltvm create`.  SUDO_USER
+            # is set when invoked via sudo (the normal path); fall
+            # back to "root" if invoked as root directly.  Surfaced
+            # in `ltvm list` so a shared host can show whose VM is
+            # whose without forcing per-user namespaces.
+            creator=os.environ.get("SUDO_USER", "") or "root",
+            variant=variant,
+            nics=list(extra_nic_types),
+            # passthrough_drivers is filled in below, inside the launch
+            # umbrella, after we've actually bound each BDF to vfio-pci.
+            passthrough_drivers={},
+        )
+
+        _create_disks(vm, image)
+        _chown_disks_to_sudo_user(vm)
+
+        vm.save()
+    # Lock released; IP is now committed.
+    return vm
+
+
 def _print_create_report(vm: VMInfo, args: argparse.Namespace) -> None:
     """Print the final create outcome (JSON or human)."""
     if args.json:
@@ -736,51 +804,21 @@ def cmd_create(args: argparse.Namespace) -> None:
 
     disk_size = _parse_disk_size(getattr(args, "disk_size", None))
 
-    # Allocate an IP under a file lock so that concurrent creates cannot
-    # race and claim the same address.  The lock is held until vm.save()
-    # commits the .info file, at which point the IP is visible to peers.
-    with alloc_ip(name, explicit_ip=getattr(args, "ip", None) or None) as ip:
-        # Re-check existence under the alloc_ip lock: the earlier check
-        # at the top of the function is unsynchronized so two concurrent
-        # `ltvm create <same name>` could both pass it.
-        if info_path.exists():
-            die(f"VM '{name}' already exists")
-        vm = VMInfo(
-            name=name,
-            ip=ip,
-            tap=tap,
-            mac=mac,
-            vcpus=args.vcpus,
-            mem=args.mem,
-            mdt_disks=args.mdt_disks,
-            ost_disks=args.ost_disks,
-            disk_size=disk_size,
-            image=image,
-            kernel=kernel,
-            created=int(time.time()),
-            base_image=base_name,
-            os_id=os_id,
-            kver=kver,
-            arch=os_arts.arch,
-            # Track the human who ran `sudo ltvm create`.  SUDO_USER
-            # is set when invoked via sudo (the normal path); fall
-            # back to "root" if invoked as root directly.  Surfaced
-            # in `ltvm list` so a shared host can show whose VM is
-            # whose without forcing per-user namespaces.
-            creator=os.environ.get("SUDO_USER", "") or "root",
-            variant=variant,
-            nics=list(extra_nic_types),
-            # passthrough_drivers is filled in below, inside the launch
-            # umbrella, after we've actually bound each BDF to vfio-pci.
-            passthrough_drivers={},
-        )
-
-        _create_disks(vm, image)
-        _chown_disks_to_sudo_user(vm)
-
-        vm.save()
-    # Lock released; IP is now committed.
-    #
+    vm = _allocate_and_persist_vm(
+        args,
+        info_path,
+        tap,
+        mac,
+        os_arts,
+        image,
+        kernel,
+        kver,
+        os_id,
+        base_name,
+        variant,
+        extra_nic_types,
+        disk_size,
+    )
     # If anything from launch_qemu through _seed_kdump_boot raises or
     # die()s, we want to leave the user with a clean slate (no
     # half-created VM, no leaked overlay/.info/IP/TAP).  Wrap the
