@@ -426,6 +426,62 @@ def _handle_existing_vm(name: str, args: argparse.Namespace) -> bool:
     return True
 
 
+def _resolve_os_and_kernel(args: argparse.Namespace) -> tuple:
+    """Resolve the OS target + kernel + image for create, and read
+    the kernel version from meta.json.  Mutates args.mem to the
+    target's default if the user didn't pass --mem.  Prints the
+    "using default target" banner when every artifact is defaulted.
+
+    Returns (os_arts, image, kernel, kver, os_target, variant).
+    """
+    os_target = getattr(args, "os", "")
+    explicit_image = getattr(args, "image", "")
+    explicit_kernel = getattr(args, "kernel", "")
+    arch = getattr(args, "arch", None) or "x86_64"
+    variant = getattr(args, "variant", None) or "base"
+    defaulted_target = not os_target
+    if defaulted_target:
+        os_target = DEFAULT_TARGET
+    # Pass explicit_kernel (a name, not a path) through to resolve_os_artifacts
+    # which will find the right kernel dir and pair the correct image with it.
+    os_arts = resolve_os_artifacts(
+        os_target, arch=arch, kernel=explicit_kernel or None, variant=variant
+    )
+    image = explicit_image or str(os_arts.image)
+    kernel = str(os_arts.kernel)
+    # If the user didn't pass --mem, fall back to the target's default
+    # (rocky10 needs 4096; others use 2048).  argparse default is None
+    # so we can distinguish "user said 2048" from "user said nothing".
+    if args.mem is None:
+        args.mem = os_arts.default_mem
+    if defaulted_target and not explicit_image and not explicit_kernel:
+        kver_short = os_arts.kernel.parent.name
+        disk_desc = (
+            f"mdt={args.mdt_disks} ost={args.ost_disks}"
+            if (args.mdt_disks or args.ost_disks)
+            else "no data disks"
+        )
+        image_meta = load_meta_safe(Path(os_arts.image).parent / "meta.json")
+        lver = (image_meta or {}).get("lustre_version")
+        lustre_desc = f" lustre={lver}" if lver else " (no lustre baked in)"
+        print(
+            f"using default target: {os_target} "
+            f"(kernel: {kver_short};{lustre_desc}; "
+            f"vcpus={args.vcpus} mem={args.mem}MB {disk_desc})"
+        )
+
+    # Read kernel version from meta.json next to the kernel binary
+    kernel_meta = Path(kernel).parent / "meta.json"
+    meta = load_meta_safe(kernel_meta)
+    if meta is None or not meta.get("kernel_version"):
+        raise RuntimeError(
+            f"kernel meta.json missing kernel_version: {kernel_meta}"
+        )
+    kver = meta["kernel_version"]
+
+    return os_arts, image, kernel, kver, os_target, variant
+
+
 def _validate_create_bounds(args: argparse.Namespace) -> tuple[list[str], list[str]]:
     """Validate bounds/specs that must die() before any on-disk VM
     state is touched.  Returns (extra_nic_types, passthrough_bdfs).
@@ -653,53 +709,9 @@ def cmd_create(args: argparse.Namespace) -> None:
     tap = tap_for_name(name)
     mac = mac_for_name(name)
 
-    os_target = getattr(args, "os", "")
-    explicit_image = getattr(args, "image", "")
-    explicit_kernel = getattr(args, "kernel", "")
-    arch = getattr(args, "arch", None) or "x86_64"
-    variant = getattr(args, "variant", None) or "base"
-    defaulted_target = not os_target
-    if defaulted_target:
-        os_target = DEFAULT_TARGET
-    # Pass explicit_kernel (a name, not a path) through to resolve_os_artifacts
-    # which will find the right kernel dir and pair the correct image with it.
-    os_arts = resolve_os_artifacts(
-        os_target, arch=arch, kernel=explicit_kernel or None, variant=variant
-    )
-    image = explicit_image or str(os_arts.image)
-    kernel = str(os_arts.kernel)
-    # If the user didn't pass --mem, fall back to the target's default
-    # (rocky10 needs 4096; others use 2048).  argparse default is None
-    # so we can distinguish "user said 2048" from "user said nothing".
-    if args.mem is None:
-        args.mem = os_arts.default_mem
-    if defaulted_target and not explicit_image and not explicit_kernel:
-        kver_short = os_arts.kernel.parent.name
-        disk_desc = (
-            f"mdt={args.mdt_disks} ost={args.ost_disks}"
-            if (args.mdt_disks or args.ost_disks)
-            else "no data disks"
-        )
-        image_meta = load_meta_safe(Path(os_arts.image).parent / "meta.json")
-        lver = (image_meta or {}).get("lustre_version")
-        lustre_desc = f" lustre={lver}" if lver else " (no lustre baked in)"
-        print(
-            f"using default target: {os_target} "
-            f"(kernel: {kver_short};{lustre_desc}; "
-            f"vcpus={args.vcpus} mem={args.mem}MB {disk_desc})"
-        )
-
+    os_arts, image, kernel, kver, os_target, variant = _resolve_os_and_kernel(args)
     base_name = Path(image).name
     os_id = os_target
-
-    # Read kernel version from meta.json next to the kernel binary
-    kernel_meta = Path(kernel).parent / "meta.json"
-    meta = load_meta_safe(kernel_meta)
-    if meta is None or not meta.get("kernel_version"):
-        raise RuntimeError(
-            f"kernel meta.json missing kernel_version: {kernel_meta}"
-        )
-    kver = meta["kernel_version"]
 
     disk_size = _parse_disk_size(getattr(args, "disk_size", None))
 
