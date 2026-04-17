@@ -9,19 +9,19 @@ argparse setup and dispatch only.
 """
 
 # NOTE: this guard must use only syntax valid in Python 2.7 and 3.6,
-# because it runs before any 3.9+ syntax below is parsed.  Rocky/RHEL 8
+# because it runs before any 3.10+ syntax below is parsed.  Rocky/RHEL 8
 # ships python3 as 3.6; without this check users see a cryptic
 # SyntaxError pointing at a random line rather than a clear message.
-# No `from __future__ import annotations` in this file: that feature
-# was added in 3.7 so it would raise its own SyntaxError on 3.6 before
-# this guard runs.  PEP 585 generics (set[int], tuple[Any, ...]) work
-# natively on 3.9+, so the future import is not needed anyway.
+# PEP 604 union syntax (e.g. `int | None`) is evaluated at def time
+# on default-argument annotations, so `from __future__ import
+# annotations` wouldn't help -- 3.10 is a hard floor.
 import sys
-if sys.version_info < (3, 9):
+if sys.version_info < (3, 10):
     sys.stderr.write(
-        "ltvm requires Python 3.9 or newer (this is %d.%d.%d).\n"
-        "On Rocky/RHEL 8: dnf install python39 && "
-        "python3.9 ./ltvm <args>\n"
+        "ltvm requires Python 3.10 or newer (this is %d.%d.%d).\n"
+        "On Rocky/RHEL 8: dnf install python3.11 && "
+        "python3.11 ./ltvm <args>\n"
+        "On macOS: brew install python@3.13  (or use pyenv)\n"
         % sys.version_info[:3]
     )
     sys.exit(1)
