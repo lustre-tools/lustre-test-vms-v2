@@ -840,25 +840,24 @@ def install_qemu_macos(force: bool = False) -> None:
                 "in the expected Homebrew prefix. Check: brew --prefix qemu"
             )
 
-    QEMU_PREFIX.mkdir(parents=True, exist_ok=True)
-    (QEMU_PREFIX / "bin").mkdir(exist_ok=True)
+    _sudo_run(["mkdir", "-p", str(QEMU_PREFIX / "bin")], quiet=True)
 
     for tool in ("qemu-system-x86_64", "qemu-system-aarch64", "qemu-img"):
         src = brew_prefix / "bin" / tool
         if src.exists():
             link = QEMU_PREFIX / "bin" / tool
-            link.unlink(missing_ok=True)
-            link.symlink_to(src)
+            _sudo_run(["rm", "-f", str(link)], quiet=True)
+            _sudo_run(["ln", "-s", str(src), str(link)], quiet=True)
 
     # Homebrew puts firmware under <prefix>/share/qemu/; we need
     # QEMU_PREFIX/share/qemu/ to point there so QEMU finds it.
     brew_share_qemu = brew_prefix / "share" / "qemu"
     if brew_share_qemu.is_dir():
         share_dir = QEMU_PREFIX / "share"
-        share_dir.mkdir(exist_ok=True)
+        _sudo_run(["mkdir", "-p", str(share_dir)], quiet=True)
         share_link = share_dir / "qemu"
-        share_link.unlink(missing_ok=True)
-        share_link.symlink_to(brew_share_qemu)
+        _sudo_run(["rm", "-f", str(share_link)], quiet=True)
+        _sudo_run(["ln", "-s", str(brew_share_qemu), str(share_link)], quiet=True)
 
     ver_r = _run_quiet(
         [str(QEMU_PREFIX / "bin" / "qemu-system-x86_64"), "--version"],
@@ -1551,8 +1550,11 @@ def _run_setup_macos(
     need_symlink = ltvm_script.exists() and not (
         link.is_symlink() and link.resolve() == ltvm_script.resolve()
     )
-    if need_symlink:
-        _sudo_prime(f"Installing the ltvm symlink at {link} requires root")
+    if "qemu" in active or need_symlink:
+        _sudo_prime(
+            "Installing ltvm on macOS needs sudo for /opt/qemu and "
+            f"{link}"
+        )
 
     if "qemu" in active:
         install_qemu_macos(force=force)
