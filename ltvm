@@ -17,9 +17,10 @@ argparse setup and dispatch only.
 # this guard runs.  PEP 604 union syntax (`int | None`) and other
 # 3.10 features used throughout the codebase require 3.10+.
 import sys
+
 if sys.version_info < (3, 10):
     sys.stderr.write(
-        "error: ltvm requires Python 3.10+; this is Python %d.%d.%d\n"
+        "error: ltvm requires Python 3.10+; this is Python %d.%d.%d\n"  # noqa: UP031
         "hint: pyenv install 3.12.13 && pyenv global 3.12.13\n"
         "      (or brew install python@3.13 and put /opt/homebrew/bin "
         "first in PATH)\n"
@@ -1036,8 +1037,8 @@ def _reconcile_target_args(args: argparse.Namespace) -> int | None:
 
     if pos is not None and flag is not None and pos != flag:
         sys.stderr.write(
-            "error: --target {flag!r} conflicts with positional "
-            "target {pos!r}; pass only one\n".format(flag=flag, pos=pos)
+            f"error: --target {flag!r} conflicts with positional "
+            f"target {pos!r}; pass only one\n"
         )
         return EXIT_ERROR
 

@@ -21,6 +21,16 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
+from ltvm_pkg.cli.util import (
+    EXIT_ERROR,
+    EXIT_OK,
+    _artifact_label,
+    _container_status,
+    _error,
+    _load_target,
+    _load_target_args,
+    _output,
+)
 from ltvm_pkg.host_setup import (
     PodmanMachineError,
     check_podman_machine_macos,
@@ -28,23 +38,10 @@ from ltvm_pkg.host_setup import (
     should_stop_podman_machine_macos,
     stop_podman_machine_macos,
 )
-from ltvm_pkg.image_build import build_image, image_status
-from ltvm_pkg.kernel_build import build_kernel, kernel_status
-from ltvm_pkg.lustre_build import build_lustre, staging_path
-from ltvm_pkg.lustre_compat import validate_target
-from ltvm_pkg.target_config import LustreMode, TargetConfig, list_targets
-
-from ltvm_pkg.cli.util import (
-    EXIT_ERROR,
-    EXIT_OK,
-    _artifact_label,
-    _container_status,
-    _emit_error,
-    _error,
-    _load_target,
-    _load_target_args,
-    _output,
-)
+from ltvm_pkg.image_build import image_status
+from ltvm_pkg.kernel_build import kernel_status
+from ltvm_pkg.lustre_build import staging_path
+from ltvm_pkg.target_config import LustreMode, TargetConfig
 
 
 def _preflight_podman(use_json: bool) -> int | None:
@@ -396,7 +393,7 @@ def cmd_build_mofed_kmods(args: argparse.Namespace) -> int:
             f"target {tc.name!r} is bound to base variant -- "
             f"mofed-kmods only applies to a mofed variant",
             use_json,
-            hint=f"Pass --variant mofed-24 (or whichever mofed-* is declared)",
+            hint="Pass --variant mofed-24 (or whichever mofed-* is declared)",
         )
 
     err = _preflight_container(tc, use_json)

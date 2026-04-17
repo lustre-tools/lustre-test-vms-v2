@@ -732,8 +732,14 @@ class TestInstallPodmanMacos:
 
         with (
             patch("ltvm_pkg.host_setup.shutil.which", side_effect=which),
-            patch("ltvm_pkg.host_setup._run", side_effect=lambda c, **kw: fake_run(c, **kw)),
-            patch("ltvm_pkg.host_setup.subprocess.run", side_effect=lambda c, **kw: fake_run(c, **kw)),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
         ):
             started = install_podman_macos()
 
@@ -759,8 +765,14 @@ class TestInstallPodmanMacos:
                 "ltvm_pkg.host_setup.shutil.which",
                 return_value="/opt/homebrew/bin/podman",
             ),
-            patch("ltvm_pkg.host_setup._run", side_effect=lambda c, **kw: fake_run(c, **kw)),
-            patch("ltvm_pkg.host_setup.subprocess.run", side_effect=lambda c, **kw: fake_run(c, **kw)),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
         ):
             started = install_podman_macos()
 
@@ -789,8 +801,14 @@ class TestInstallPodmanMacos:
                 "ltvm_pkg.host_setup.shutil.which",
                 return_value="/opt/homebrew/bin/podman",
             ),
-            patch("ltvm_pkg.host_setup._run", side_effect=lambda c, **kw: fake_run(c, **kw)),
-            patch("ltvm_pkg.host_setup.subprocess.run", side_effect=lambda c, **kw: fake_run(c, **kw)),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
         ):
             started = install_podman_macos()
 
@@ -818,8 +836,14 @@ class TestInstallPodmanMacos:
                 "ltvm_pkg.host_setup.shutil.which",
                 return_value="/opt/homebrew/bin/podman",
             ),
-            patch("ltvm_pkg.host_setup._run", side_effect=lambda c, **kw: fake_run(c, **kw)),
-            patch("ltvm_pkg.host_setup.subprocess.run", side_effect=lambda c, **kw: fake_run(c, **kw)),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
         ):
             started = install_podman_macos()
 
