@@ -704,6 +704,12 @@ class TargetConfig:
             inner_path = ltvm_pkg_dir / inner_name
             if inner_path.exists():
                 h.update(inner_path.read_bytes())
+            # Also fold in the shared cross-compile helper -- both
+            # inner scripts source it, so editing it MUST invalidate
+            # the cached vmlinux or is_stale silently returns False.
+            cross_helper = TARGETS_DIR / "common" / "cross-compile-env.sh"
+            if cross_helper.exists():
+                h.update(cross_helper.read_bytes())
 
         elif artifact == "image":
             # Image output is keyed per-kernel because /lib/modules/<kver>/
