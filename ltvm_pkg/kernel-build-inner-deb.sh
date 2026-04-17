@@ -28,45 +28,20 @@ KERNEL_DEB_SOURCE="${KERNEL_DEB_SOURCE:-linux-source-6.8.0}"
 TARGET_ARCH="${TARGET_ARCH:-x86_64}"
 BUILD=/build/kernel-src
 
-# Architecture-dependent paths and cross-compilation
-HOST_ARCH=$(uname -m)
-MAKE_ARCH_FLAGS=()
-
-case "$TARGET_ARCH" in
-	aarch64)
-		DEB_ARCH="arm64"
-		KERNEL_IMAGE="arch/arm64/boot/Image.gz"
-		MAKE_TARGETS="vmlinux Image.gz"
-		MAKE_ARCH_FLAGS=(ARCH=arm64)
-		if [[ "$HOST_ARCH" != "aarch64" ]]; then
-			MAKE_ARCH_FLAGS+=(CROSS_COMPILE=aarch64-linux-gnu-)
-			# Cross-compiler may be stricter than native; demote -Werror
-			# variants to warnings.
-			MAKE_ARCH_FLAGS+=("KCFLAGS=-Wno-error -Wno-error=incompatible-pointer-types -Wno-error=missing-prototypes -Wno-error=enum-int-mismatch")
-			echo "    Cross-compiling: ${HOST_ARCH} -> aarch64"
-		fi
-		;;
-	*)
-		DEB_ARCH="amd64"
-		KERNEL_IMAGE="arch/x86/boot/bzImage"
-		MAKE_TARGETS="vmlinux bzImage"
-		;;
-esac
+# Source the shared cross-compile env helper (see kernel-build-inner.sh
+# for the full list of exports it provides).
+# shellcheck disable=SC1091
+source /input/staging/cross-compile-env.sh
 
 echo "=== kernel-build-inner-deb.sh ==="
 echo "    Jobs: ${JOBS}"
 echo "    Target arch: ${TARGET_ARCH}"
 echo "    Source package: ${KERNEL_DEB_SOURCE}"
-
-# Install cross-compiler if cross-compiling
-if [[ "$TARGET_ARCH" == "aarch64" && "$(uname -m)" != "aarch64" ]]; then
-	echo "--- Installing aarch64 cross-compiler..."
-	if command -v dnf &>/dev/null; then
-		dnf -y install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu 2>&1 | tail -3
-	elif command -v apt-get &>/dev/null; then
-		apt-get update -qq && apt-get install -y gcc-aarch64-linux-gnu 2>&1 | tail -3
-	fi
+if [[ "$CROSSING" == "1" ]]; then
+	echo "    Cross-compiling: ${HOST_ARCH} -> ${TARGET_ARCH}"
 fi
+
+cross_ensure_toolchain
 
 echo "    GCC: $(gcc --version | head -1)"
 

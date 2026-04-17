@@ -573,9 +573,13 @@ def _build_kernel_deb(
         frag = _build_config_fragment(target_config)
         (staging / "config.fragment").write_text(frag)
 
-        # Copy inner build script
+        # Copy inner build script + shared cross-compile helper
         shutil.copy2(INNER_SCRIPT_DEB, staging / "kernel-build-inner-deb.sh")
         os.chmod(staging / "kernel-build-inner-deb.sh", 0o755)
+        shutil.copy2(
+            TARGETS_DIR / "common" / "cross-compile-env.sh",
+            staging / "cross-compile-env.sh",
+        )
 
         # Run build in container
         jobs = os.cpu_count() or 4
@@ -720,9 +724,13 @@ def _build_kernel_srpm(
         frag = _build_config_fragment(target_config)
         (staging / "config.fragment").write_text(frag)
 
-        # Copy inner build script
+        # Copy inner build script + shared cross-compile helper
         shutil.copy2(INNER_SCRIPT, staging / "kernel-build-inner.sh")
         os.chmod(staging / "kernel-build-inner.sh", 0o755)
+        shutil.copy2(
+            TARGETS_DIR / "common" / "cross-compile-env.sh",
+            staging / "cross-compile-env.sh",
+        )
 
         # Run build in container
         jobs = os.cpu_count() or 4
