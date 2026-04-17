@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -22,6 +23,9 @@ from ltvm_pkg.host_setup import (
 )
 
 
+@pytest.mark.skipif(
+    platform.system() == "Darwin", reason="HostInfo is Linux-only"
+)
 class TestHostInfo:
     def test_detects_current_host(self) -> None:
         """Should not raise on this machine."""
@@ -136,6 +140,9 @@ class TestSetupSsh:
 # ------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    platform.system() == "Darwin", reason="HostInfo is Linux-only"
+)
 class TestHostInfoNoPkgMgr:
     def test_raises_when_no_package_manager(self) -> None:
         """RuntimeError raised when neither dnf nor apt-get found."""
