@@ -523,6 +523,10 @@ class TestVerify:
         assert result["qemu"]["installed"] is False
         assert result["all_ok"] is False
 
+    @pytest.mark.skipif(
+        platform.system() == "Darwin",
+        reason="verify() KVM check is Linux-only",
+    )
     def test_kvm_missing(self) -> None:
         """all_ok=False when /dev/kvm is absent."""
         ssh_mock = MagicMock()
