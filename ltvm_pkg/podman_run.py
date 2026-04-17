@@ -86,17 +86,25 @@ def run_podman_with_cleanup(
 
     cidfile_path: Path | None = None
     final_cmd = cmd
-    if is_podman_run and "--cidfile" not in cmd:
-        fd, tmp = tempfile.mkstemp(prefix="ltvm-cidfile-")
-        os.close(fd)
-        # podman refuses to start when --cidfile already exists.
-        os.unlink(tmp)
-        cidfile_path = Path(tmp)
-        # Inject --cidfile immediately after `podman run`; any
-        # position before the image tag works, but right after the
-        # subcommand keeps it obvious and out of the way of flags
-        # that callers order meaningfully.
-        final_cmd = [cmd[0], cmd[1], "--cidfile", str(cidfile_path), *cmd[2:]]
+    if is_podman_run:
+        injected: list[str] = []
+        if "--cidfile" not in cmd:
+            fd, tmp = tempfile.mkstemp(prefix="ltvm-cidfile-")
+            os.close(fd)
+            # podman refuses to start when --cidfile already exists.
+            os.unlink(tmp)
+            cidfile_path = Path(tmp)
+            injected += ["--cidfile", str(cidfile_path)]
+        if not any(c == "--ulimit" or c.startswith("--ulimit=") for c in cmd):
+            # Kernel kbuild opens thousands of file descriptors walking
+            # Kconfig / generated headers; podman machine on macOS
+            # defaults to ~1024 and the build aborts with
+            # "Too many open files.  Stop.".  Raise the soft+hard limit
+            # to the value podman itself recommends for long-running
+            # container workloads.
+            injected += ["--ulimit", "nofile=1048576:1048576"]
+        if injected:
+            final_cmd = [cmd[0], cmd[1], *injected, *cmd[2:]]
 
     # Child runs in its own session so the terminal's pgrp SIGINT
     # doesn't reach it before we've had a chance to ask podman to
