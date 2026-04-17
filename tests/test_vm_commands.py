@@ -332,13 +332,15 @@ def _create_args(**overrides) -> argparse.Namespace:
         "disk_size": None,
         "image": "",
         "kernel": "",
-        "os": "",
+        "target": "",
         "arch": None,
         "ip": None,
         "json": False,
         "_quiet": True,
         "nic": None,  # repeatable --nic; None == no extras
     }
+    if "os" in overrides:
+        overrides["target"] = overrides.pop("os")
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 

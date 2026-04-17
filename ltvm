@@ -337,9 +337,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
     )
     bap.add_argument(
-        "--lustre-build",
+        "--skip-lustre",
         action="store_true",
-        help="Also build Lustre against the target kernel",
+        help="Skip building Lustre against the target kernel",
     )
     bap.set_defaults(func=cmd_build_all)
 
@@ -391,25 +391,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common, kernel_arg, force_arg, force_compat_arg, variant_arg],
         help="Build a Lustre source tree against the target kernel build-tree",
     )
-    # build lustre is a two-positional subcommand: <target> <lustre-tree>.
-    # Target defaults to rocky9 (historical).  --target also works.
-    blp.add_argument(
-        "target", nargs="?", default=None,
-        help="OS target (default: rocky9); also accepts --target"
-    )
-    blp.add_argument(
-        "lustre_tree_pos",
-        nargs="?",
-        default=None,
-        metavar="lustre-tree",
-        help="Path to Lustre source tree (positional or --lustre-tree)",
-    )
-    blp.add_argument(
-        "--target",
-        dest=_TARGET_FLAG_DEST,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
+    _add_target_arg(blp, required=True)
     blp.add_argument(
         "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
     )
@@ -701,19 +683,6 @@ def build_parser() -> argparse.ArgumentParser:
         "--image", default=None, help="Explicit base image path"
     )
     _vm_create_args.add_argument(
-        "--kernel", default=None, help="Explicit kernel path"
-    )
-    # --target accepts the same OS name as the positional 'target'.
-    # Parked on a sentinel dest; the CLI reconciler sets both
-    # args.target and args.os (the latter is what vm_commands reads)
-    # after checking for conflicts with the positional.
-    _vm_create_args.add_argument(
-        "--target",
-        dest=_TARGET_FLAG_DEST,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    _vm_create_args.add_argument(
         "--mdt-disks",
         dest="mdt_disks",
         type=int,
@@ -737,11 +706,6 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     _vm_create_args.add_argument(
-        "--variant",
-        default="base",
-        help="Target variant to boot (default: base). E.g. 'mofed'.",
-    )
-    _vm_create_args.add_argument(
         "--nic",
         action="append",
         default=None,
@@ -756,18 +720,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser(
         "create",
-        parents=[common, _vm_create_args],
+        parents=[common, _vm_create_args, kernel_arg, variant_arg],
         help="Create a VM (idempotent: starts it if stopped, no-ops if running)",
     )
     sp.add_argument("name", help="VM name (e.g. co1-single)")
-    # Optional positional target; also accepts --target.  If omitted,
-    # vm_commands falls back to DEFAULT_TARGET.
-    sp.add_argument(
-        "target",
-        nargs="?",
-        default=None,
-        help="OS target (e.g. rocky9); also accepts --target",
-    )
+    _add_target_arg(sp)
     sp.set_defaults(func=cmd_create)
 
     # -- VM lifecycle: destroy --
@@ -939,9 +896,10 @@ def build_parser() -> argparse.ArgumentParser:
         "also accepts --target",
     )
     sp.add_argument(
-        "--build",
+        "--lustre-tree",
         default=None,
-        help="Lustre build tree (default: bundled fetch output, else cwd)",
+        help="Path to Lustre source tree "
+        "(default: bundled fetch output, else cwd)",
     )
     sp.add_argument(
         "--mount", action="store_true", help="Mount filesystem after deploy"
@@ -1013,13 +971,9 @@ def _reconcile_target_args(args: argparse.Namespace) -> int | None:
 
     Both forms are first-class.  If both are given and disagree, this
     prints a clear error and returns EXIT_ERROR so the caller can abort.
-    On success (or when neither form applies), returns None and:
-
-      * sets args.target to the resolved value (positional takes
-        precedence; falls back to the --target flag);
-      * mirrors args.target into args.os for subcommands whose
-        downstream handlers read args.os (e.g. `create` via
-        vm_commands).
+    On success (or when neither form applies), returns None and sets
+    args.target to the resolved value (positional takes precedence;
+    falls back to the --target flag).
 
     Subcommands that don't use --target at all (e.g. `list`, `destroy`)
     are left untouched.
@@ -1041,21 +995,8 @@ def _reconcile_target_args(args: argparse.Namespace) -> int | None:
         return EXIT_ERROR
 
     resolved = pos if pos is not None else flag
-    # Historical: `build lustre` defaults target to rocky9 when neither
-    # form is supplied.  Preserve that behavior now that the positional
-    # default is None (was "rocky9") so we can detect "not given".
-    if (
-        resolved is None
-        and args.command == "build"
-        and getattr(args, "build_action", None) == "lustre"
-    ):
-        resolved = "rocky9"
     if has_pos_attr:
         args.target = resolved
-    # Mirror into args.os for handlers that read it (create, cluster).
-    # Only set when the subcommand registered an `os` dest originally.
-    if hasattr(args, "os") or args.command == "create":
-        args.os = resolved
     # Drop the internal sentinel so downstream code doesn't see it.
     if has_flag_attr:
         try:

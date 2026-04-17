@@ -535,7 +535,7 @@ def _resolve_os_and_kernel(args: argparse.Namespace) -> tuple:
     """
     from .cli.util import host_arch
 
-    os_target = getattr(args, "os", "")
+    os_target = getattr(args, "target", "") or ""
     explicit_image = getattr(args, "image", "")
     explicit_kernel = getattr(args, "kernel", "")
     arch = getattr(args, "arch", None) or host_arch()

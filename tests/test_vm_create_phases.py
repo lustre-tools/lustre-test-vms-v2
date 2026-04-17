@@ -72,7 +72,7 @@ def _create_args(**overrides: Any) -> argparse.Namespace:
         "disk_size": None,
         "image": "",
         "kernel": "",
-        "os": "",
+        "target": "",
         "arch": None,
         "variant": None,
         "ip": None,
@@ -80,6 +80,9 @@ def _create_args(**overrides: Any) -> argparse.Namespace:
         "_quiet": True,
         "nic": None,
     }
+    # Back-compat shim: callers still may pass os="..."; map to target.
+    if "os" in overrides:
+        overrides["target"] = overrides.pop("os")
     defaults.update(overrides)
     return argparse.Namespace(**defaults)
 

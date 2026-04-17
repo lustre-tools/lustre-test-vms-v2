@@ -128,8 +128,8 @@ def _do_build_container(target_config: TargetConfig) -> str:
 def cmd_build_all(args: argparse.Namespace) -> int:
     """Build container + kernel + image for a target.
 
-    With --lustre-build, also builds the Lustre source tree
-    against the freshly built kernel.
+    Also builds the Lustre source tree against the freshly built
+    kernel by default; pass --skip-lustre to opt out.
     """
     use_json = args.json
     tc, err = _load_target_args(args, use_json)
@@ -143,7 +143,7 @@ def cmd_build_all(args: argparse.Namespace) -> int:
 
     # build-all always requires a Lustre tree -- even for deb targets
     # where the kernel build itself doesn't need one, the surrounding
-    # workflow (image inject, optional --lustre-build, packaging) does.
+    # workflow (image inject, optional Lustre build, packaging) does.
     lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(args.lustre_tree)
     if err_msg:
         return _error(
@@ -199,10 +199,10 @@ def cmd_build_all(args: argparse.Namespace) -> int:
     except Exception as e:
         return _error(f"Kernel build failed: {e}", use_json)
 
-    # 3. Lustre (optional -- only when --lustre-build is passed).
+    # 3. Lustre (enabled by default; --skip-lustre opts out).
     # Runs BEFORE the image so its per-kernel staging is in place for
     # the image-bake step to auto-inject.
-    lustre_build = getattr(args, "lustre_build", False)
+    lustre_build = not getattr(args, "skip_lustre", False)
     if lustre_build:
         if not use_json:
             print(
@@ -594,10 +594,9 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    lustre_tree_arg = getattr(args, "lustre_tree_pos", None) or getattr(
-        args, "lustre_tree", None
+    lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(
+        getattr(args, "lustre_tree", None)
     )
-    lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(lustre_tree_arg)
     if err_msg:
         return _error(
             err_msg,
