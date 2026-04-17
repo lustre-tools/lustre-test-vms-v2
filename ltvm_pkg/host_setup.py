@@ -815,6 +815,120 @@ def ensure_socket_vmnet_running() -> None:
     )
 
 
+def _podman_machine_list_macos() -> list[dict[str, Any]]:
+    """Return `podman machine list --format json` parsed, or [] on failure."""
+    try:
+        r = subprocess.run(
+            ["podman", "machine", "list", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0 or not r.stdout.strip():
+        return []
+    try:
+        parsed = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return parsed
+
+
+def install_podman_macos(force: bool = False) -> bool:
+    """Install podman on macOS and ensure a podman machine is running.
+
+    Returns True if this call started (or initialized+started) the machine,
+    False if it was already running.  Idempotent and safe to re-run.
+    """
+    if not shutil.which("podman"):
+        brew = shutil.which("brew")
+        if not brew:
+            raise RuntimeError(
+                "Homebrew not found. Install it from https://brew.sh, "
+                "then run: brew install podman"
+            )
+        log.info("Installing podman via Homebrew...")
+        _run([brew, "install", "podman"])
+    elif not force:
+        log.info("podman already installed")
+
+    machines = _podman_machine_list_macos()
+    if not machines:
+        log.info("Initializing podman machine (podman machine init)...")
+        _run(["podman", "machine", "init"])
+        machines = _podman_machine_list_macos()
+
+    if any(m.get("Running") for m in machines):
+        log.info("podman machine already running")
+        return False
+
+    log.info("Starting podman machine (podman machine start)...")
+    _run(["podman", "machine", "start"])
+    return True
+
+
+def should_stop_podman_machine_macos() -> bool:
+    """Return True if it's safe to auto-stop the podman machine.
+
+    Safe means: no containers running, or every running container uses an
+    ltvm build image (tag starts with 'ltvm-build-' or 'ltvm-').  If any
+    non-ltvm container is running the user is doing other podman work, so
+    we leave the machine up.
+    """
+    try:
+        r = subprocess.run(
+            ["podman", "ps", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if r.returncode != 0:
+        return False
+    try:
+        parsed = json.loads(r.stdout or "[]")
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, list):
+        return False
+    if not parsed:
+        return True
+    for c in parsed:
+        images: list[str] = []
+        img = c.get("Image")
+        if isinstance(img, str):
+            images.append(img)
+        names = c.get("ImageName") or c.get("Names")
+        if isinstance(names, list):
+            images.extend(n for n in names if isinstance(n, str))
+        elif isinstance(names, str):
+            images.append(names)
+        if not images:
+            return False
+        if not all(_is_ltvm_image_tag(t) for t in images):
+            return False
+    return True
+
+
+def _is_ltvm_image_tag(tag: str) -> bool:
+    """Return True if the image tag is an ltvm-produced build image."""
+    base = tag.rsplit("/", 1)[-1]
+    return base.startswith("ltvm-build-") or base.startswith("ltvm-")
+
+
+def stop_podman_machine_macos() -> None:
+    """Stop the podman machine; log and swallow errors."""
+    log.info("Stopping podman machine (podman machine stop)...")
+    try:
+        _run(["podman", "machine", "stop"], check=False, quiet=True)
+    except OSError as e:
+        log.warning("podman machine stop failed: %s", e)
+
+
 def install_qemu_macos(force: bool = False) -> None:
     """Install QEMU on macOS via Homebrew."""
     existing = _qemu_installed_version()
@@ -1541,7 +1655,7 @@ def _run_setup_macos(
         )
 
     all_steps = steps is None
-    active: set[str] = set(steps or ["qemu", "network"])
+    active: set[str] = set(steps or ["qemu", "network", "podman"])
 
     log.info("Host: macOS %s (%s)", platform.mac_ver()[0], platform.machine())
 
@@ -1562,6 +1676,9 @@ def _run_setup_macos(
     if "network" in active:
         install_socket_vmnet_macos(force=force)
         install_socket_vmnet_launchd_macos(force=force)
+
+    if "podman" in active:
+        install_podman_macos(force=force)
 
     if need_symlink:
         _sudo_run(["rm", "-f", str(link)])
