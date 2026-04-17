@@ -309,6 +309,222 @@ def _srpm_fallback_urls(base_url: str, srpm_name: str) -> list[str]:
 
 
 # ------------------------------------------------------------------
+# SRPM-not-found diagnostics
+# ------------------------------------------------------------------
+
+
+class SrpmNotFoundError(RuntimeError):
+    """Raised when every candidate SRPM URL returns 404.
+
+    Carries enough context for a user-friendly multi-line error:
+    the requested SRPM, a guess at the latest matching SRPM published
+    by the repo (None if offline/unprobeable), the Lustre target
+    family name, and the list of siblings we found in the tree.
+    """
+
+    def __init__(
+        self,
+        srpm_name: str,
+        latest_available: str | None,
+        lustre_target: str,
+        family: str,
+        siblings: list[str],
+        target_name: str,
+        lustre_tree: str | Path | None,
+    ) -> None:
+        self.srpm_name = srpm_name
+        self.latest_available = latest_available
+        self.lustre_target = lustre_target
+        self.family = family
+        self.siblings = siblings
+        self.target_name = target_name
+        self.lustre_tree = lustre_tree
+        super().__init__(self._format())
+
+    def _format(self) -> str:
+        lines = [f"kernel SRPM {self.srpm_name} not found in Rocky repos", ""]
+        if self.latest_available:
+            lines += [
+                "  Rocky may lag behind RHEL on kernel rebuilds. The latest",
+                f"  matching SRPM currently published by Rocky appears to be:",
+                f"    {self.latest_available}",
+            ]
+        else:
+            lines += [
+                "  Rocky may lag behind RHEL on kernel rebuilds, or the",
+                "  repo directory could not be probed (offline?).",
+            ]
+        suggestion = self._suggestion()
+        if suggestion:
+            tree = (
+                str(self.lustre_tree) if self.lustre_tree else "/path/to/lustre-release"
+            )
+            lines += [
+                "",
+                "hint: Try an older Lustre target that Rocky has caught up on:",
+                f"  ltvm build kernel {self.target_name} "
+                f"--kernel {suggestion} --lustre-tree {tree}",
+            ]
+        if self.siblings:
+            lines += [
+                "",
+                f"Available Lustre {self.family} targets:",
+                "  " + "  ".join(self.siblings),
+            ]
+        return "\n".join(lines)
+
+    def _suggestion(self) -> str | None:
+        """Pick a sibling target to suggest in the hint line."""
+        if not self.siblings:
+            return None
+        if self.lustre_target in self.siblings:
+            i = self.siblings.index(self.lustre_target)
+            if i > 0:
+                return self.siblings[i - 1]
+        return self.siblings[0]
+
+
+def _url_returns_404(url: str, timeout: float = 5.0) -> bool | None:
+    """True if HEAD returns 404, False if any other HTTP status, None on
+    network/transport error (treat as 'unknown -- probably offline')."""
+    import urllib.error
+    import urllib.request
+
+    req = urllib.request.Request(url, method="HEAD")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            _ = resp.status
+        return False
+    except urllib.error.HTTPError as e:
+        return e.code == 404
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+
+
+def _probe_latest_rocky_srpm(
+    parent_url: str, srpm_name: str, timeout: float = 5.0
+) -> str | None:
+    """Scrape the parent directory's HTML index for the highest version
+    of kernel-<major>-*.el<N>_<M>.src.rpm.  Returns None on any error."""
+    import urllib.error
+    import urllib.request
+
+    m = re.match(r"^(kernel-[\d.]+)-.*\.(el\d+_\d+)\.src\.rpm$", srpm_name)
+    if not m:
+        return None
+    prefix, elver = m.group(1), m.group(2)
+    pattern = re.compile(
+        rf'href="({re.escape(prefix)}-[^"]*?\.{re.escape(elver)}\.src\.rpm)"'
+    )
+    try:
+        with urllib.request.urlopen(parent_url + "/", timeout=timeout) as resp:  # noqa: S310
+            html = resp.read().decode("utf-8", errors="replace")
+    except (urllib.error.URLError, TimeoutError, OSError):
+        return None
+    names = sorted(set(pattern.findall(html)), key=_srpm_version_key)
+    return names[-1] if names else None
+
+
+def _srpm_version_key(name: str) -> tuple:
+    """Sort key for kernel-<maj>-<rel>.elN_M.src.rpm: numeric tuples."""
+    m = re.match(r"^kernel-([\d.]+)-([\d.]+)\.el\d+_\d+\.src\.rpm$", name)
+    if not m:
+        return ((), ())
+    maj = tuple(int(x) for x in m.group(1).split(".") if x.isdigit())
+    rel = tuple(int(x) for x in m.group(2).split(".") if x.isdigit())
+    return (maj, rel)
+
+
+def _list_lustre_kernel_targets(
+    lustre_tree: str | Path, family: str
+) -> list[str]:
+    """List Lustre kernel targets matching the given family (e.g. 'rhel9').
+
+    Returns sorted short names like '5.14-rhel9.0' ... '5.14-rhel9.7'.
+    """
+    targets_dir = kp_targets(lustre_tree)
+    if not targets_dir.is_dir():
+        return []
+    found: set[str] = set()
+    for p in targets_dir.iterdir():
+        name = p.name
+        for suffix in (".target", ".target.in"):
+            if name.endswith(suffix):
+                short = name[: -len(suffix)]
+                # Only include entries shaped like <ver>-<family>.<minor>
+                m = re.match(rf"^[\d.]+-{re.escape(family)}\.[\d.]+$", short)
+                if m:
+                    found.add(short)
+                break
+    return sorted(found, key=_lustre_target_key)
+
+
+def _lustre_target_key(name: str) -> tuple:
+    """Sort key that orders '5.14-rhel9.2' before '5.14-rhel9.10'."""
+    m = re.match(r"^([\d.]+)-([a-z]+\d+)\.([\d.]+)$", name)
+    if not m:
+        return ((), (), ())
+    ver = tuple(int(x) for x in m.group(1).split(".") if x.isdigit())
+    minor = tuple(int(x) for x in m.group(3).split(".") if x.isdigit())
+    return (ver, m.group(2), minor)
+
+
+def _lustre_target_family(lustre_target: str) -> str | None:
+    """Extract the family from a short target name: '5.14-rhel9.7' -> 'rhel9'."""
+    m = re.match(r"^[\d.]+-([a-z]+\d+)\.[\d.]+$", lustre_target)
+    return m.group(1) if m else None
+
+
+def diagnose_srpm_not_found(
+    srpm_name: str,
+    base_url: str,
+    target_name: str,
+    lustre_target: str,
+    lustre_tree: str | Path | None,
+) -> SrpmNotFoundError | None:
+    """Decide whether a download_srpm failure is really a 404 across all
+    candidates, and if so build a SrpmNotFoundError with helpful context.
+
+    Returns None when at least one candidate URL is reachable but not
+    404 (something else went wrong) or when every candidate looks like
+    a network/transport failure (likely offline) -- in the offline case
+    we still want to produce the friendly error, so we return one with
+    ``latest_available=None``.
+    """
+    urls = [f"{base_url}/{srpm_name}"] + _srpm_fallback_urls(base_url, srpm_name)
+    statuses = [_url_returns_404(u) for u in urls]
+    any_not_404 = any(s is False for s in statuses)
+    if any_not_404:
+        return None
+    all_offline = all(s is None for s in statuses)
+
+    latest: str | None = None
+    if not all_offline:
+        for url, status in zip(urls, statuses):
+            if status is True:
+                parent = url.rsplit("/", 1)[0]
+                latest = _probe_latest_rocky_srpm(parent, srpm_name)
+                if latest:
+                    break
+
+    family = _lustre_target_family(lustre_target) or ""
+    siblings = (
+        _list_lustre_kernel_targets(lustre_tree, family)
+        if lustre_tree and family
+        else []
+    )
+    return SrpmNotFoundError(
+        srpm_name=srpm_name,
+        latest_available=latest,
+        lustre_target=lustre_target,
+        family=family,
+        siblings=siblings,
+        target_name=target_name,
+        lustre_tree=lustre_tree,
+    )
+
+
+# ------------------------------------------------------------------
 # Container build
 # ------------------------------------------------------------------
 
@@ -691,7 +907,19 @@ def _build_kernel_srpm(
             f"in targets.yaml -- cannot download kernel SRPM"
         )
     cache_dir = target_config.output_dir / "cache"
-    srpm_path = download_srpm(target_info["srpm"], cache_dir, srpm_url)
+    try:
+        srpm_path = download_srpm(target_info["srpm"], cache_dir, srpm_url)
+    except subprocess.CalledProcessError:
+        diag = diagnose_srpm_not_found(
+            target_info["srpm"],
+            srpm_url,
+            target_config.name,
+            lustre_target,
+            lustre_tree,
+        )
+        if diag is not None:
+            raise diag from None
+        raise
 
     # Ensure container image
     image_tag = _ensure_container_image(target_config)

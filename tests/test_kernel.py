@@ -9,11 +9,15 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ltvm_pkg.kernel_build import (
+    SrpmNotFoundError,
     _build_config_fragment,
     _ensure_container_image,
+    _list_lustre_kernel_targets,
+    _lustre_target_family,
     _shell_var,
     _srpm_fallback_urls,
     apply_srpm_override,
+    diagnose_srpm_not_found,
     download_srpm,
     kernel_status,
     parse_lustre_target,
@@ -310,6 +314,135 @@ class TestSrpmFallbackUrls:
         assert _srpm_fallback_urls(
             self._PUB, "kernel-4.18.0-553.89.1.el8_10.src.rpm"
         ) == []
+
+
+# ------------------------------------------------------------------
+# SRPM-not-found diagnostics
+# ------------------------------------------------------------------
+
+
+class TestLustreTargetFamily:
+    def test_rhel9(self) -> None:
+        assert _lustre_target_family("5.14-rhel9.7") == "rhel9"
+
+    def test_rhel8_double_digit_minor(self) -> None:
+        assert _lustre_target_family("4.18-rhel8.10") == "rhel8"
+
+    def test_non_matching(self) -> None:
+        assert _lustre_target_family("random") is None
+
+
+class TestListLustreKernelTargets:
+    def test_picks_matching_family_only(self, tmp_path: Path) -> None:
+        td = tmp_path / "lustre" / "kernel_patches" / "targets"
+        td.mkdir(parents=True)
+        for n in (
+            "5.14-rhel9.0",
+            "5.14-rhel9.5",
+            "5.14-rhel9.7",
+            "4.18-rhel8.10",
+            "3.10-rhel7.9",
+        ):
+            (td / f"{n}.target.in").write_text("")
+        out = _list_lustre_kernel_targets(tmp_path, "rhel9")
+        assert out == ["5.14-rhel9.0", "5.14-rhel9.5", "5.14-rhel9.7"]
+
+    def test_natural_sort_of_minor(self, tmp_path: Path) -> None:
+        td = tmp_path / "lustre" / "kernel_patches" / "targets"
+        td.mkdir(parents=True)
+        for n in ("4.18-rhel8.2", "4.18-rhel8.10", "4.18-rhel8.1"):
+            (td / f"{n}.target.in").write_text("")
+        out = _list_lustre_kernel_targets(tmp_path, "rhel8")
+        assert out == ["4.18-rhel8.1", "4.18-rhel8.2", "4.18-rhel8.10"]
+
+    def test_missing_dir_returns_empty(self, tmp_path: Path) -> None:
+        assert _list_lustre_kernel_targets(tmp_path, "rhel9") == []
+
+
+class TestDiagnoseSrpmNotFound:
+    _PUB = "https://dl.rockylinux.org/pub/rocky/9/BaseOS/source/tree/Packages/k"
+    _SRPM = "kernel-5.14.0-611.42.1.el9_7.src.rpm"
+
+    def _lustre_tree_with_rhel9(self, tmp_path: Path) -> Path:
+        td = tmp_path / "lustre" / "kernel_patches" / "targets"
+        td.mkdir(parents=True)
+        for n in (
+            "5.14-rhel9.0",
+            "5.14-rhel9.1",
+            "5.14-rhel9.2",
+            "5.14-rhel9.3",
+            "5.14-rhel9.4",
+            "5.14-rhel9.5",
+            "5.14-rhel9.6",
+            "5.14-rhel9.7",
+        ):
+            (td / f"{n}.target.in").write_text("")
+        return tmp_path
+
+    def test_all_404_plus_index_probe(self, tmp_path: Path) -> None:
+        lt = self._lustre_tree_with_rhel9(tmp_path)
+
+        def fake_404(url: str, timeout: float = 5.0) -> bool:
+            return True
+
+        def fake_probe(parent: str, srpm: str, timeout: float = 5.0) -> str:
+            return "kernel-5.14.0-611.13.1.el9_7.src.rpm"
+
+        with (
+            patch(
+                "ltvm_pkg.kernel_build._url_returns_404", side_effect=fake_404
+            ),
+            patch(
+                "ltvm_pkg.kernel_build._probe_latest_rocky_srpm",
+                side_effect=fake_probe,
+            ),
+        ):
+            err = diagnose_srpm_not_found(
+                self._SRPM, self._PUB, "rocky9", "5.14-rhel9.7", lt
+            )
+
+        assert isinstance(err, SrpmNotFoundError)
+        msg = str(err)
+        assert self._SRPM in msg
+        assert "kernel-5.14.0-611.13.1.el9_7.src.rpm" in msg
+        assert "--kernel 5.14-rhel9.6" in msg
+        assert "5.14-rhel9.0" in msg
+        assert "5.14-rhel9.7" in msg
+        assert "Available Lustre rhel9 targets:" in msg
+
+    def test_offline_skips_probe_but_still_lists_targets(
+        self, tmp_path: Path
+    ) -> None:
+        lt = self._lustre_tree_with_rhel9(tmp_path)
+
+        with (
+            patch(
+                "ltvm_pkg.kernel_build._url_returns_404",
+                return_value=None,
+            ),
+            patch(
+                "ltvm_pkg.kernel_build._probe_latest_rocky_srpm"
+            ) as mock_probe,
+        ):
+            err = diagnose_srpm_not_found(
+                self._SRPM, self._PUB, "rocky9", "5.14-rhel9.7", lt
+            )
+
+        mock_probe.assert_not_called()
+        assert isinstance(err, SrpmNotFoundError)
+        msg = str(err)
+        assert "could not be probed" in msg or "offline" in msg
+        assert "5.14-rhel9.5" in msg
+
+    def test_non_404_returns_none(self, tmp_path: Path) -> None:
+        lt = self._lustre_tree_with_rhel9(tmp_path)
+        with patch(
+            "ltvm_pkg.kernel_build._url_returns_404", return_value=False
+        ):
+            err = diagnose_srpm_not_found(
+                self._SRPM, self._PUB, "rocky9", "5.14-rhel9.7", lt
+            )
+        assert err is None
 
 
 # ------------------------------------------------------------------

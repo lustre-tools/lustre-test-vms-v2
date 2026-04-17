@@ -168,6 +168,8 @@ def cmd_build_all(args: argparse.Namespace) -> int:
             kernel=resolved_kernel,
         )
         results["kernel"] = kmeta
+    except _cli_attr("SrpmNotFoundError") as e:
+        return _error(str(e), use_json)
     except Exception as e:
         return _error(f"Kernel build failed: {e}", use_json)
 
@@ -292,6 +294,8 @@ def cmd_build_kernel(args: argparse.Namespace) -> int:
             force=args.force,
             kernel=kernel,
         )
+    except _cli_attr("SrpmNotFoundError") as e:
+        return _error(str(e), use_json)
     except Exception as e:
         return _error(f"Kernel build failed: {e}", use_json)
 
@@ -545,6 +549,10 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
     assert tc is not None
 
     err = _preflight_podman(use_json)
+    if err is not None:
+        return err
+
+    err = _preflight_container(tc, use_json)
     if err is not None:
         return err
 
