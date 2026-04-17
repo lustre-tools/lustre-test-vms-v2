@@ -19,6 +19,7 @@ import sys
 from pathlib import Path
 from typing import Any
 
+from ltvm_pkg.host_setup import PodmanMachineError, check_podman_machine_macos
 from ltvm_pkg.image_build import build_image, image_status
 from ltvm_pkg.kernel_build import build_kernel, kernel_status
 from ltvm_pkg.lustre_build import build_lustre, staging_path
@@ -36,6 +37,15 @@ from ltvm_pkg.cli.util import (
     _load_target_args,
     _output,
 )
+
+
+def _preflight_podman(use_json: bool) -> int | None:
+    """Check podman is usable; return an error code if not, else None."""
+    try:
+        check_podman_machine_macos()
+    except PodmanMachineError as e:
+        return _error(str(e), use_json)
+    return None
 
 
 def _cli_attr(name: str) -> Any:
@@ -100,6 +110,10 @@ def cmd_build_all(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     assert tc is not None
+
+    err = _preflight_podman(use_json)
+    if err is not None:
+        return err
 
     # build-all always requires a Lustre tree -- even for deb targets
     # where the kernel build itself doesn't need one, the surrounding
@@ -216,6 +230,10 @@ def cmd_build_container(args: argparse.Namespace) -> int:
         return err
     assert tc is not None
 
+    err = _preflight_podman(use_json)
+    if err is not None:
+        return err
+
     if not use_json:
         print(f"Building container for {args.target}...")
 
@@ -240,6 +258,10 @@ def cmd_build_kernel(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     assert tc is not None
+
+    err = _preflight_podman(use_json)
+    if err is not None:
+        return err
 
     # Deb-based targets don't need a Lustre tree for kernel builds
     lustre_tree = None
@@ -289,6 +311,10 @@ def cmd_build_mofed_kmods(args: argparse.Namespace) -> int:
         return err
     assert tc is not None
 
+    err = _preflight_podman(use_json)
+    if err is not None:
+        return err
+
     from ltvm_pkg.mofed_kmod_build import build_mofed_kmods
     from ltvm_pkg.target_config import DEFAULT_VARIANT
 
@@ -333,6 +359,10 @@ def cmd_build_image(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     assert tc is not None
+
+    err = _preflight_podman(use_json)
+    if err is not None:
+        return err
 
     kernel = getattr(args, "kernel", None)
     resolved_kernel = tc.resolve_kernel(kernel)
@@ -514,6 +544,10 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
         return err
     assert tc is not None
 
+    err = _preflight_podman(use_json)
+    if err is not None:
+        return err
+
     lustre_tree_arg = getattr(args, "lustre_tree_pos", None) or getattr(
         args, "lustre_tree", None
     )
@@ -615,6 +649,10 @@ def cmd_build_shell(args: argparse.Namespace) -> int:
     if err is not None:
         return err
     assert tc is not None
+
+    err = _preflight_podman(use_json)
+    if err is not None:
+        return err
 
     tag = tc.container_tag
     mount_path = Path(args.path).resolve()

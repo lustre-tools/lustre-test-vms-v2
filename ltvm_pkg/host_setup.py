@@ -7,6 +7,7 @@ and sets up SSH.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import platform
@@ -28,6 +29,67 @@ def is_wsl2() -> bool:
         return "microsoft" in v or "wsl" in v
     except OSError:
         return False
+
+
+class PodmanMachineError(RuntimeError):
+    """Raised when podman is unusable on macOS (no binary, no running machine)."""
+
+
+def check_podman_machine_macos() -> None:
+    """Fail fast with an actionable message if podman is unusable on macOS.
+
+    No-op on non-macOS hosts. On macOS, containers require a running
+    ``podman machine``, so we pre-flight that before any container build
+    to replace podman's cryptic connection error with installation /
+    start instructions.
+    """
+    if not is_macos():
+        return
+
+    if not shutil.which("podman"):
+        raise PodmanMachineError(
+            "podman not found.\n"
+            "Install it with:\n"
+            "  brew install podman\n"
+            "Then run:\n"
+            "  podman machine init      # first time only\n"
+            "  podman machine start"
+        )
+
+    try:
+        r = subprocess.run(
+            ["podman", "machine", "list", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise PodmanMachineError(
+            f"failed to query podman machine: {e}"
+        ) from e
+
+    machines: list[dict[str, Any]] = []
+    if r.returncode == 0 and r.stdout.strip():
+        try:
+            parsed = json.loads(r.stdout)
+            if isinstance(parsed, list):
+                machines = parsed
+        except json.JSONDecodeError:
+            machines = []
+
+    msg_setup = (
+        "On macOS, container builds require a running podman machine.\n"
+        "Run:\n"
+        "  podman machine init      # first time only\n"
+        "  podman machine start\n"
+        "Then retry."
+    )
+
+    if not machines:
+        raise PodmanMachineError(msg_setup)
+
+    if not any(m.get("Running") for m in machines):
+        raise PodmanMachineError(msg_setup)
 
 
 log = logging.getLogger(__name__)

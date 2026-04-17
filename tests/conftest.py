@@ -58,6 +58,20 @@ def _make_config(
         return cfg.TargetConfig("rocky9", arch=arch)
 
 
+@pytest.fixture(autouse=True)
+def _neutralize_podman_preflight() -> "object":
+    """Suppress the macOS podman-machine preflight for unit tests.
+
+    On Darwin, build commands call ``check_podman_machine_macos`` which
+    would fail tests that don't mock podman. The tests already stub the
+    actual build functions, so the preflight is orthogonal.
+    """
+    with patch(
+        "ltvm_pkg.cli.build.check_podman_machine_macos", return_value=None
+    ):
+        yield
+
+
 @pytest.fixture
 def tmp_targets(tmp_path: Path) -> Path:
     """Create a minimal targets/ tree for TargetConfig tests."""
