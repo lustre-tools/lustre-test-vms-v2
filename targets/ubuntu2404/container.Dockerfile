@@ -45,6 +45,19 @@ RUN apt-get update && apt-get install -y git ca-certificates \
     && rm -f /tmp/build-e2fsprogs.sh \
     && rm -rf /var/lib/apt/lists/*
 
+# Cross-compilers for both arches.  Debian names gcc for the target's
+# GNU triple with hyphens (gcc-x86-64-linux-gnu), unlike RHEL (gcc-
+# x86_64-linux-gnu).  Both directions best-effort because the exact
+# set installed at container build time depends on the building host's
+# arch; the inner build script falls back to a runtime install if the
+# cross toolchain is missing.
+RUN apt-get update \
+    && (apt-get install -y --no-install-recommends \
+          gcc-aarch64-linux-gnu g++-aarch64-linux-gnu 2>/dev/null || true) \
+    && (apt-get install -y --no-install-recommends \
+          gcc-x86-64-linux-gnu g++-x86-64-linux-gnu 2>/dev/null || true) \
+    && rm -rf /var/lib/apt/lists/*
+
 ENV PATH="/usr/lib/ccache:${PATH}"
 ENV CCACHE_DIR="/ccache"
 

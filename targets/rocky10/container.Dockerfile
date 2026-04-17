@@ -22,6 +22,11 @@ RUN cat /tmp/packages-dev.txt \
 COPY common/build-e2fsprogs.sh /tmp/build-e2fsprogs.sh
 RUN bash /tmp/build-e2fsprogs.sh && rm /tmp/build-e2fsprogs.sh
 
+# Cross-compilers for the opposite arch (best-effort; see rocky9).
+RUN dnf -y install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu 2>/dev/null || true \
+    && dnf -y install gcc-x86_64-linux-gnu binutils-x86_64-linux-gnu 2>/dev/null || true \
+    && dnf clean all
+
 ENV PATH="/usr/lib64/ccache:${PATH}"
 ENV CCACHE_DIR="/ccache"
 

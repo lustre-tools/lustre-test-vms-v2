@@ -23,6 +23,16 @@ RUN cat /tmp/packages-dev.txt \
 COPY common/build-e2fsprogs.sh /tmp/build-e2fsprogs.sh
 RUN bash /tmp/build-e2fsprogs.sh && rm /tmp/build-e2fsprogs.sh
 
+# Cross-compilers for the opposite arch (best-effort: EPEL ships
+# gcc-aarch64-linux-gnu and gcc-x86_64-linux-gnu on el9, but the
+# package set depends on the building host's arch -- we install
+# whatever dnf finds and let the inner build script fall back to
+# a runtime install if the cross toolchain is missing for the
+# container's host arch).
+RUN dnf -y install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu 2>/dev/null || true \
+    && dnf -y install gcc-x86_64-linux-gnu binutils-x86_64-linux-gnu 2>/dev/null || true \
+    && dnf clean all
+
 ENV PATH="/usr/lib64/ccache:${PATH}"
 ENV CCACHE_DIR="/ccache"
 
