@@ -459,7 +459,6 @@ class TestLaunchQemuCommand:
             f"expected rollback to tear down TAP, saw: {h.run_calls}"
         )
 
-
     def test_pidfile_appears_late_no_rollback(self, tmp_vmdir: Path) -> None:
         """-daemonize may return before child writes pidfile; we poll briefly."""
         vm = _make_vm(tmp_vmdir)
@@ -506,6 +505,10 @@ class TestLaunchQemuMacos:
             patch(
                 "ltvm_pkg.qemu_run.socket_vmnet_socket_path",
                 return_value=Path(self._SOCK),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.ensure_socket_vmnet_running",
+                return_value=None,
             ),
             patch("ltvm_pkg.qemu_run.run", side_effect=h.run),
             patch(
@@ -893,9 +896,7 @@ class TestLaunchQemuSocketPerms:
             qemu_run.launch_qemu(vm)
 
         socket_str = str(vm.socket_path)
-        chmod_for_socket = [
-            (p, m) for p, m in chmod_calls if p == socket_str
-        ]
+        chmod_for_socket = [(p, m) for p, m in chmod_calls if p == socket_str]
         assert chmod_for_socket, (
             f"expected os.chmod({socket_str!r}, 0o666); got {chmod_calls}"
         )

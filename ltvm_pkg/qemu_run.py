@@ -187,6 +187,14 @@ def launch_qemu(vm: VMInfo) -> None:
     if not vm.overlay_path.exists():
         die(f"overlay missing for '{vm.name}'")
 
+    if is_macos():
+        from .host_setup import ensure_socket_vmnet_running
+
+        try:
+            ensure_socket_vmnet_running()
+        except RuntimeError as e:
+            die(str(e))
+
     _check_memory_for_launch(vm)
 
     # aarch64 virt uses PL011 UART (ttyAMA0); x86 uses 8250 (ttyS0)
@@ -372,9 +380,7 @@ def launch_qemu(vm: VMInfo) -> None:
     # host=<BDF>` with no -netdev / no TAP.  The current CLI parser
     # rejects both, so those branches aren't emitted today -- but the
     # loop shape is what lets them slot in without reworking.
-    has_passthrough = any(
-        n.split(":", 1)[0] == "passthrough" for n in vm.nics
-    )
+    has_passthrough = any(n.split(":", 1)[0] == "passthrough" for n in vm.nics)
     if has_passthrough:
         # vfio-pci pins guest memory; QEMU needs -mem-prealloc up-front
         # so DMA translations are stable at launch time.  Harmless for
