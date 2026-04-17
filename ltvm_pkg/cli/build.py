@@ -11,32 +11,37 @@ patching those attributes on ``ltvm_pkg.cli`` affect every caller
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import shlex
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-
-from ltvm_pkg.host_setup import PodmanMachineError, check_podman_machine_macos
-from ltvm_pkg.image_build import build_image, image_status
-from ltvm_pkg.kernel_build import build_kernel, kernel_status
-from ltvm_pkg.lustre_build import build_lustre, staging_path
-from ltvm_pkg.lustre_compat import validate_target
-from ltvm_pkg.target_config import LustreMode, TargetConfig, list_targets
 
 from ltvm_pkg.cli.util import (
     EXIT_ERROR,
     EXIT_OK,
     _artifact_label,
     _container_status,
-    _emit_error,
     _error,
     _load_target,
     _load_target_args,
     _output,
 )
+from ltvm_pkg.host_setup import (
+    PodmanMachineError,
+    check_podman_machine_macos,
+    is_macos,
+    should_stop_podman_machine_macos,
+    stop_podman_machine_macos,
+)
+from ltvm_pkg.image_build import image_status
+from ltvm_pkg.kernel_build import kernel_status
+from ltvm_pkg.lustre_build import staging_path
+from ltvm_pkg.target_config import LustreMode, TargetConfig
 
 
 def _preflight_podman(use_json: bool) -> int | None:
@@ -72,6 +77,27 @@ def _preflight_container(tc: TargetConfig, use_json: bool) -> int | None:
             hint=f"Run: ltvm build container {tc.name}",
         )
     return None
+
+
+@contextlib.contextmanager
+def _podman_machine_autostop() -> Iterator[None]:
+    """On macOS, stop the podman machine after the block if it's idle.
+
+    Runs on normal completion and on exceptions.  No-op on non-macOS
+    hosts; bails out quietly if the podman-ps query fails or any
+    non-ltvm container is running.
+    """
+    if not is_macos():
+        yield
+        return
+    try:
+        yield
+    finally:
+        try:
+            if should_stop_podman_machine_macos():
+                stop_podman_machine_macos()
+        except Exception:
+            pass
 
 
 def _cli_attr(name: str) -> Any:
@@ -140,6 +166,14 @@ def cmd_build_all(args: argparse.Namespace) -> int:
     err = _preflight_podman(use_json)
     if err is not None:
         return err
+
+    with _podman_machine_autostop():
+        return _cmd_build_all_body(args, tc, use_json)
+
+
+def _cmd_build_all_body(
+    args: argparse.Namespace, tc: TargetConfig, use_json: bool
+) -> int:
 
     # build-all always requires a Lustre tree -- even for deb targets
     # where the kernel build itself doesn't need one, the surrounding
@@ -262,17 +296,18 @@ def cmd_build_container(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    if not use_json:
-        print(f"Building container for {args.target}...")
+    with _podman_machine_autostop():
+        if not use_json:
+            print(f"Building container for {args.target}...")
 
-    try:
-        tag = _cli_attr("_do_build_container")(tc)
-    except Exception as e:
-        return _error(f"Container build failed: {e}", use_json)
+        try:
+            tag = _cli_attr("_do_build_container")(tc)
+        except Exception as e:
+            return _error(f"Container build failed: {e}", use_json)
 
-    result = {"target": args.target, "image_tag": tag}
-    _output(result, use_json)
-    return EXIT_OK
+        result = {"target": args.target, "image_tag": tag}
+        _output(result, use_json)
+        return EXIT_OK
 
 
 # ------------------------------------------------------------------
@@ -295,42 +330,43 @@ def cmd_build_kernel(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    # Deb-based targets don't need a Lustre tree for kernel builds
-    lustre_tree = None
-    if not tc.kernel_deb_source:
-        lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(args.lustre_tree)
-        if err_msg:
-            return _error(
-                err_msg,
-                use_json,
-                hint="Run from a Lustre tree, or pass "
-                "--lustre-tree /path/to/lustre-release",
+    with _podman_machine_autostop():
+        # Deb-based targets don't need a Lustre tree for kernel builds
+        lustre_tree = None
+        if not tc.kernel_deb_source:
+            lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(args.lustre_tree)
+            if err_msg:
+                return _error(
+                    err_msg,
+                    use_json,
+                    hint="Run from a Lustre tree, or pass "
+                    "--lustre-tree /path/to/lustre-release",
+                )
+            assert lustre_tree is not None
+            _cli_attr("_gate_lustre_validation")(
+                tc, lustre_tree, force=args.force_compat
             )
-        assert lustre_tree is not None
-        _cli_attr("_gate_lustre_validation")(
-            tc, lustre_tree, force=args.force_compat
-        )
 
-    kernel = getattr(args, "kernel", None)
+        kernel = getattr(args, "kernel", None)
 
-    if not use_json:
-        k = tc.resolve_kernel(kernel)
-        print(f"Building kernel {k} for {args.target}...")
+        if not use_json:
+            k = tc.resolve_kernel(kernel)
+            print(f"Building kernel {k} for {args.target}...")
 
-    try:
-        meta = _cli_attr("build_kernel")(
-            tc,
-            lustre_tree,
-            force=args.force,
-            kernel=kernel,
-        )
-    except _cli_attr("SrpmNotFoundError") as e:
-        return _error(str(e), use_json)
-    except Exception as e:
-        return _error(f"Kernel build failed: {e}", use_json)
+        try:
+            meta = _cli_attr("build_kernel")(
+                tc,
+                lustre_tree,
+                force=args.force,
+                kernel=kernel,
+            )
+        except _cli_attr("SrpmNotFoundError") as e:
+            return _error(str(e), use_json)
+        except Exception as e:
+            return _error(f"Kernel build failed: {e}", use_json)
 
-    _output(meta, use_json)
-    return EXIT_OK
+        _output(meta, use_json)
+        return EXIT_OK
 
 
 # ------------------------------------------------------------------
@@ -357,7 +393,7 @@ def cmd_build_mofed_kmods(args: argparse.Namespace) -> int:
             f"target {tc.name!r} is bound to base variant -- "
             f"mofed-kmods only applies to a mofed variant",
             use_json,
-            hint=f"Pass --variant mofed-24 (or whichever mofed-* is declared)",
+            hint="Pass --variant mofed-24 (or whichever mofed-* is declared)",
         )
 
     err = _preflight_container(tc, use_json)
@@ -406,69 +442,70 @@ def cmd_build_image(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    kernel = getattr(args, "kernel", None)
-    resolved_kernel = tc.resolve_kernel(kernel)
+    with _podman_machine_autostop():
+        kernel = getattr(args, "kernel", None)
+        resolved_kernel = tc.resolve_kernel(kernel)
 
-    with_lustre: str | None = None
-    if not args.no_lustre:
-        # Resolve to an absolute path so a ``--lustre-tree ./rel`` passed
-        # from a subdirectory lands on the same staging dir that
-        # ``cmd_build_lustre`` writes to (which goes through
-        # ``_resolve_lustre_tree`` -> ``.resolve()``).  Without this,
-        # the two sides compute different staging keys and the image
-        # build refuses to find staging the lustre build just produced.
-        lustre_tree = (
-            Path(args.lustre_tree).resolve() if args.lustre_tree
-            else Path(os.getcwd()).resolve()
-        )
-        candidate = staging_path(
-            lustre_tree, args.target, arch=tc.arch,
-            kernel=resolved_kernel, variant=tc.variant_name,
-        )
-        build_tree = tc.kernel_output_dir(kernel=resolved_kernel) / "build-tree"
-        if not candidate.exists():
-            return _error(
-                f"no Lustre staging at {candidate}",
-                use_json,
-                hint=(
-                    f"run `ltvm build lustre {args.target} --kernel "
-                    f"{resolved_kernel}` first, or pass --no-lustre to "
-                    f"bake a kernel-only image"
-                ),
+        with_lustre: str | None = None
+        if not args.no_lustre:
+            # Resolve to an absolute path so a ``--lustre-tree ./rel`` passed
+            # from a subdirectory lands on the same staging dir that
+            # ``cmd_build_lustre`` writes to (which goes through
+            # ``_resolve_lustre_tree`` -> ``.resolve()``).  Without this,
+            # the two sides compute different staging keys and the image
+            # build refuses to find staging the lustre build just produced.
+            lustre_tree = (
+                Path(args.lustre_tree).resolve() if args.lustre_tree
+                else Path(os.getcwd()).resolve()
             )
-        _cli_attr("_gate_lustre_validation")(
-            tc,
-            lustre_tree,
-            force=args.force_compat,
-            kernel_build_tree=build_tree,
-        )
-        with_lustre = str(lustre_tree)
+            candidate = staging_path(
+                lustre_tree, args.target, arch=tc.arch,
+                kernel=resolved_kernel, variant=tc.variant_name,
+            )
+            build_tree = tc.kernel_output_dir(kernel=resolved_kernel) / "build-tree"
+            if not candidate.exists():
+                return _error(
+                    f"no Lustre staging at {candidate}",
+                    use_json,
+                    hint=(
+                        f"run `ltvm build lustre {args.target} --kernel "
+                        f"{resolved_kernel}` first, or pass --no-lustre to "
+                        f"bake a kernel-only image"
+                    ),
+                )
+            _cli_attr("_gate_lustre_validation")(
+                tc,
+                lustre_tree,
+                force=args.force_compat,
+                kernel_build_tree=build_tree,
+            )
+            with_lustre = str(lustre_tree)
 
-    if not use_json:
-        extra = f" +lustre={with_lustre}" if with_lustre else ""
-        print(
-            f"Building image for {args.target} "
-            f"(kernel={resolved_kernel}){extra}..."
-        )
+        if not use_json:
+            extra = f" +lustre={with_lustre}" if with_lustre else ""
+            print(
+                f"Building image for {args.target} "
+                f"(kernel={resolved_kernel}){extra}..."
+            )
 
-    try:
-        path = _cli_attr("build_image")(
-            tc,
-            force=args.force,
-            kernel=kernel,
-            with_lustre=with_lustre,
-        )
-    except Exception as e:
-        return _error(f"Image build failed: {e}", use_json)
+        try:
+            path = _cli_attr("build_image")(
+                tc,
+                force=args.force,
+                kernel=kernel,
+                with_lustre=with_lustre,
+            )
+        except Exception as e:
+            return _error(f"Image build failed: {e}", use_json)
 
-    result = {
-        "target": args.target,
-        "kernel": resolved_kernel,
-        "path": str(path),
-        "with_lustre": with_lustre,
-    }
-    _output(result, use_json)
-    return EXIT_OK
+        result = {
+            "target": args.target,
+            "kernel": resolved_kernel,
+            "path": str(path),
+            "with_lustre": with_lustre,
+        }
+        _output(result, use_json)
+        return EXIT_OK
 
 
 # ------------------------------------------------------------------
@@ -594,74 +631,75 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(
-        getattr(args, "lustre_tree", None)
-    )
-    if err_msg:
-        return _error(
-            err_msg,
-            use_json,
-            hint="Pass --lustre-tree or run from a Lustre source tree",
+    with _podman_machine_autostop():
+        lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(
+            getattr(args, "lustre_tree", None)
         )
-    assert lustre_tree is not None
+        if err_msg:
+            return _error(
+                err_msg,
+                use_json,
+                hint="Pass --lustre-tree or run from a Lustre source tree",
+            )
+        assert lustre_tree is not None
 
-    kernel = getattr(args, "kernel", None)
-    resolved_kernel = tc.resolve_kernel(kernel)
-    build_tree = tc.kernel_output_dir(kernel=resolved_kernel) / "build-tree"
+        kernel = getattr(args, "kernel", None)
+        resolved_kernel = tc.resolve_kernel(kernel)
+        build_tree = tc.kernel_output_dir(kernel=resolved_kernel) / "build-tree"
 
-    _cli_attr("_gate_lustre_validation")(
-        tc,
-        lustre_tree,
-        force=args.force_compat,
-        kernel_build_tree=build_tree,
-    )
-
-    if not build_tree.is_dir():
-        return _error(
-            f"Kernel build-tree not found: {build_tree}",
-            use_json,
-            hint=f"Run: ltvm build kernel {args.target} "
-            f"--kernel {resolved_kernel}",
-        )
-
-    # Server build follows lustre.mode unless overridden
-    enable_server = tc.lustre_mode != LustreMode.CLIENT
-    if getattr(args, "disable_server", False):
-        enable_server = False
-    elif getattr(args, "enable_server", False):
-        enable_server = True
-
-    extra = list(tc.configure_args)
-    if getattr(args, "configure", None):
-        extra += shlex.split(args.configure)
-
-    jobs = getattr(args, "jobs", None)
-
-    if not use_json:
-        srv = "server+client" if enable_server else "client-only"
-        print(f"Building Lustre ({srv}) against {args.target} kernel tree...")
-
-    container_tag = tc.container_tag
-
-    try:
-        meta = _cli_attr("build_lustre")(
+        _cli_attr("_gate_lustre_validation")(
+            tc,
             lustre_tree,
-            build_tree,
-            container_tag=container_tag,
-            target=args.target,
-            enable_server=enable_server,
-            extra_configure=extra,
-            jobs=jobs,
-            force=getattr(args, "force", False),
-            arch=tc.arch,
-            kernel=resolved_kernel,
-            variant=tc.variant_name,
+            force=args.force_compat,
+            kernel_build_tree=build_tree,
         )
-    except Exception as e:
-        return _error(f"Lustre build failed: {e}", use_json)
 
-    _output(meta, use_json)
-    return EXIT_OK
+        if not build_tree.is_dir():
+            return _error(
+                f"Kernel build-tree not found: {build_tree}",
+                use_json,
+                hint=f"Run: ltvm build kernel {args.target} "
+                f"--kernel {resolved_kernel}",
+            )
+
+        # Server build follows lustre.mode unless overridden
+        enable_server = tc.lustre_mode != LustreMode.CLIENT
+        if getattr(args, "disable_server", False):
+            enable_server = False
+        elif getattr(args, "enable_server", False):
+            enable_server = True
+
+        extra = list(tc.configure_args)
+        if getattr(args, "configure", None):
+            extra += shlex.split(args.configure)
+
+        jobs = getattr(args, "jobs", None)
+
+        if not use_json:
+            srv = "server+client" if enable_server else "client-only"
+            print(f"Building Lustre ({srv}) against {args.target} kernel tree...")
+
+        container_tag = tc.container_tag
+
+        try:
+            meta = _cli_attr("build_lustre")(
+                lustre_tree,
+                build_tree,
+                container_tag=container_tag,
+                target=args.target,
+                enable_server=enable_server,
+                extra_configure=extra,
+                jobs=jobs,
+                force=getattr(args, "force", False),
+                arch=tc.arch,
+                kernel=resolved_kernel,
+                variant=tc.variant_name,
+            )
+        except Exception as e:
+            return _error(f"Lustre build failed: {e}", use_json)
+
+        _output(meta, use_json)
+        return EXIT_OK
 
 
 # ------------------------------------------------------------------

@@ -427,7 +427,7 @@ class TestCliContainerPreflight:
         monkeypatch.setattr(
             cli_mod, "build_image", MagicMock(return_value=tmp_path),
         )
-        rc = _run_main(["build", "all", "rocky9"])
+        rc = _run_main(["build", "all", "rocky9", "--skip-lustre"])
         err = capsys.readouterr().err
         assert "build container ltvm-build-rocky9 not found" not in err
         assert rc == EXIT_OK

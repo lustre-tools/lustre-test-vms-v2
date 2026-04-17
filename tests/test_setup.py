@@ -688,3 +688,264 @@ class TestPrintVerify:
         captured = capsys.readouterr()
         assert "WARNING" in captured.out
         assert "kvm" in captured.out.lower()
+
+
+# ------------------------------------------------------------------
+# TestInstallPodmanMacos
+# ------------------------------------------------------------------
+
+
+class TestInstallPodmanMacos:
+    """Covers the four install_podman_macos branches on macOS.
+
+    Uses mocks for brew + podman so no real binaries are invoked.
+    """
+
+    def _completed(
+        self, returncode: int = 0, stdout: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr=""
+        )
+
+    def test_podman_not_installed_and_no_machine(self) -> None:
+        """brew install podman; then init + start (no existing machine)."""
+        from ltvm_pkg.host_setup import install_podman_macos
+
+        which_calls: list[str] = []
+
+        def which(cmd: str) -> str | None:
+            which_calls.append(cmd)
+            if cmd == "podman":
+                return None if len(which_calls) == 1 else "/opt/homebrew/bin/podman"
+            if cmd == "brew":
+                return "/opt/homebrew/bin/brew"
+            return None
+
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            run_calls.append(list(cmd))
+            if "machine" in cmd and "list" in cmd:
+                return self._completed(0, "[]")
+            return self._completed(0, "")
+
+        with (
+            patch("ltvm_pkg.host_setup.shutil.which", side_effect=which),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+        ):
+            started = install_podman_macos()
+
+        assert started is True
+        assert any("brew" in c[0] and "install" in c for c in run_calls)
+        assert any("machine" in c and "init" in c for c in run_calls)
+        assert any("machine" in c and "start" in c for c in run_calls)
+
+    def test_podman_installed_no_machine(self) -> None:
+        """podman present, no machine defined: init + start."""
+        from ltvm_pkg.host_setup import install_podman_macos
+
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            run_calls.append(list(cmd))
+            if "machine" in cmd and "list" in cmd:
+                return self._completed(0, "[]")
+            return self._completed(0, "")
+
+        with (
+            patch(
+                "ltvm_pkg.host_setup.shutil.which",
+                return_value="/opt/homebrew/bin/podman",
+            ),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+        ):
+            started = install_podman_macos()
+
+        assert started is True
+        assert not any("brew" in c[0] and "install" in c for c in run_calls)
+        assert any("machine" in c and "init" in c for c in run_calls)
+        assert any("machine" in c and "start" in c for c in run_calls)
+
+    def test_podman_installed_machine_stopped(self) -> None:
+        """Machine exists but not running: start it (no init)."""
+        from ltvm_pkg.host_setup import install_podman_macos
+
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            run_calls.append(list(cmd))
+            if "machine" in cmd and "list" in cmd:
+                return self._completed(
+                    0,
+                    '[{"Name": "podman-machine-default", "Running": false}]',
+                )
+            return self._completed(0, "")
+
+        with (
+            patch(
+                "ltvm_pkg.host_setup.shutil.which",
+                return_value="/opt/homebrew/bin/podman",
+            ),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+        ):
+            started = install_podman_macos()
+
+        assert started is True
+        assert not any("machine" in c and "init" in c for c in run_calls)
+        assert any("machine" in c and "start" in c for c in run_calls)
+
+    def test_podman_installed_machine_running(self) -> None:
+        """Already running: no init, no start, returns False."""
+        from ltvm_pkg.host_setup import install_podman_macos
+
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            run_calls.append(list(cmd))
+            if "machine" in cmd and "list" in cmd:
+                return self._completed(
+                    0,
+                    '[{"Name": "podman-machine-default", "Running": true}]',
+                )
+            return self._completed(0, "")
+
+        with (
+            patch(
+                "ltvm_pkg.host_setup.shutil.which",
+                return_value="/opt/homebrew/bin/podman",
+            ),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+        ):
+            started = install_podman_macos()
+
+        assert started is False
+        assert not any("machine" in c and "init" in c for c in run_calls)
+        assert not any("machine" in c and "start" in c for c in run_calls)
+
+    def test_no_brew_raises(self) -> None:
+        """If podman missing and Homebrew also missing: RuntimeError."""
+        from ltvm_pkg.host_setup import install_podman_macos
+
+        with (
+            patch("ltvm_pkg.host_setup.shutil.which", return_value=None),
+        ):
+            with pytest.raises(RuntimeError, match="Homebrew not found"):
+                install_podman_macos()
+
+
+# ------------------------------------------------------------------
+# TestShouldStopPodmanMachineMacos
+# ------------------------------------------------------------------
+
+
+class TestShouldStopPodmanMachineMacos:
+    """The auto-stop heuristic: stop when no non-ltvm containers running."""
+
+    def _completed(
+        self, returncode: int = 0, stdout: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr=""
+        )
+
+    def test_no_containers_running_returns_true(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(0, "[]"),
+        ):
+            assert should_stop_podman_machine_macos() is True
+
+    def test_all_ltvm_build_images_returns_true(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        stdout = (
+            '[{"Image": "localhost/ltvm-build-rocky9:latest"},'
+            ' {"Image": "ltvm-build-rocky10"}]'
+        )
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(0, stdout),
+        ):
+            assert should_stop_podman_machine_macos() is True
+
+    def test_mix_with_non_ltvm_returns_false(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        stdout = (
+            '[{"Image": "ltvm-build-rocky9"},'
+            ' {"Image": "docker.io/library/postgres:15"}]'
+        )
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(0, stdout),
+        ):
+            assert should_stop_podman_machine_macos() is False
+
+    def test_non_ltvm_only_returns_false(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        stdout = '[{"Image": "docker.io/library/nginx:latest"}]'
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(0, stdout),
+        ):
+            assert should_stop_podman_machine_macos() is False
+
+    def test_podman_ps_fails_returns_false(self) -> None:
+        """Don't stop if we can't tell what's running."""
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(1, ""),
+        ):
+            assert should_stop_podman_machine_macos() is False
+
+    def test_podman_ps_raises_returns_false(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="podman", timeout=10),
+        ):
+            assert should_stop_podman_machine_macos() is False
+
+    def test_malformed_json_returns_false(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(0, "not json"),
+        ):
+            assert should_stop_podman_machine_macos() is False

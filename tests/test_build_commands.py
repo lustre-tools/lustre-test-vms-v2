@@ -401,7 +401,7 @@ class TestCmdBuildLustre:
             patch.object(cli_mod, "build_lustre") as bl,
         ):
             rc = _run_main(
-                ["build", "lustre", "rocky9", str(lustre_tree)]
+                ["build", "lustre", "rocky9", "--lustre-tree", str(lustre_tree)]
             )
         assert rc == EXIT_ERROR
         err = capsys.readouterr().err
@@ -444,7 +444,7 @@ class TestCmdBuildLustre:
             patch.object(cli_mod, "build_lustre") as bl,
         ):
             rc = _run_main(
-                ["build", "lustre", "rocky9", str(lustre_tree)]
+                ["build", "lustre", "rocky9", "--lustre-tree", str(lustre_tree)]
             )
         assert rc == EXIT_ERROR
         err = capsys.readouterr().err
@@ -478,7 +478,7 @@ class TestCmdBuildLustre:
             ),
         ):
             rc = _run_main(
-                ["build", "lustre", "rocky9", str(lustre_tree)]
+                ["build", "lustre", "rocky9", "--lustre-tree", str(lustre_tree)]
             )
         assert rc == EXIT_ERROR
         assert "Lustre build failed" in capsys.readouterr().err
@@ -510,7 +510,7 @@ class TestCmdBuildLustre:
             ) as bl,
         ):
             rc = _run_main(
-                ["build", "lustre", "rocky9", str(lustre_tree),
+                ["build", "lustre", "rocky9", "--lustre-tree", str(lustre_tree),
                  "--disable-server"]
             )
         assert rc == EXIT_OK
@@ -543,7 +543,7 @@ class TestCmdBuildLustre:
             ) as bl,
         ):
             _run_main(
-                ["build", "lustre", "rocky9", str(lustre_tree),
+                ["build", "lustre", "rocky9", "--lustre-tree", str(lustre_tree),
                  "--configure", "--enable-foo --with-bar=baz"]
             )
         _, kwargs = bl.call_args
@@ -791,6 +791,7 @@ class TestVariantKernelPinPropagation:
             rc = _run_main(
                 ["build", "all", "rocky9",
                  "--variant", "mofed-24",
+                 "--skip-lustre",
                  "--lustre-tree", str(lustre_tree)]
             )
         assert rc == EXIT_OK
