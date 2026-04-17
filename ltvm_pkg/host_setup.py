@@ -135,6 +135,27 @@ def _run_quiet(
     return _run(cmd, check=check, quiet=True)
 
 
+def _sudo_run(
+    cmd: list[str],
+    check: bool = True,
+    quiet: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command under sudo (no-op prefix if already root)."""
+    if os.geteuid() == 0:
+        return _run(cmd, check=check, quiet=quiet)
+    return _run(["sudo", *cmd], check=check, quiet=quiet)
+
+
+def _sudo_prime(reason: str) -> None:
+    """Prompt for sudo credentials up front so later _sudo_run calls
+    don't interrupt with a surprise password prompt mid-install.
+    """
+    if os.geteuid() == 0:
+        return
+    log.info("%s -- prompting for sudo credentials now.", reason)
+    _run(["sudo", "-v"])
+
+
 def _pkg_install(host: HostInfo, *pkgs: str) -> None:
     """Install packages using the host's package manager.
 
@@ -1236,10 +1257,25 @@ def _run_setup_macos(
     steps: list[str] | None = None,
     force: bool = False,
 ) -> None:
+    if os.geteuid() == 0:
+        raise RuntimeError(
+            "Do not run `ltvm install` as root on macOS: Homebrew refuses "
+            "to run as root.  Run it as your normal user -- it will invoke "
+            "sudo only for the specific operations that need it."
+        )
+
     all_steps = steps is None
     active: set[str] = set(steps or ["qemu", "network"])
 
     log.info("Host: macOS %s (%s)", platform.mac_ver()[0], platform.machine())
+
+    ltvm_script = REPO_ROOT / "ltvm"
+    link = Path("/usr/local/bin/ltvm")
+    need_symlink = ltvm_script.exists() and not (
+        link.is_symlink() and link.resolve() == ltvm_script.resolve()
+    )
+    if need_symlink:
+        _sudo_prime(f"Installing the ltvm symlink at {link} requires root")
 
     if "qemu" in active:
         install_qemu_macos(force=force)
@@ -1247,12 +1283,12 @@ def _run_setup_macos(
     if "network" in active:
         install_socket_vmnet_macos(force=force)
 
-    ltvm_script = REPO_ROOT / "ltvm"
-    if ltvm_script.exists():
-        link = Path("/usr/local/bin/ltvm")
-        link.unlink(missing_ok=True)
-        link.symlink_to(ltvm_script)
+    if need_symlink:
+        _sudo_run(["rm", "-f", str(link)])
+        _sudo_run(["ln", "-s", str(ltvm_script), str(link)])
         log.info("ltvm installed to %s", link)
+    elif ltvm_script.exists():
+        log.info("ltvm already symlinked at %s", link)
 
     if all_steps:
         log.info("")
