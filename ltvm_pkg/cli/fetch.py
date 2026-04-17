@@ -35,6 +35,7 @@ from ltvm_pkg.cli.util import (
     _load_target,
     _load_target_args,
     _output,
+    host_arch,
 )
 
 
@@ -401,7 +402,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     url = getattr(args, "url", None)
     target = getattr(args, "target", None)
     filt = getattr(args, "filter", None)
-    arch = getattr(args, "arch", None) or "x86_64"
+    arch = getattr(args, "arch", None) or host_arch()
     kernel = getattr(args, "kernel", None)
     variant = getattr(args, "variant", None) or "base"
     image_mode = bool(getattr(args, "image", False))
@@ -598,7 +599,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     if not use_json:
         print()
         print("Next:")
-        arch_flag = f" --arch {arch}" if arch != "x86_64" else ""
+        arch_flag = f" --arch {arch}" if arch != host_arch() else ""
         print(
             f"  sudo ltvm create co1-test --target {target}{arch_flag} "
             f"--vcpus 2 --mdt-disks 1 --ost-disks 2"

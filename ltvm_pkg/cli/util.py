@@ -12,6 +12,7 @@ import argparse
 import json
 import logging
 import os
+import platform
 import sys
 from pathlib import Path
 from typing import Any
@@ -34,6 +35,18 @@ def _cli_attr(name: str) -> Any:
 EXIT_OK = 0
 EXIT_ERROR = 1
 EXIT_NOT_FOUND = 2
+
+
+def host_arch() -> str:
+    """Return the host CPU architecture, normalized for ltvm.
+
+    Linux reports ``aarch64`` and ``x86_64``; macOS reports ``arm64``
+    and ``x86_64``.  We fold ``arm64`` into ``aarch64`` so the rest of
+    the codebase (artifact paths, release asset names) has a single
+    spelling.  Other values pass through unchanged.
+    """
+    m = platform.machine()
+    return "aarch64" if m in ("aarch64", "arm64") else m
 
 
 def _output(data: Any, use_json: bool) -> None:

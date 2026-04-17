@@ -785,7 +785,7 @@ class TestCmdFetch:
                 target="rocky9",
                 url=url,
                 filter=None,
-                arch=None,
+                arch="x86_64",
                 kernel=None,
                 variant="base",
                 list=False,
@@ -827,7 +827,7 @@ class TestCmdFetch:
                 target="rocky9",
                 url=url,
                 filter=None,
-                arch=None,
+                arch="x86_64",
                 kernel=None,
                 variant="base",
                 list=False,
@@ -864,7 +864,7 @@ class TestCmdFetch:
                 target="rocky9",
                 url=url,
                 filter=None,
-                arch=None,
+                arch="x86_64",
                 kernel=None,
                 variant="base",
                 list=False,
@@ -914,7 +914,7 @@ class TestCmdFetch:
                 target="rocky9",
                 url=url,
                 filter=None,
-                arch=None,
+                arch="x86_64",
                 kernel=None,
                 variant="base",
                 list=False,
@@ -1130,6 +1130,114 @@ class TestCmdFetch:
         err = capsys.readouterr().err
         assert "Fetch bootable failed" in err
         assert "disk corrupt" in err
+
+    @pytest.mark.parametrize(
+        "reported_machine,expected_arch",
+        [("aarch64", "aarch64"), ("arm64", "aarch64"), ("x86_64", "x86_64")],
+    )
+    def test_default_arch_uses_host_arch(
+        self,
+        reported_machine: str,
+        expected_arch: str,
+        tmp_targets: Path,
+    ) -> None:
+        import ltvm_pkg.target_config as cfg
+
+        with (
+            patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
+            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch(
+                "ltvm_pkg.cli.util.platform.machine",
+                return_value=reported_machine,
+            ),
+            patch.object(
+                cli_mod,
+                "_find_release_url",
+                return_value=(
+                    f"https://x/releases/download/rocky9-{expected_arch}-foo/"
+                    "manifest.json"
+                ),
+            ) as fru,
+            patch.object(
+                cli_mod,
+                "fetch_target",
+                return_value=tmp_targets / "output" / "rocky9" / expected_arch,
+            ),
+        ):
+            args = _ns(
+                target="rocky9",
+                url=None,
+                filter=None,
+                arch=None,
+                kernel=None,
+                variant="base",
+                list=False,
+                replace=False,
+                force=False,
+                image=False,
+            )
+            rc = cmd_fetch(args)
+
+        assert rc == EXIT_OK
+        assert fru.call_args.kwargs["arch"] == expected_arch
+
+    def test_explicit_arch_override_wins(
+        self,
+        tmp_targets: Path,
+    ) -> None:
+        import ltvm_pkg.target_config as cfg
+
+        with (
+            patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
+            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch("ltvm_pkg.cli.util.platform.machine", return_value="aarch64"),
+            patch.object(
+                cli_mod,
+                "_find_release_url",
+                return_value=(
+                    "https://x/releases/download/rocky9-x86_64-foo/"
+                    "manifest.json"
+                ),
+            ) as fru,
+            patch.object(
+                cli_mod,
+                "fetch_target",
+                return_value=tmp_targets / "output" / "rocky9" / "x86_64",
+            ),
+        ):
+            args = _ns(
+                target="rocky9",
+                url=None,
+                filter=None,
+                arch="x86_64",
+                kernel=None,
+                variant="base",
+                list=False,
+                replace=False,
+                force=False,
+                image=False,
+            )
+            rc = cmd_fetch(args)
+
+        assert rc == EXIT_OK
+        assert fru.call_args.kwargs["arch"] == "x86_64"
+
+
+class TestHostArch:
+    @pytest.mark.parametrize(
+        "reported,expected",
+        [
+            ("x86_64", "x86_64"),
+            ("aarch64", "aarch64"),
+            ("arm64", "aarch64"),
+            ("ppc64le", "ppc64le"),
+        ],
+    )
+    def test_host_arch_normalisation(self, reported: str, expected: str) -> None:
+        from ltvm_pkg.cli.util import host_arch
+
+        with patch("ltvm_pkg.cli.util.platform.machine", return_value=reported):
+            assert host_arch() == expected
 
 
 def _tc_factory(tmp_targets: Path):

@@ -533,10 +533,12 @@ def _resolve_os_and_kernel(args: argparse.Namespace) -> tuple:
 
     Returns (os_arts, image, kernel, kver, os_target, variant).
     """
+    from .cli.util import host_arch
+
     os_target = getattr(args, "os", "")
     explicit_image = getattr(args, "image", "")
     explicit_kernel = getattr(args, "kernel", "")
-    arch = getattr(args, "arch", None) or "x86_64"
+    arch = getattr(args, "arch", None) or host_arch()
     variant = getattr(args, "variant", None) or "base"
     defaulted_target = not os_target
     if defaulted_target:
