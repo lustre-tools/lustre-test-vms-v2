@@ -106,6 +106,12 @@ QEMU_PREFIX = Path(os.environ.get("LTVM_QEMU_PREFIX", "/opt/qemu"))
 VM_DIR = Path(os.environ.get("LTVM_VM_DIR", "/opt/qemu-vms"))
 DEFAULT_SUBNET = "192.168.100"
 
+DEFAULT_VMNET_GATEWAY = os.environ.get("LTVM_VMNET_GATEWAY", "192.168.105.1")
+SOCKET_VMNET_PLIST_LABEL = "io.github.lima-vm.socket_vmnet"
+SOCKET_VMNET_PLIST_PATH = Path(
+    f"/Library/LaunchDaemons/{SOCKET_VMNET_PLIST_LABEL}.plist"
+)
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # ltvm_pkg/ holds scripts, host-config templates, etc.
 PKG_DIR = Path(__file__).resolve().parent
@@ -663,6 +669,152 @@ def install_socket_vmnet_macos(force: bool = False) -> None:
     log.info("socket_vmnet installed at %s/bin/socket_vmnet", brew_prefix)
 
 
+def _render_socket_vmnet_plist() -> str:
+    """Render the launchd plist from the template, substituting paths."""
+    bin_path = socket_vmnet_path()
+    if bin_path is None:
+        raise RuntimeError(
+            "socket_vmnet binary not found -- run `ltvm install` or "
+            "`brew install socket_vmnet` first"
+        )
+    sock_path = socket_vmnet_socket_path()
+    template = (
+        HOST_CONFIG_DIR / f"{SOCKET_VMNET_PLIST_LABEL}.plist"
+    ).read_text()
+    return (
+        template.replace("@SOCKET_VMNET_BIN@", str(bin_path))
+        .replace("@SOCKET_VMNET_SOCKET@", str(sock_path))
+        .replace("@VMNET_GATEWAY@", DEFAULT_VMNET_GATEWAY)
+    )
+
+
+def _socket_vmnet_daemon_loaded() -> bool:
+    """Return True if launchd has the socket_vmnet job loaded."""
+    r = _run_quiet(
+        ["launchctl", "print", f"system/{SOCKET_VMNET_PLIST_LABEL}"],
+        check=False,
+    )
+    return r.returncode == 0
+
+
+def socket_vmnet_reachable() -> bool:
+    """Return True if the socket_vmnet socket exists and is a UNIX socket."""
+    import stat as _stat
+
+    sock = socket_vmnet_socket_path()
+    try:
+        mode = sock.stat().st_mode
+        return _stat.S_ISSOCK(mode)
+    except (OSError, TypeError):
+        return False
+
+
+def install_socket_vmnet_launchd_macos(force: bool = False) -> None:
+    """Install and load the socket_vmnet launchd plist.
+
+    Mirrors Lima's approach: a root-owned LaunchDaemon that starts at load
+    and stays up (KeepAlive=true).  Only installed when the user runs
+    `ltvm install`, so laptops that never do pay nothing.
+    """
+    desired = _render_socket_vmnet_plist()
+    needs_write = True
+    if SOCKET_VMNET_PLIST_PATH.exists() and not force:
+        try:
+            if SOCKET_VMNET_PLIST_PATH.read_text() == desired:
+                needs_write = False
+        except OSError:
+            pass
+
+    if needs_write:
+        _sudo_prime(f"Installing {SOCKET_VMNET_PLIST_PATH} requires root")
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".plist", delete=False
+        ) as tf:
+            tf.write(desired)
+            tmp_path = tf.name
+        try:
+            _sudo_run(["mkdir", "-p", "/var/log/socket_vmnet"])
+            _sudo_run(
+                [
+                    "install",
+                    "-m",
+                    "0644",
+                    "-o",
+                    "root",
+                    "-g",
+                    "wheel",
+                    tmp_path,
+                    str(SOCKET_VMNET_PLIST_PATH),
+                ]
+            )
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+        if _socket_vmnet_daemon_loaded():
+            _sudo_run(
+                ["launchctl", "bootout", f"system/{SOCKET_VMNET_PLIST_LABEL}"],
+                check=False,
+            )
+        log.info("Installed %s", SOCKET_VMNET_PLIST_PATH)
+
+    if not _socket_vmnet_daemon_loaded():
+        _sudo_prime("Loading the socket_vmnet launchd job requires root")
+        _sudo_run(
+            ["launchctl", "bootstrap", "system", str(SOCKET_VMNET_PLIST_PATH)]
+        )
+        log.info("Loaded %s", SOCKET_VMNET_PLIST_LABEL)
+    else:
+        log.info("%s already loaded", SOCKET_VMNET_PLIST_LABEL)
+
+
+def ensure_socket_vmnet_running() -> None:
+    """Ensure the socket_vmnet daemon is reachable before launching a VM.
+
+    Safe to call repeatedly: no-op when the socket is already reachable.
+    If the plist is installed but the daemon isn't running, loads or
+    kickstarts it and waits briefly for the socket to appear.
+    """
+    if socket_vmnet_reachable():
+        return
+
+    if SOCKET_VMNET_PLIST_PATH.exists():
+        if not _socket_vmnet_daemon_loaded():
+            log.info("socket_vmnet not loaded; loading launchd job...")
+            _sudo_prime("Loading the socket_vmnet launchd job requires root")
+            _sudo_run(
+                [
+                    "launchctl",
+                    "bootstrap",
+                    "system",
+                    str(SOCKET_VMNET_PLIST_PATH),
+                ],
+                check=False,
+            )
+        else:
+            _sudo_run(
+                [
+                    "launchctl",
+                    "kickstart",
+                    f"system/{SOCKET_VMNET_PLIST_LABEL}",
+                ],
+                check=False,
+            )
+        import time as _time
+
+        for _ in range(50):
+            if socket_vmnet_reachable():
+                return
+            _time.sleep(0.1)
+
+    raise RuntimeError(
+        f"socket_vmnet is not reachable at {socket_vmnet_socket_path()}.\n"
+        f"VMs on macOS need the socket_vmnet daemon running.\n"
+        f"Fix with:\n"
+        f"  ltvm install          # installs + loads the launchd plist\n"
+        f"or manually:\n"
+        f"  sudo launchctl bootstrap system {SOCKET_VMNET_PLIST_PATH}"
+    )
+
+
 def install_qemu_macos(force: bool = False) -> None:
     """Install QEMU on macOS via Homebrew."""
     existing = _qemu_installed_version()
@@ -1168,10 +1320,30 @@ def verify(subnet: str = DEFAULT_SUBNET) -> dict[str, Any]:
 
     if macos:
         # macOS uses Hypervisor.framework; no /dev/kvm
-        results["kvm"] = {"available": True, "note": "Hypervisor.framework (macOS)"}
-        results["bridge"] = {"up": True, "address": None, "note": "not required on macOS"}
+        results["kvm"] = {
+            "available": True,
+            "note": "Hypervisor.framework (macOS)",
+        }
+        results["bridge"] = {
+            "up": True,
+            "address": None,
+            "note": "not required on macOS",
+        }
         results["dnsmasq"] = {"running": True, "note": "not required on macOS"}
         results["ssh"] = {"configured": True, "note": "not required on macOS"}
+        bin_path = socket_vmnet_path()
+        results["socket_vmnet"] = {
+            "installed": bin_path is not None,
+            "path": str(bin_path) if bin_path else None,
+            "plist": (
+                str(SOCKET_VMNET_PLIST_PATH)
+                if SOCKET_VMNET_PLIST_PATH.exists()
+                else None
+            ),
+            "loaded": _socket_vmnet_daemon_loaded(),
+            "reachable": socket_vmnet_reachable(),
+            "socket": str(socket_vmnet_socket_path()),
+        }
     else:
         # KVM
         results["kvm"] = {"available": Path("/dev/kvm").exists()}
@@ -1233,18 +1405,19 @@ def verify(subnet: str = DEFAULT_SUBNET) -> dict[str, Any]:
     }
 
     # Overall
-    results["all_ok"] = all(
-        [
-            results["qemu"]["installed"],
-            results["kvm"]["available"],
-            results["bridge"]["up"],
-            results["dnsmasq"]["running"],
-            results["ltvm"]["installed"],
-            results["podman"]["installed"],
-            results["zstd"]["installed"],
-            results["ssh"]["configured"],
-        ]
-    )
+    checks = [
+        results["qemu"]["installed"],
+        results["kvm"]["available"],
+        results["bridge"]["up"],
+        results["dnsmasq"]["running"],
+        results["ltvm"]["installed"],
+        results["podman"]["installed"],
+        results["zstd"]["installed"],
+        results["ssh"]["configured"],
+    ]
+    if macos:
+        checks.append(results["socket_vmnet"]["installed"])
+    results["all_ok"] = all(checks)
 
     return results
 
@@ -1320,6 +1493,31 @@ def print_verify(results: dict[str, Any]) -> None:
     else:
         fail("SSH config: not configured")
 
+    sv = results.get("socket_vmnet")
+    if sv is not None:
+        if not sv["installed"]:
+            fail(
+                "socket_vmnet: not installed "
+                "(run `ltvm install` or `brew install socket_vmnet`)"
+            )
+        elif sv["reachable"]:
+            ok(f"socket_vmnet: reachable at {sv['socket']}")
+        elif sv["loaded"]:
+            fail(
+                f"socket_vmnet: launchd job loaded but socket "
+                f"{sv['socket']} not yet open"
+            )
+        elif sv["plist"]:
+            fail(
+                f"socket_vmnet: plist at {sv['plist']} not loaded "
+                f"(sudo launchctl bootstrap system {sv['plist']})"
+            )
+        else:
+            fail(
+                "socket_vmnet: installed but launchd plist missing "
+                "(run `ltvm install`)"
+            )
+
     print()
     if results["all_ok"]:
         print("All checks passed.")
@@ -1361,6 +1559,7 @@ def _run_setup_macos(
 
     if "network" in active:
         install_socket_vmnet_macos(force=force)
+        install_socket_vmnet_launchd_macos(force=force)
 
     if need_symlink:
         _sudo_run(["rm", "-f", str(link)])

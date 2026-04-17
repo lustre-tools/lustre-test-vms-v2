@@ -473,6 +473,12 @@ class TestVerify:
                 "shutil.which",
                 side_effect=lambda cmd: f"/usr/bin/{cmd}",
             ),
+            patch(
+                "ltvm_pkg.host_setup.socket_vmnet_path",
+                return_value=Path(
+                    "/opt/homebrew/opt/socket_vmnet/bin/socket_vmnet"
+                ),
+            ),
         ):
             result = verify()
 
