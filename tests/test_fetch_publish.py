@@ -928,6 +928,108 @@ class TestCmdFetch:
         assert ft.called
         assert not leftover.exists()
 
+    def test_divergent_tag_refuses_without_replace(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+    ) -> None:
+        """Local tag differs from remote release: refuse by default so a
+        fresh fetch doesn't silently mix two releases' files."""
+        import ltvm_pkg.target_config as cfg
+
+        out = tmp_targets / "output"
+        target_dir = out / "rocky9" / "x86_64"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / ".ltvm-release-tag").write_text(
+            "rocky9-x86_64-5.14.0-500.el9_5\n"
+        )
+        url = (
+            "https://x/releases/download/"
+            "rocky9-x86_64-5.14.0-600.el9_7/manifest.json"
+        )
+
+        with (
+            patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
+            patch.object(cfg, "OUTPUT_DIR", out),
+            patch.object(cli_mod, "fetch_target") as ft,
+            patch.object(
+                cli_mod,
+                "_gh_api",
+                return_value={"published_at": "2025-02-10T00:00:00Z"},
+            ),
+        ):
+            args = _ns(
+                target="rocky9",
+                url=url,
+                filter=None,
+                arch=None,
+                kernel=None,
+                variant="base",
+                list=False,
+                replace=False,
+                force=False,
+                image=False,
+            )
+            rc = cmd_fetch(args)
+
+        assert rc == EXIT_ERROR
+        assert not ft.called
+        err = capsys.readouterr().err
+        assert "5.14.0-500.el9_5" in err
+        assert "5.14.0-600.el9_7" in err
+        assert "--replace" in err
+        # The refusal message must include the remote publish date so
+        # the user can judge newness before deciding to upgrade.
+        assert "2025-02-10" in err
+
+    def test_divergent_tag_proceeds_with_replace(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+    ) -> None:
+        """--replace explicitly consents to overwriting a local copy."""
+        import ltvm_pkg.target_config as cfg
+
+        out = tmp_targets / "output"
+        target_dir = out / "rocky9" / "x86_64"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / ".ltvm-release-tag").write_text(
+            "rocky9-x86_64-old\n"
+        )
+        (target_dir / "stale.txt").write_text("old")
+        url = "https://x/releases/download/rocky9-x86_64-new/manifest.json"
+
+        def _fake_fetch(target, url, base, **kw):  # type: ignore[no-untyped-def]
+            (Path(base) / target / kw["arch"]).mkdir(
+                parents=True, exist_ok=True
+            )
+            return Path(base) / target / kw["arch"]
+
+        with (
+            patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
+            patch.object(cfg, "OUTPUT_DIR", out),
+            patch.object(
+                cli_mod, "fetch_target", side_effect=_fake_fetch
+            ) as ft,
+        ):
+            args = _ns(
+                target="rocky9",
+                url=url,
+                filter=None,
+                arch=None,
+                kernel=None,
+                variant="base",
+                list=False,
+                replace=True,
+                force=False,
+                image=False,
+            )
+            rc = cmd_fetch(args)
+
+        assert rc == EXIT_OK
+        assert ft.called
+        assert not (target_dir / "stale.txt").exists()
+
     def test_fetch_target_failure_returns_error(
         self,
         capsys: pytest.CaptureFixture[str],

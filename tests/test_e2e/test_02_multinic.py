@@ -8,11 +8,16 @@ for each --nic):
     (none)                  tcp0(eth0)                      1   (eth0)
     --nic tcp               tcp0(eth1)                      2   (eth0+eth1)
     --nic tcp --nic tcp     tcp0(eth1),tcp1(eth2)           3
-    --nic softroce          o2ib0(rxe0)                     2
+    --nic softroce          o2ib0(eth1)                     2
     --nic tcp --nic softroce
-                            tcp0(eth1),o2ib0(rxe0)          3
+                            tcp0(eth1),o2ib0(eth2)          3
     --nic softroce --nic softroce
-                            o2ib0(rxe0),o2ib1(rxe1)         3
+                            o2ib0(eth1),o2ib1(eth2)         3
+
+Softroce LNet entries reference the BACKING NETDEV (ethI), not the
+rxe link.  ko2iblnd takes a netdev name and finds the rxe ibdev via
+rdma_cm; rxe links aren't netdevs and can't appear in lnet.conf.
+See targets/common/setup-lnet-config.sh comment.
 
 eth0 always gets a mgmt IP regardless of LNet membership, so the
 IPv4-address count is `1 + len(--nic)` for every case.
@@ -31,9 +36,9 @@ _CASES: list[tuple[str, list[str], str, int]] = [
     ("default",          [],                        "tcp0(eth0)",               1),
     ("one-tcp",          ["tcp"],                   "tcp0(eth1)",               2),
     ("two-tcp",          ["tcp", "tcp"],            "tcp0(eth1),tcp1(eth2)",    3),
-    ("one-softroce",     ["softroce"],              "o2ib0(rxe0)",              2),
-    ("tcp-plus-softroce", ["tcp", "softroce"],      "tcp0(eth1),o2ib0(rxe0)",   3),
-    ("two-softroce",     ["softroce", "softroce"],  "o2ib0(rxe0),o2ib1(rxe1)",  3),
+    ("one-softroce",     ["softroce"],              "o2ib0(eth1)",              2),
+    ("tcp-plus-softroce", ["tcp", "softroce"],      "tcp0(eth1),o2ib0(eth2)",   3),
+    ("two-softroce",     ["softroce", "softroce"],  "o2ib0(eth1),o2ib1(eth2)",  3),
 ]
 
 

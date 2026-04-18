@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# PYTHON_ARGCOMPLETE_OK
 """ltvm -- CLI orchestrator for Lustre test VM infrastructure.
 
 Single entry point for building containers, kernels, and VM images,
@@ -41,6 +42,7 @@ _VENV_PY = _REPO_ROOT / ".venv" / "bin" / "python"
 if _VENV_PY.exists() and str(_VENV_PY) != sys.executable:
     try:
         import yaml  # noqa: F401
+        import argcomplete  # noqa: F401
     except ImportError:
         os.execv(
             str(_VENV_PY),
@@ -59,6 +61,13 @@ from typing import Any  # noqa: E402
 sys.path.insert(0, str(_REPO_ROOT))
 
 from ltvm_pkg import __version__ as LTVM_VERSION  # noqa: E402
+from ltvm_pkg.completion import (  # noqa: E402
+    complete_cluster_remainder,
+    complete_kernels,
+    complete_targets,
+    complete_variants,
+    complete_vms,
+)
 from ltvm_pkg.cli import (  # noqa: E402
     EXIT_ERROR,
     cmd_build_all,
@@ -73,6 +82,7 @@ from ltvm_pkg.cli import (  # noqa: E402
     cmd_console_log,
     cmd_crash_collect,
     cmd_create,
+    cmd_delete,
     cmd_deploy,
     cmd_destroy,
     cmd_doctor,
@@ -126,18 +136,20 @@ def _add_target_arg(
     help_text = "OS target (e.g. rocky9); also accepts --target"
     if required:
         help_text += " (required)"
-    subparser.add_argument(
+    pos = subparser.add_argument(
         positional_name,
         nargs="?",
         default=None,
         help=help_text,
     )
-    subparser.add_argument(
+    pos.completer = complete_targets  # type: ignore[attr-defined]
+    flag = subparser.add_argument(
         "--target",
         dest=_TARGET_FLAG_DEST,
         default=None,
         help=argparse.SUPPRESS,
     )
+    flag.completer = complete_targets  # type: ignore[attr-defined]
 
 
 class _HideSuppressedSubcommands(argparse.HelpFormatter):
@@ -199,11 +211,12 @@ def build_parser() -> argparse.ArgumentParser:
     # Shared --kernel flag for subcommands that operate on
     # a specific kernel version within a target
     kernel_arg = argparse.ArgumentParser(add_help=False)
-    kernel_arg.add_argument(
+    _kernel_action = kernel_arg.add_argument(
         "--kernel",
         default=None,
         help="Kernel version (default: from targets.yaml)",
     )
+    _kernel_action.completer = complete_kernels  # type: ignore[attr-defined]
 
     # Shared --force flag for build subcommands
     force_arg = argparse.ArgumentParser(add_help=False)
@@ -217,13 +230,14 @@ def build_parser() -> argparse.ArgumentParser:
     # target's variant artifacts (e.g. MOFED).  Default 'base' is the
     # pre-variant behavior.
     variant_arg = argparse.ArgumentParser(add_help=False)
-    variant_arg.add_argument(
+    _variant_action = variant_arg.add_argument(
         "--variant",
         default="base",
         metavar="NAME",
         help="Target variant to build (default: base). "
         "E.g. 'mofed' to layer MOFED on top of the base.",
     )
+    _variant_action.completer = complete_variants  # type: ignore[attr-defined]
     variant_arg.add_argument(
         "--mofed-version",
         default=None,
@@ -393,10 +407,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     # build lustre is a two-positional subcommand: <target> <lustre-tree>.
     # Target defaults to rocky9 (historical).  --target also works.
-    blp.add_argument(
+    _blp_target = blp.add_argument(
         "target", nargs="?", default=None,
         help="OS target (default: rocky9); also accepts --target"
     )
+    _blp_target.completer = complete_targets  # type: ignore[attr-defined]
     blp.add_argument(
         "lustre_tree_pos",
         nargs="?",
@@ -404,12 +419,13 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="lustre-tree",
         help="Path to Lustre source tree (positional or --lustre-tree)",
     )
-    blp.add_argument(
+    _blp_flag = blp.add_argument(
         "--target",
         dest=_TARGET_FLAG_DEST,
         default=None,
         help=argparse.SUPPRESS,
     )
+    _blp_flag.completer = complete_targets  # type: ignore[attr-defined]
     blp.add_argument(
         "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
     )
@@ -484,6 +500,15 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="List configured target OSes",
     )
+    tlp.add_argument(
+        "list_filter",
+        nargs="?",
+        choices=["local", "remote"],
+        default=None,
+        metavar="[local|remote]",
+        help="Only show rows with a local build (local) or a "
+        "published remote release (remote)",
+    )
     tlp.set_defaults(func=cmd_targets)
 
     tshp = target_sub.add_parser(
@@ -508,6 +533,67 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tcp.set_defaults(func=cmd_clean)
 
+    tdp = target_sub.add_parser(
+        "delete",
+        parents=[common],
+        help="Delete a target's artifacts (local by default; "
+        "--remote for the published GitHub release)",
+    )
+    _add_target_arg(tdp, required=True)
+    tdp.add_argument(
+        "--remote",
+        action="store_true",
+        default=False,
+        help="Delete the published GitHub release instead of "
+        "local artifacts",
+    )
+    tdp.add_argument(
+        "--all-arches",
+        action="store_true",
+        default=False,
+        help="(local only) Wipe every arch under output/<target>/",
+    )
+    tdp.add_argument(
+        "--tag",
+        default=None,
+        help="(--remote) Explicit release tag to delete "
+        "(default: resolve from target/--kernel/--variant/--image)",
+    )
+    _tdp_kernel = tdp.add_argument(
+        "--kernel",
+        default=None,
+        help="(--remote) Kernel to select when resolving tag",
+    )
+    _tdp_kernel.completer = complete_kernels  # type: ignore[attr-defined]
+    _tdp_variant = tdp.add_argument(
+        "--variant",
+        default="base",
+        help="(--remote) Variant to select when resolving tag "
+        "(default: base)",
+    )
+    _tdp_variant.completer = complete_variants  # type: ignore[attr-defined]
+    tdp.add_argument(
+        "--image",
+        action="store_true",
+        default=False,
+        help="(--remote) Target the bootable release namespace "
+        "rather than the ecosystem one",
+    )
+    tdp.add_argument(
+        "--cleanup-tag",
+        dest="cleanup_tag",
+        action="store_true",
+        default=False,
+        help="(--remote) Also delete the git tag",
+    )
+    tdp.add_argument(
+        "-y", "--yes",
+        action="store_true",
+        default=False,
+        help="(--remote) Confirm deletion (required for remote)",
+    )
+    tdp.set_defaults(func=cmd_delete)
+
     tvp = target_sub.add_parser(
         "validate",
         parents=[common, force_compat_arg],
@@ -525,9 +611,10 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Download pre-built target artifacts from GitHub",
     )
-    tfp.add_argument(
+    _tfp_target = tfp.add_argument(
         "target", nargs="?", default=None, help="Target name (e.g. rocky9)"
     )
+    _tfp_target.completer = complete_targets  # type: ignore[attr-defined]
     tfp.add_argument(
         "filter",
         nargs="?",
@@ -540,12 +627,13 @@ def build_parser() -> argparse.ArgumentParser:
     tfp.add_argument(
         "--url", default=None, help="Direct URL (skip GitHub lookup)"
     )
-    tfp.add_argument(
+    _tfp_kernel = tfp.add_argument(
         "--kernel",
         default=None,
         help="Specific kernel name from targets.yaml kernels.available "
         "(e.g. 5.14-rhel9.5)",
     )
+    _tfp_kernel.completer = complete_kernels  # type: ignore[attr-defined]
     tfp.add_argument(
         "--replace",
         action="store_true",
@@ -560,11 +648,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="With --replace, re-fetch even when the local tag "
         "already matches the remote release.",
     )
-    tfp.add_argument(
+    _tfp_variant = tfp.add_argument(
         "--variant",
         default="base",
         help="Target variant to fetch (default: base). E.g. 'mofed'.",
     )
+    _tfp_variant.completer = complete_variants  # type: ignore[attr-defined]
     tfp.add_argument(
         "--image",
         action="store_true",
@@ -625,11 +714,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output directory for tarball (default: output/)",
     )
-    tpkp.add_argument(
+    _tpkp_variant = tpkp.add_argument(
         "--variant",
         default="base",
         help="Target variant to package (default: base). E.g. 'mofed'.",
     )
+    _tpkp_variant.completer = complete_variants  # type: ignore[attr-defined]
     tpkp.set_defaults(func=cmd_package)
 
     # publish (maintainer use)
@@ -649,11 +739,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="(Deprecated; unused by the split-asset publish flow.)",
     )
-    tpbp.add_argument(
+    _tpbp_variant = tpbp.add_argument(
         "--variant",
         default="base",
         help="Target variant to publish (default: base). E.g. 'mofed'.",
     )
+    _tpbp_variant.completer = complete_variants  # type: ignore[attr-defined]
     tpbp.add_argument(
         "--image",
         action="store_true",
@@ -707,12 +798,13 @@ def build_parser() -> argparse.ArgumentParser:
     # Parked on a sentinel dest; the CLI reconciler sets both
     # args.target and args.os (the latter is what vm_commands reads)
     # after checking for conflicts with the positional.
-    _vm_create_args.add_argument(
+    _vm_create_tflag = _vm_create_args.add_argument(
         "--target",
         dest=_TARGET_FLAG_DEST,
         default=None,
         help=argparse.SUPPRESS,
     )
+    _vm_create_tflag.completer = complete_targets  # type: ignore[attr-defined]
     _vm_create_args.add_argument(
         "--mdt-disks",
         dest="mdt_disks",
@@ -736,11 +828,12 @@ def build_parser() -> argparse.ArgumentParser:
             "default 500M, max 100G"
         ),
     )
-    _vm_create_args.add_argument(
+    _vm_create_variant = _vm_create_args.add_argument(
         "--variant",
         default="base",
         help="Target variant to boot (default: base). E.g. 'mofed'.",
     )
+    _vm_create_variant.completer = complete_variants  # type: ignore[attr-defined]
     _vm_create_args.add_argument(
         "--nic",
         action="append",
@@ -759,15 +852,17 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common, _vm_create_args],
         help="Create a VM (idempotent: starts it if stopped, no-ops if running)",
     )
-    sp.add_argument("name", help="VM name (e.g. co1-single)")
+    _create_name = sp.add_argument("name", help="VM name (e.g. co1-single)")
+    _create_name.completer = complete_vms  # type: ignore[attr-defined]
     # Optional positional target; also accepts --target.  If omitted,
     # vm_commands falls back to DEFAULT_TARGET.
-    sp.add_argument(
+    _create_target = sp.add_argument(
         "target",
         nargs="?",
         default=None,
         help="OS target (e.g. rocky9); also accepts --target",
     )
+    _create_target.completer = complete_targets  # type: ignore[attr-defined]
     sp.set_defaults(func=cmd_create)
 
     # -- VM lifecycle: destroy --
@@ -776,7 +871,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Destroy one or more VMs",
     )
-    sp.add_argument("names", nargs="+", help="VM name(s)")
+    _destroy_names = sp.add_argument("names", nargs="+", help="VM name(s)")
+    _destroy_names.completer = complete_vms  # type: ignore[attr-defined]
     sp.set_defaults(func=cmd_destroy)
 
     # -- VM lifecycle: start --
@@ -785,7 +881,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Start one or more stopped VMs",
     )
-    sp.add_argument("names", nargs="+", help="VM name(s)")
+    _start_names = sp.add_argument("names", nargs="+", help="VM name(s)")
+    _start_names.completer = complete_vms  # type: ignore[attr-defined]
     sp.set_defaults(func=cmd_vm_start)
 
     # -- VM lifecycle: stop --
@@ -794,7 +891,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Stop one or more running VMs",
     )
-    sp.add_argument("names", nargs="+", help="VM name(s)")
+    _stop_names = sp.add_argument("names", nargs="+", help="VM name(s)")
+    _stop_names.completer = complete_vms  # type: ignore[attr-defined]
     sp.set_defaults(func=cmd_vm_stop)
 
     # -- VM info: list --
@@ -821,7 +919,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Show QEMU console log for a VM",
     )
-    vclp.add_argument("name", help="VM name")
+    _vclp_name = vclp.add_argument("name", help="VM name")
+    _vclp_name.completer = complete_vms  # type: ignore[attr-defined]
     vclp.add_argument(
         "--lines",
         type=int,
@@ -835,7 +934,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Collect vmcore from a VM (optionally trigger crash first)",
     )
-    vccp.add_argument("name", help="VM name")
+    _vccp_name = vccp.add_argument("name", help="VM name")
+    _vccp_name.completer = complete_vms  # type: ignore[attr-defined]
     vccp.add_argument(
         "--outdir",
         default=None,
@@ -866,7 +966,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Inject NMI into a VM (triggers kernel panic + kdump)",
     )
-    vnp.add_argument("name", help="VM name")
+    _vnp_name = vnp.add_argument("name", help="VM name")
+    _vnp_name.completer = complete_vms  # type: ignore[attr-defined]
     vnp.set_defaults(func=cmd_nmi)
 
     vsp = vm_sub.add_parser(
@@ -874,7 +975,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Create a snapshot of a VM's overlay disk",
     )
-    vsp.add_argument("name", help="VM name")
+    _vsp_name = vsp.add_argument("name", help="VM name")
+    _vsp_name.completer = complete_vms  # type: ignore[attr-defined]
     vsp.add_argument(
         "tag",
         nargs="?",
@@ -894,7 +996,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Restore a VM to a snapshot (or list snapshots if no tag)",
     )
-    vrp.add_argument("name", help="VM name")
+    _vrp_name = vrp.add_argument("name", help="VM name")
+    _vrp_name.completer = complete_vms  # type: ignore[attr-defined]
     vrp.add_argument(
         "tag",
         nargs="?",
@@ -929,15 +1032,17 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common, kernel_arg, force_compat_arg],
         help="Deploy Lustre to a VM",
     )
-    sp.add_argument("vm", help="VM name")
+    _dep_vm = sp.add_argument("vm", help="VM name")
+    _dep_vm.completer = complete_vms  # type: ignore[attr-defined]
     # Optional positional target; also accepts --target.
-    sp.add_argument(
+    _dep_target = sp.add_argument(
         "target",
         nargs="?",
         default=None,
         help="OS target for kernel modules (default: auto-detect from VM); "
         "also accepts --target",
     )
+    _dep_target.completer = complete_targets  # type: ignore[attr-defined]
     sp.add_argument(
         "--build",
         default=None,
@@ -951,19 +1056,21 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Deploy only userspace (tools, tests) -- skip kernel modules and depmod",
     )
-    sp.add_argument(
+    _dep_tflag = sp.add_argument(
         "--target",
         dest=_TARGET_FLAG_DEST,
         default=None,
         help=argparse.SUPPRESS,
     )
+    _dep_tflag.completer = complete_targets  # type: ignore[attr-defined]
     sp.set_defaults(func=cmd_deploy)
 
     # -- llmount --
     sp = sub.add_parser(
         "llmount", parents=[common], help="Mount (or unmount) Lustre inside a VM"
     )
-    sp.add_argument("vm", help="VM name")
+    _llm_vm = sp.add_argument("vm", help="VM name")
+    _llm_vm.completer = complete_vms  # type: ignore[attr-defined]
     sp.add_argument(
         "--cleanup",
         action="store_true",
@@ -997,7 +1104,8 @@ def build_parser() -> argparse.ArgumentParser:
         ],
         help="Cluster action",
     )
-    sp.add_argument("cluster_args", nargs=argparse.REMAINDER)
+    _cluster_rem = sp.add_argument("cluster_args", nargs=argparse.REMAINDER)
+    _cluster_rem.completer = complete_cluster_remainder  # type: ignore[attr-defined]
     sp.set_defaults(func=cmd_cluster)
 
     return p
@@ -1067,6 +1175,16 @@ def _reconcile_target_args(args: argparse.Namespace) -> int | None:
 
 def main() -> int:
     parser = build_parser()
+    # argcomplete hooks here when invoked via the bash completion shim
+    # (detected via _ARGCOMPLETE env var).  In that mode it prints
+    # completions and exits -- nothing below runs.  When not completing,
+    # this is a no-op.
+    try:
+        import argcomplete
+
+        argcomplete.autocomplete(parser)
+    except ImportError:
+        pass
     args = parser.parse_args()
 
     level = logging.DEBUG if args.verbose else logging.INFO

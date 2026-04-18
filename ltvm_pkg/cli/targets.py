@@ -144,8 +144,48 @@ def _variant_suffix_in_tag(tag: str) -> str | None:
     return None
 
 
+def _filter_rows(
+    rows: list[dict[str, Any]], scope: str | None,
+) -> list[dict[str, Any]]:
+    """Apply the ``local`` / ``remote`` filter to the row list.
+
+    Drops variant rows that don't match, and only keeps a kernel
+    header row when at least one variant row beneath it survives
+    (so empty kernel sections don't linger).  Error rows (no
+    ``kernel`` key) pass through unchanged -- the user should still
+    see parse failures.
+    """
+    if scope is None:
+        return rows
+
+    def keep(r: dict[str, Any]) -> bool:
+        if scope == "local":
+            return bool(r.get("built"))
+        # scope == "remote": '-' = no release, '?' = unreachable,
+        # anything else is a real release tag.
+        return r.get("remote_release") not in (None, "-", "?")
+
+    kept: list[dict[str, Any]] = []
+    pending_header: dict[str, Any] | None = None
+    for r in rows:
+        if "kernel" not in r:
+            kept.append(r)
+            pending_header = None
+            continue
+        if r["variant"] is None:
+            pending_header = r
+            continue
+        if keep(r):
+            if pending_header is not None:
+                kept.append(pending_header)
+                pending_header = None
+            kept.append(r)
+    return kept
+
+
 def cmd_targets(args: argparse.Namespace) -> int:
     use_json = args.json
+    scope = getattr(args, "list_filter", None)
     names = _cli_attr("list_targets")()
 
     # One API call is enough to answer every row -- releases list is
@@ -278,12 +318,29 @@ def cmd_targets(args: argparse.Namespace) -> int:
                     }
                 )
 
+    # Preserve the pre-filter GH-unreachable signal so a `list remote`
+    # with no hits on unreachable network doesn't look indistinguishable
+    # from "nothing is published".
+    gh_unreachable = all_releases is None
+    rows = _filter_rows(rows, scope)
+
     if use_json:
         print(json.dumps(rows, indent=2))
         return EXIT_OK
 
     if not rows:
-        print("No targets configured.")
+        if scope == "local":
+            print("No targets with local builds.")
+        elif scope == "remote":
+            if gh_unreachable:
+                print(
+                    "github unreachable -- remote status unknown; "
+                    "try `ltvm target list` without a filter"
+                )
+            else:
+                print("No targets with published remote releases.")
+        else:
+            print("No targets configured.")
         return EXIT_OK
 
     hdr = (
@@ -329,12 +386,13 @@ def cmd_targets(args: argparse.Namespace) -> int:
             ):
                 local_col = "yes!"
                 has_behind = True
-            # 'yes?' -> image is built but has no Lustre baked in.
-            # A VM created from this image can't mount Lustre.  Stacks
-            # with the 'yes!' behind marker so `yes?!` is possible
-            # when the image is both no-lustre AND out-of-date.
+            # 'yes*' -> image is built but has no Lustre baked in.
+            # A VM created from this image can't mount Lustre until
+            # `ltvm deploy-lustre` installs it.  Stacks with the 'yes!'
+            # behind marker so `yes*!` is possible when the image is
+            # both no-lustre AND out-of-date.
             if r.get("lustre_missing") and local_col.startswith("yes"):
-                local_col = f"{local_col}?" if "?" not in local_col else local_col
+                local_col = f"{local_col}*" if "*" not in local_col else local_col
                 has_no_lustre = True
 
         key = (r["name"], r["arch"])
@@ -381,10 +439,11 @@ def cmd_targets(args: argparse.Namespace) -> int:
             )
         if has_no_lustre:
             print(
-                "yes? = image built WITHOUT Lustre baked in -- a VM "
-                "created from this image can't mount Lustre.  Rebuild "
-                "with `ltvm build image <target> --lustre-tree <path>` "
-                "(drop --no-lustre) or `ltvm target fetch <target>`."
+                "yes* = image does NOT have Lustre baked in.  Lustre "
+                "must be installed (`ltvm deploy-lustre`) before this "
+                "image can use Lustre, or rebuild with `ltvm build "
+                "image <target> --lustre-tree <path>` (drop "
+                "--no-lustre) or `ltvm target fetch <target>`."
             )
     return EXIT_OK
 

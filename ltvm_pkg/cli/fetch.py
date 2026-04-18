@@ -352,8 +352,9 @@ def _find_release_url(
         hint += f" kernel-signature={kernel_signature!r}"
     if variant != "base":
         hint += f" variant={variant!r}"
+    kind = "published bootable image" if mode == "bootable" else "published artifacts"
     raise RuntimeError(
-        f"No {mode} release found for '{target}'{hint}\n"
+        f"No {kind} found for '{target}'{hint}\n"
         f"  Available releases: {', '.join(avail)}\n"
         f"  Try: ltvm target fetch --list"
     )
@@ -394,6 +395,54 @@ def _list_releases(
             }
         )
     return result
+
+
+def _lookup_release_date(release_tag: str) -> str:
+    """Return ``YYYY-MM-DD`` for ``release_tag``, or ``""`` on failure.
+
+    Used only by the divergent-local-copy refusal path to annotate the
+    error message.  A failure here (network hiccup, unknown tag) must
+    not block the fetch logic -- we fall back to showing just the tag
+    without a date.
+    """
+    try:
+        rel = _cli_attr("_gh_api")(f"releases/tags/{release_tag}")
+    except Exception:
+        return ""
+    if not isinstance(rel, dict):
+        return ""
+    return (rel.get("published_at") or "")[:10]
+
+
+def _tag_file_date(tag_file: Any) -> str:
+    """Return ``YYYY-MM-DD`` of ``tag_file``'s mtime, or ``""`` on error.
+
+    The tag file is written at fetch/publish time, so its mtime is a
+    reasonable stand-in for "when the local copy was produced".
+    """
+    from datetime import datetime
+
+    try:
+        return datetime.fromtimestamp(
+            tag_file.stat().st_mtime
+        ).strftime("%Y-%m-%d")
+    except OSError:
+        return ""
+
+
+def _compare_dates(local: str, remote: str) -> str:
+    """Return ``"newer"``, ``"older"``, or ``""`` comparing ISO dates.
+
+    Empty-string inputs (missing data) yield ``""`` so the caller
+    degrades gracefully to a direction-less refusal message.
+    """
+    if not local or not remote:
+        return ""
+    if local > remote:
+        return "newer"
+    if local < remote:
+        return "older"
+    return ""
 
 
 def cmd_fetch(args: argparse.Namespace) -> int:
@@ -550,6 +599,39 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             result = {"target": target, "path": str(OUTPUT_DIR / target / arch)}
             _output(result, use_json)
             return EXIT_OK
+    elif release_tag and existing_tag and existing_tag != release_tag:
+        # Different tag already on disk.  Silently extracting the new
+        # release on top of (or alongside) the existing one mixes two
+        # releases' files and leaves the output dir in a state that's
+        # hard to reason about -- so refuse by default.  --replace opts
+        # into a clean overwrite; --force bypasses the guard for
+        # scripts that have already decided.
+        if not replace and not force:
+            remote_date = _lookup_release_date(release_tag)
+            local_date = _tag_file_date(tag_file)
+            local_desc = existing_tag + (
+                f" (fetched {local_date})" if local_date else ""
+            )
+            remote_desc = release_tag + (
+                f" (published {remote_date})" if remote_date else ""
+            )
+            direction = _compare_dates(local_date, remote_date)
+            if direction == "newer":
+                header = "local copy is NEWER than remote release"
+            elif direction == "older":
+                header = "local copy is older than remote release"
+            else:
+                header = "local copy differs from remote release"
+            return _error(
+                f"{header}:\n"
+                f"    local:  {local_desc}\n"
+                f"    remote: {remote_desc}",
+                use_json,
+                hint=(
+                    "pass --replace to overwrite with the remote "
+                    "release, or leave the local copy as-is"
+                ),
+            )
 
     # --replace: wipe the target's output dir so a partial or
     # mismatched prior fetch doesn't leave stale files behind the
@@ -843,4 +925,112 @@ def cmd_publish(args: argparse.Namespace) -> int:
         "url": url,
     }
     _output(result, use_json)
+    return EXIT_OK
+
+
+# ------------------------------------------------------------------
+# Subcommand: delete
+# ------------------------------------------------------------------
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    """Delete a target's artifacts.
+
+    Default mode wipes local ``output/<target>/<arch>/`` (same as
+    ``ltvm target clean``).  ``--remote`` instead deletes the published
+    GitHub release -- tag is either explicit (``--tag``) or resolved
+    via the same lookup ``fetch`` uses (target + optional
+    ``--kernel`` / ``--variant`` / ``--image``).
+    """
+    import ltvm_pkg.cli as _cli
+
+    use_json = args.json
+    remote = bool(getattr(args, "remote", False))
+
+    if not remote:
+        from ltvm_pkg.cli.build import cmd_clean as _cmd_clean
+
+        return _cmd_clean(args)
+
+    target = args.target
+    if not target:
+        return _error("target required for --remote delete", use_json)
+
+    tag = getattr(args, "tag", None)
+    kernel = getattr(args, "kernel", None)
+    variant = getattr(args, "variant", None) or "base"
+    image_mode = bool(getattr(args, "image", False))
+    arch = getattr(args, "arch", None) or "x86_64"
+    yes = bool(getattr(args, "yes", False))
+    cleanup_tag = bool(getattr(args, "cleanup_tag", False))
+
+    if not tag:
+        kernel_signature: str | None = None
+        if kernel:
+            tc, err = _load_target(target, use_json, arch=arch)
+            if err is not None:
+                return err
+            assert tc is not None
+            declared = tc.declared_kernels()
+            if kernel not in declared:
+                return _error(
+                    f"--kernel {kernel!r} not in targets.yaml "
+                    f"kernels.available for {target}",
+                    use_json,
+                    hint=f"Available: {', '.join(declared)}",
+                )
+            kernel_signature = _kernel_release_signature(kernel)
+        mode = "bootable" if image_mode else "ecosystem"
+        try:
+            url = _cli_attr("_find_release_url")(
+                target,
+                arch=arch,
+                kernel_signature=kernel_signature,
+                variant=variant,
+                mode=mode,
+            )
+        except RuntimeError as e:
+            return _error(str(e), use_json)
+        # URL: https://github.com/<repo>/releases/download/<tag>/<asset>
+        marker = "/releases/download/"
+        if marker not in url:
+            return _error(
+                f"could not derive tag from release URL: {url}", use_json
+            )
+        tag = url.split(marker, 1)[1].split("/", 1)[0]
+
+    if not yes:
+        return _error(
+            f"refusing to delete remote release {tag!r} without --yes",
+            use_json,
+            hint="re-run with --yes to confirm",
+        )
+
+    if not use_json:
+        extra = " (and git tag)" if cleanup_tag else ""
+        print(f"Deleting GitHub release{extra}: {tag}")
+
+    cmd = [
+        "gh", "release", "delete", tag,
+        "--repo", _cli.GITHUB_REPO, "--yes",
+    ]
+    if cleanup_tag:
+        cmd.append("--cleanup-tag")
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        return _error(
+            "gh CLI not found (https://cli.github.com/)", use_json
+        )
+    if r.returncode != 0:
+        return _error(
+            f"gh release delete failed (rc={r.returncode}): "
+            f"{(r.stderr or r.stdout).strip()}",
+            use_json,
+        )
+    _output(
+        {"target": target, "tag": tag, "deleted": True,
+         "cleanup_tag": cleanup_tag},
+        use_json,
+    )
     return EXIT_OK

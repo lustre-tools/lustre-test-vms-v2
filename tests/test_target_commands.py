@@ -347,7 +347,7 @@ def _seed_image_meta(
 class TestCmdTargetsLustreMissing:
     """A built image with no Lustre baked in (the --no-lustre build
     path or a pre-Lustre-staging fetch) produces VMs that can't mount
-    Lustre.  cmd_targets flags these with `yes?` on the Local column
+    Lustre.  cmd_targets flags these with `yes*` on the Local column
     and includes a legend footer explaining the marker."""
 
     def test_json_lustre_missing_flagged(
@@ -378,12 +378,12 @@ class TestCmdTargetsLustreMissing:
         # rhel9.5 base row: lustre present
         assert by_key[("5.14-rhel9.5", "base")]["lustre_missing"] is False
 
-    def test_text_yes_question_marker(
+    def test_text_yes_star_marker(
         self,
         capsys: pytest.CaptureFixture[str],
         variant_targets: Path,
     ) -> None:
-        """The Local column shows `yes?` for no-lustre images and the
+        """The Local column shows `yes*` for no-lustre images and the
         legend footer explains it.  `yes` (plain) for good images."""
         _seed_image_meta(
             variant_targets, "rocky9", "5.14-rhel9.7",
@@ -393,10 +393,10 @@ class TestCmdTargetsLustreMissing:
                 patch.object(cli, "_gh_api", side_effect=Exception("net")):
             cmd_targets(_ns(json=False))
         out = capsys.readouterr().out
-        # `yes?` (Local column) for the no-lustre row.
-        assert "yes?" in out
+        # `yes*` (Local column) for the no-lustre row.
+        assert "yes*" in out
         # Legend footer must explain the marker so the user can act.
-        assert "yes? = image built WITHOUT Lustre" in out
+        assert "yes* = image does NOT have Lustre baked in" in out
 
     def test_text_no_marker_when_lustre_present(
         self,
@@ -411,7 +411,7 @@ class TestCmdTargetsLustreMissing:
                 patch.object(cli, "_gh_api", side_effect=Exception("net")):
             cmd_targets(_ns(json=False))
         out = capsys.readouterr().out
-        assert "yes?" not in out  # no false positive
+        assert "yes*" not in out  # no false positive
 
 
 class TestCmdTargetsTextOutput:

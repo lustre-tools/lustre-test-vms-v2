@@ -89,6 +89,7 @@ from ltvm_pkg.cli.fetch import (  # noqa: E402
     _kernel_release_signature,
     _list_releases,
     _release_matches_kernel,
+    cmd_delete,
     cmd_fetch,
     cmd_package,
     cmd_publish,

@@ -818,7 +818,14 @@ def package_bootable(
 
 def _download(url: str, dest: Path, *, quiet: bool = False) -> None:
     """Fetch ``url`` to ``dest`` with curl; fail loudly on non-2xx."""
-    flags = ["-fSL", "--connect-timeout", "15", "--max-time", "1800"]
+    flags = [
+        "-fSL",
+        "--connect-timeout", "15",
+        "--max-time", "1800",
+        "--retry", "3",
+        "--retry-delay", "5",
+        "--retry-all-errors",
+    ]
     if not quiet:
         flags.append("--progress-bar")
     try:

@@ -54,11 +54,11 @@ check "tcp + tcp (mgmt + extra tcp)" \
 	"$(emit_lnet_conf tcp tcp)"
 
 check "tcp + softroce (mgmt + softroce)" \
-	'options lnet networks="tcp0(eth0),o2ib0(rxe0)"' \
+	'options lnet networks="tcp0(eth0),o2ib0(eth1)"' \
 	"$(emit_lnet_conf tcp softroce)"
 
 check "tcp + softroce + softroce" \
-	'options lnet networks="tcp0(eth0),o2ib0(rxe0),o2ib1(rxe1)"' \
+	'options lnet networks="tcp0(eth0),o2ib0(eth1),o2ib1(eth2)"' \
 	"$(emit_lnet_conf tcp softroce softroce)"
 
 check "tcp + passthrough" \
@@ -72,7 +72,7 @@ check "none only -> empty LNet" \
 	"$(emit_lnet_conf none)"
 
 check "none + softroce (mgmt SSH-only, rxe on eth1)" \
-	'options lnet networks="o2ib0(rxe0)"' \
+	'options lnet networks="o2ib0(eth1)"' \
 	"$(emit_lnet_conf none softroce)"
 
 check "none + tcp (mgmt SSH-only, extra tcp on eth1)" \
@@ -80,7 +80,7 @@ check "none + tcp (mgmt SSH-only, extra tcp on eth1)" \
 	"$(emit_lnet_conf none tcp)"
 
 check "none + tcp + softroce (mgmt + tcp + softroce)" \
-	'options lnet networks="tcp0(eth1),o2ib0(rxe0)"' \
+	'options lnet networks="tcp0(eth1),o2ib0(eth2)"' \
 	"$(emit_lnet_conf none tcp softroce)"
 
 check "none + tcp + tcp (multi-rail tcp without mgmt)" \
@@ -88,7 +88,7 @@ check "none + tcp + tcp (multi-rail tcp without mgmt)" \
 	"$(emit_lnet_conf none tcp tcp)"
 
 check "none + softroce + softroce" \
-	'options lnet networks="o2ib0(rxe0),o2ib1(rxe1)"' \
+	'options lnet networks="o2ib0(eth1),o2ib1(eth2)"' \
 	"$(emit_lnet_conf none softroce softroce)"
 
 check "none + passthrough" \
@@ -119,15 +119,15 @@ check "cli: fc_nics=tcp,tcp (multi-rail tcp without mgmt)" \
 	"$(run_cli 'fc_nics=tcp,tcp')"
 
 check "cli: fc_nics=softroce (mgmt SSH-only)" \
-	'options lnet networks="o2ib0(rxe0)"' \
+	'options lnet networks="o2ib0(eth1)"' \
 	"$(run_cli 'fc_nics=softroce quiet')"
 
 check "cli: fc_nics=softroce,softroce" \
-	'options lnet networks="o2ib0(rxe0),o2ib1(rxe1)"' \
+	'options lnet networks="o2ib0(eth1),o2ib1(eth2)"' \
 	"$(run_cli 'fc_nics=softroce,softroce')"
 
 check "cli: fc_nics=tcp,softroce" \
-	'options lnet networks="tcp0(eth1),o2ib0(rxe0)"' \
+	'options lnet networks="tcp0(eth1),o2ib0(eth2)"' \
 	"$(run_cli 'fc_nics=tcp,softroce')"
 
 check "cli: fc_nics=passthrough (mgmt SSH-only)" \
@@ -141,7 +141,7 @@ trap 'rm -f "$tmp"' EXIT
 printf '%s\n' 'fc_nics=softroce,softroce' | "$UUT" --stdin "$tmp"
 got_file=$(cat "$tmp")
 check "cli: writes to path arg" \
-	'options lnet networks="o2ib0(rxe0),o2ib1(rxe1)"' \
+	'options lnet networks="o2ib0(eth1),o2ib1(eth2)"' \
 	"$got_file"
 
 # --- Unknown type fails --------------------------------------------
