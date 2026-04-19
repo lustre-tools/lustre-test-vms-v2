@@ -74,10 +74,19 @@ def _container_image_tag(target_config: TargetConfig) -> str:
 
 
 def _is_cross_build(target_config: TargetConfig) -> bool:
-    """True if the target arch differs from the host."""
+    """True if the target arch differs from the host.
+
+    Normalises both sides through ``cross_compile.normalize_arch`` so
+    Apple Silicon (``platform.machine() == 'arm64'``) is correctly
+    treated as native when the target arch is ``aarch64``.
+    """
     import platform
 
-    return target_config.arch != platform.machine()
+    from .cross_compile import normalize_arch
+
+    return normalize_arch(target_config.arch) != normalize_arch(
+        platform.machine()
+    )
 
 
 def _podman_platform(target_config: TargetConfig) -> list[str]:
@@ -122,12 +131,14 @@ def _prebuild_tools_native(
     # unsuffixed tag does not exist there.
     import platform as _platform
 
+    from .cross_compile import normalize_arch
+
     arch = target_config.arch
-    host_machine = _platform.machine()
-    if host_machine in ("x86_64", "amd64"):
+    host_arch = normalize_arch(_platform.machine())
+    if host_arch == "x86_64":
         build_tag = f"ltvm-build-{target_config.name}"
     else:
-        build_tag = f"ltvm-build-{target_config.name}-{host_machine}"
+        build_tag = f"ltvm-build-{target_config.name}-{host_arch}"
 
     output_dir.mkdir(parents=True, exist_ok=True)
 

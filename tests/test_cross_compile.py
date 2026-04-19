@@ -58,6 +58,38 @@ class TestCrossInfoBothDirections:
         assert i.deb_arch == "amd64"
 
 
+class TestCrossInfoArm64Alias:
+    """Apple Silicon reports ``arm64`` from platform.machine(); it must
+    fold into ``aarch64`` so targeting aarch64 on an arm64 Mac is NOT
+    treated as a cross-compile.  Pre-8902414 this leaked through and
+    configure ran with --host=aarch64-linux-gnu CC=aarch64-linux-gnu-gcc,
+    which fails the kernel-module probe against a natively-built tree.
+    """
+
+    def test_aarch64_target_arm64_host_is_native(self) -> None:
+        i = cross_info("aarch64", "arm64")
+        assert i.crossing is False
+        assert i.target_arch == "aarch64"
+        assert i.host_arch == "aarch64"
+
+    def test_arm64_target_aarch64_host_is_native(self) -> None:
+        i = cross_info("arm64", "aarch64")
+        assert i.crossing is False
+
+    def test_arm64_target_arm64_host_is_native(self) -> None:
+        i = cross_info("arm64", "arm64")
+        assert i.crossing is False
+
+    def test_amd64_target_x86_64_host_is_native(self) -> None:
+        i = cross_info("amd64", "x86_64")
+        assert i.crossing is False
+
+    def test_arm64_host_x86_64_target_still_crosses(self) -> None:
+        """Sanity: aliasing doesn't accidentally collapse real crosses."""
+        i = cross_info("x86_64", "arm64")
+        assert i.crossing is True
+
+
 class TestAptSourcesUrl:
     """Ubuntu sources for the target arch: amd64 -> archive.ubuntu.com,
     everything else -> ports.ubuntu.com."""

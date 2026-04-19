@@ -164,6 +164,111 @@ class TestCmdBuildContainer:
 
 
 # ---------------------------------------------------------------------------
+# _podman_machine_autostop -- only stops on a happy exit
+# ---------------------------------------------------------------------------
+
+
+class TestPodmanMachineAutostop:
+    """The context manager yields a handle; callers flip ``success``
+    True on the happy path.  On macOS we stop the machine iff
+    success AND the ps heuristic says it's safe.  On an unset flag
+    (error return) OR an exception we must NOT stop the machine, so
+    retries don't pay the cold-start cost.
+    """
+
+    def test_sets_success_stops_machine_on_macos(self) -> None:
+        from ltvm_pkg.cli.build import _podman_machine_autostop
+
+        with (
+            patch("ltvm_pkg.cli.build.is_macos", return_value=True),
+            patch(
+                "ltvm_pkg.cli.build.should_stop_podman_machine_macos",
+                return_value=True,
+            ),
+            patch(
+                "ltvm_pkg.cli.build.stop_podman_machine_macos"
+            ) as stop,
+        ):
+            with _podman_machine_autostop() as h:
+                h.success = True
+        stop.assert_called_once()
+
+    def test_error_return_does_not_stop_machine(self) -> None:
+        """Callers that return an error code leave ``success`` False;
+        the machine must keep running."""
+        from ltvm_pkg.cli.build import _podman_machine_autostop
+
+        with (
+            patch("ltvm_pkg.cli.build.is_macos", return_value=True),
+            patch(
+                "ltvm_pkg.cli.build.should_stop_podman_machine_macos",
+                return_value=True,
+            ),
+            patch(
+                "ltvm_pkg.cli.build.stop_podman_machine_macos"
+            ) as stop,
+        ):
+            with _podman_machine_autostop():
+                pass
+        stop.assert_not_called()
+
+    def test_exception_does_not_stop_machine(self) -> None:
+        from ltvm_pkg.cli.build import _podman_machine_autostop
+
+        with (
+            patch("ltvm_pkg.cli.build.is_macos", return_value=True),
+            patch(
+                "ltvm_pkg.cli.build.should_stop_podman_machine_macos",
+                return_value=True,
+            ),
+            patch(
+                "ltvm_pkg.cli.build.stop_podman_machine_macos"
+            ) as stop,
+        ):
+            with pytest.raises(RuntimeError):
+                with _podman_machine_autostop() as h:
+                    h.success = True  # even if set, exception wins
+                    raise RuntimeError("boom")
+        stop.assert_not_called()
+
+    def test_non_macos_noop(self) -> None:
+        """Off-macOS hosts never call any podman-machine helpers."""
+        from ltvm_pkg.cli.build import _podman_machine_autostop
+
+        with (
+            patch("ltvm_pkg.cli.build.is_macos", return_value=False),
+            patch(
+                "ltvm_pkg.cli.build.should_stop_podman_machine_macos"
+            ) as should,
+            patch(
+                "ltvm_pkg.cli.build.stop_podman_machine_macos"
+            ) as stop,
+        ):
+            with _podman_machine_autostop() as h:
+                h.success = True
+        should.assert_not_called()
+        stop.assert_not_called()
+
+    def test_heuristic_says_dont_stop(self) -> None:
+        """Success flag on but the ps heuristic vetoes: don't stop."""
+        from ltvm_pkg.cli.build import _podman_machine_autostop
+
+        with (
+            patch("ltvm_pkg.cli.build.is_macos", return_value=True),
+            patch(
+                "ltvm_pkg.cli.build.should_stop_podman_machine_macos",
+                return_value=False,
+            ),
+            patch(
+                "ltvm_pkg.cli.build.stop_podman_machine_macos"
+            ) as stop,
+        ):
+            with _podman_machine_autostop() as h:
+                h.success = True
+        stop.assert_not_called()
+
+
+# ---------------------------------------------------------------------------
 # _do_build_container helper
 # ---------------------------------------------------------------------------
 

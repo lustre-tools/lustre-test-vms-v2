@@ -18,6 +18,7 @@ import shlex
 import subprocess
 import sys
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -79,19 +80,37 @@ def _preflight_container(tc: TargetConfig, use_json: bool) -> int | None:
     return None
 
 
+@dataclass
+class _AutostopHandle:
+    """Mutable flag yielded by :func:`_podman_machine_autostop`.
+
+    Callers set ``success = True`` on the happy path so the context
+    manager knows to stop the podman machine.  Any other outcome --
+    exception OR an error return code -- leaves ``success`` False and
+    the machine keeps running so the user can retry without a cold
+    start.
+    """
+
+    success: bool = False
+
+
 @contextlib.contextmanager
-def _podman_machine_autostop() -> Iterator[None]:
+def _podman_machine_autostop() -> Iterator[_AutostopHandle]:
     """On macOS, stop the podman machine after a successful block if idle.
 
-    Only stops on normal completion -- if the block raises, we leave the
-    machine running so the user can retry without waiting for a cold
-    start.  No-op on non-macOS; bails out quietly if the podman-ps query
-    fails or any non-ltvm container is running.
+    The caller gets an :class:`_AutostopHandle` and must set
+    ``handle.success = True`` before returning an OK exit code.  On any
+    other outcome (exception OR unset success), the machine is left
+    running so retries are fast.  No-op on non-macOS; bails out quietly
+    if the podman-ps query fails or any non-ltvm container is running.
     """
+    handle = _AutostopHandle()
     if not is_macos():
-        yield
+        yield handle
         return
-    yield
+    yield handle
+    if not handle.success:
+        return
     try:
         if should_stop_podman_machine_macos():
             stop_podman_machine_macos()
@@ -166,8 +185,11 @@ def cmd_build_all(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    with _podman_machine_autostop():
-        return _cmd_build_all_body(args, tc, use_json)
+    with _podman_machine_autostop() as autostop:
+        rc = _cmd_build_all_body(args, tc, use_json)
+        if rc == EXIT_OK:
+            autostop.success = True
+        return rc
 
 
 def _cmd_build_all_body(
@@ -295,7 +317,7 @@ def cmd_build_container(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    with _podman_machine_autostop():
+    with _podman_machine_autostop() as autostop:
         if not use_json:
             print(f"Building container for {args.target}...")
 
@@ -306,6 +328,7 @@ def cmd_build_container(args: argparse.Namespace) -> int:
 
         result = {"target": args.target, "image_tag": tag}
         _output(result, use_json)
+        autostop.success = True
         return EXIT_OK
 
 
@@ -329,7 +352,7 @@ def cmd_build_kernel(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    with _podman_machine_autostop():
+    with _podman_machine_autostop() as autostop:
         # Deb-based targets don't need a Lustre tree for kernel builds
         lustre_tree = None
         if not tc.kernel_deb_source:
@@ -365,6 +388,7 @@ def cmd_build_kernel(args: argparse.Namespace) -> int:
             return _error(f"Kernel build failed: {e}", use_json)
 
         _output(meta, use_json)
+        autostop.success = True
         return EXIT_OK
 
 
@@ -441,7 +465,7 @@ def cmd_build_image(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    with _podman_machine_autostop():
+    with _podman_machine_autostop() as autostop:
         kernel = getattr(args, "kernel", None)
         resolved_kernel = tc.resolve_kernel(kernel)
 
@@ -508,6 +532,7 @@ def cmd_build_image(args: argparse.Namespace) -> int:
             "with_lustre": with_lustre,
         }
         _output(result, use_json)
+        autostop.success = True
         return EXIT_OK
 
 
@@ -634,7 +659,7 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
     if err is not None:
         return err
 
-    with _podman_machine_autostop():
+    with _podman_machine_autostop() as autostop:
         lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(
             getattr(args, "lustre_tree", None)
         )
@@ -702,6 +727,7 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
             return _error(f"Lustre build failed: {e}", use_json)
 
         _output(meta, use_json)
+        autostop.success = True
         return EXIT_OK
 
 

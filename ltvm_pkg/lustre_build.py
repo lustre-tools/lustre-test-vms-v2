@@ -23,12 +23,39 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 import time
 from pathlib import Path
 from typing import TypedDict
 
 from .podman_run import run_podman_with_cleanup
 from .vm_state import DEFAULT_TARGET
+
+
+def _show_configure_log(lustre_tree: Path, tail_lines: int = 50) -> None:
+    """Print the tail of Lustre's config.log to stderr.
+
+    Autoconf itself says "check config.log for details" on failure.
+    The log lives in the bind-mounted tree, so we can read it from the
+    host after the container exits.  Emits a clear banner and 50 lines
+    of context; silently no-ops if config.log isn't there (configure
+    never ran) or can't be read.
+    """
+    log_path = lustre_tree / "config.log"
+    if not log_path.is_file():
+        return
+    try:
+        lines = log_path.read_text(errors="replace").splitlines()
+    except OSError:
+        return
+    tail = lines[-tail_lines:]
+    print(
+        f"\n--- last {len(tail)} lines of {log_path} ---",
+        file=sys.stderr,
+    )
+    for line in tail:
+        print(line, file=sys.stderr)
+    print(f"--- end {log_path} ---\n", file=sys.stderr)
 
 
 @contextlib.contextmanager
@@ -645,6 +672,7 @@ fi""")
     print(f"--- Building in container (j{jobs})...")
     r = run_podman_with_cleanup(cmd)
     if r.returncode != 0:
+        _show_configure_log(lustre_tree)
         raise RuntimeError(f"Container build failed (rc={r.returncode})")
 
     # Chown the lustre tree back to the real user after the build.

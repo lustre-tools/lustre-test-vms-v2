@@ -4,10 +4,13 @@ import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from ltvm_pkg.lustre_build import (
     _container_exists,
     _kernel_release,
     _needs_reconfigure,
+    _show_configure_log,
     build_lustre,
     lustre_status,
     read_staging_meta,
@@ -496,3 +499,54 @@ class TestIncrementalRebuildGuard:
         s = tmp_path / "empty"
         s.mkdir()
         assert read_staging_meta(s) is None
+
+
+# ---------------------------------------------------------------------------
+# _show_configure_log -- autoconf's "check config.log" made actionable
+# ---------------------------------------------------------------------------
+
+
+class TestShowConfigureLog:
+    """Autoconf dies with 'check config.log for details' and the
+    container is torn down before the user can inspect it.  We read
+    the log from the bind-mounted tree and dump the tail to stderr so
+    the real error is visible.
+    """
+
+    def test_prints_tail_when_log_exists(
+        self, tmp_path: Path, capsys: "object"
+    ) -> None:
+        import pytest
+
+        cap: pytest.CaptureFixture[str] = capsys  # type: ignore[assignment]
+        log = tmp_path / "config.log"
+        log.write_text("\n".join(f"line {i}" for i in range(1, 101)) + "\n")
+        _show_configure_log(tmp_path, tail_lines=10)
+        err = cap.readouterr().err
+        assert "config.log" in err
+        assert "line 91" in err
+        assert "line 100" in err
+        # Earlier lines are NOT in the tail.
+        assert "line 1\n" not in err
+
+    def test_silent_when_log_missing(
+        self, tmp_path: Path, capsys: "object"
+    ) -> None:
+        import pytest
+
+        cap: pytest.CaptureFixture[str] = capsys  # type: ignore[assignment]
+        _show_configure_log(tmp_path)
+        assert cap.readouterr().err == ""
+
+    def test_tail_shorter_than_file_length(
+        self, tmp_path: Path, capsys: "object"
+    ) -> None:
+        """A log shorter than tail_lines emits the whole file."""
+        import pytest
+
+        cap: pytest.CaptureFixture[str] = capsys  # type: ignore[assignment]
+        log = tmp_path / "config.log"
+        log.write_text("only line\n")
+        _show_configure_log(tmp_path, tail_lines=50)
+        err = cap.readouterr().err
+        assert "only line" in err
