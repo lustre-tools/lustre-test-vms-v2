@@ -217,6 +217,26 @@ if [[ -n "$LNXREL" ]]; then
 	echo "    EXTRAVERSION set to: ${EXTRAVER}"
 fi
 
+# The RHEL kernel source ships two top-level files that case-fold to
+# the same name: `Makefile` (the real kernel Makefile, 2000+ lines,
+# what kbuild and Lustre's `include Makefile` probe expect) and
+# `makefile` (a 16-line RH dist wrapper whose `include Makefile`
+# self-references and triggers infinite make recursion if it ever
+# stands in for the real one).
+#
+# They coexist fine on Linux (case-sensitive) -- the build uses
+# `Makefile` and `makefile` is inert.  But when the build tree gets
+# rsynced to /output (bind-mounted from a macOS host with a
+# case-insensitive filesystem) the two paths collapse and the
+# smaller `makefile` silently overwrites the real `Makefile`.  The
+# kernel build has already finished at that point so it succeeds,
+# but Lustre's configure then dies in a Makefile:2 loop with
+# "Too many open files.  Stop." when it `include Makefile`s.
+#
+# Removing the dist wrapper before the rsync avoids the collision.
+# It is only used by RH's `make dist-*` targets which we never run.
+rm -f makefile
+
 # ------------------------------------------------------------------
 # 5. Build
 # ------------------------------------------------------------------

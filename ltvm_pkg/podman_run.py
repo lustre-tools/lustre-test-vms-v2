@@ -132,7 +132,7 @@ def run_podman_with_cleanup(
             # can't setrlimit above the container's inherited hard
             # limit).  64k is ~16x the worst observed kbuild usage and
             # comfortably below the rootless cap on macOS machines.
-            injected += ["--ulimit", "nofile=65536:65536"]
+            injected += ["--ulimit", "nofile=524288:524288"]
         if injected:
             final_cmd = [cmd[0], cmd[1], *injected, *cmd[2:]]
 

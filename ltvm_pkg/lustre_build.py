@@ -492,7 +492,17 @@ def _build_in_container(
     #
     # The libtool check happens inside the container so we can compare the
     # exact version the container has.
-    cfg = "./configure --with-linux=/kernel --disable-gss --disable-crypto"
+    # --with-o2ib=no: the build container has no OFED/rdma-core-devel
+    # kernel headers, so configure's OpenIB gen2 probe fails with
+    # "cannot compile with OpenIB gen2 headers" when Lustre tries to
+    # auto-detect o2ib.  Our microVM workflow uses softroce for RDMA
+    # testing, not native IB, so skipping the LND is the right default.
+    # Callers needing real IB pass `--configure "--with-o2ib=/path"` via
+    # extra_configure.
+    cfg = (
+        "./configure --with-linux=/kernel --disable-gss --disable-crypto"
+        " --with-o2ib=no"
+    )
     if cross_compiling:
         cfg += f" --host={xinfo.triple}"
         cfg += f" CC={xinfo.triple}-gcc"
