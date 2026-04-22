@@ -549,6 +549,7 @@ def package_target(
     dest_dir: str | Path | None = None,
     arch: str = "x86_64",
     variant: str = DEFAULT_VARIANT,
+    include_lustre: bool = True,
 ) -> dict[str, Path]:
     """Emit the split-asset release for (target, arch, kernel, variant).
 
@@ -689,7 +690,7 @@ def package_target(
         if variant == DEFAULT_VARIANT
         else lustre_parent / variant
     )
-    if lustre_src.is_dir() and (lustre_src / ".ltvm-snapshot.json").exists():
+    if include_lustre and lustre_src.is_dir() and (lustre_src / ".ltvm-snapshot.json").exists():
         lustre_rel = lustre_src.relative_to(tar_base)
         lus_asset = dest_dir / _lustre_asset_name(
             target_name, arch, kver, variant

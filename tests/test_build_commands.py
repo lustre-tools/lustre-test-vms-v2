@@ -768,6 +768,8 @@ class TestVariantKernelPinPropagation:
             patch.object(
                 cli_mod, "build_kernel", return_value={"ok": True}
             ) as bk,
+            patch.object(cli_mod, "build_lustre", return_value={"ok": True}),
+            patch.object(cli_mod, "snapshot_lustre"),
             patch.object(cli_mod, "build_image") as bi,
         ):
             rc = _run_main(

@@ -102,7 +102,6 @@ from ltvm_pkg.cli import (  # noqa: E402
     cmd_list,
     cmd_llmount,
     cmd_nmi,
-    cmd_package,
     cmd_publish,
     cmd_restore,
     cmd_setup,
@@ -363,11 +362,6 @@ def build_parser() -> argparse.ArgumentParser:
             "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
         )
         sp.add_argument(
-            "--lustre-build",
-            action="store_true",
-            help="Also build Lustre against the target kernel",
-        )
-        sp.add_argument(
             "-y", "--yes",
             action="store_true",
             default=False,
@@ -378,7 +372,7 @@ def build_parser() -> argparse.ArgumentParser:
     bap = build_sub.add_parser(
         "all",
         parents=[common, kernel_arg, force_arg, force_compat_arg, variant_arg],
-        help="Build container + kernel + image from scratch",
+        help="Build container + kernel + Lustre + image from scratch",
     )
     _add_build_all_args(bap)
 
@@ -509,12 +503,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     build_parser.set_defaults(func=_build_no_action)
 
-    # -- target (list | show | clean | validate | fetch | package | publish) --
+    # -- target (list | show | clean | validate | fetch | publish) --
     target_parser = sub.add_parser(
         "target",
         parents=[common],
         help="Target OS management "
-        "(list/show/clean/validate/fetch/package/publish)",
+        "(list/show/clean/validate/fetch/publish)",
     )
     target_sub = target_parser.add_subparsers(
         dest="target_action", metavar="<action>"
@@ -728,49 +722,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     tep.set_defaults(func=cmd_target_export)
 
-    # package (maintainer use)
-    tpkp = target_sub.add_parser(
-        "package",
-        parents=[common, kernel_arg, force_compat_arg],
-        help="Package built artifacts into a release tarball (maintainer)",
-    )
-    _add_target_arg(tpkp, required=True)
-    tpkp.add_argument(
-        "--lustre-tree",
-        help=(
-            "Path to the Lustre source tree to bundle (default: cwd, "
-            "or wherever ltvm finds a tree).  Lustre is bundled by "
-            "default; pass --no-lustre to opt out."
-        ),
-    )
-    tpkp.add_argument(
-        "--no-lustre",
-        action="store_true",
-        default=False,
-        help=(
-            "Publish a kernel-only package without bundled Lustre.  "
-            "Consumers will need to build Lustre themselves on first "
-            "deploy.  Only use this for interim kernel-test releases."
-        ),
-    )
-    tpkp.add_argument(
-        "--output",
-        default=None,
-        help="Output directory for tarball (default: artifacts/)",
-    )
-    _tpkp_variant = tpkp.add_argument(
-        "--variant",
-        default="base",
-        help="Target variant to package (default: base). E.g. 'mofed'.",
-    )
-    _tpkp_variant.completer = complete_variants  # type: ignore[attr-defined]
-    tpkp.set_defaults(func=cmd_package)
-
     # publish (maintainer use)
     tpbp = target_sub.add_parser(
         "publish",
         parents=[common, kernel_arg, force_compat_arg],
-        help="Upload a packaged asset set to a GitHub release (maintainer)",
+        help="Bundle artifacts and upload to a GitHub release "
+        "(--no-upload keeps the tarballs local)",
     )
     _add_target_arg(tpbp, required=True)
     tpbp.add_argument(
@@ -796,19 +753,26 @@ def build_parser() -> argparse.ArgumentParser:
         "`ltvm target export` (separate release from the ecosystem).",
     )
     tpbp.add_argument(
-        "--lustre-tree",
-        help="Path to Lustre source to snapshot (default: cwd).",
-    )
-    tpbp.add_argument(
         "--no-lustre",
         action="store_true",
         default=False,
-        help="Skip Lustre snapshot+bundle.  Kernel-only publish.",
+        help="Skip the Lustre asset even if staging is present on "
+        "disk.  Kernel-only publish.",
     )
     tpbp.add_argument(
         "--output",
         default=None,
         help="Staging dir for packaged assets (default: artifacts/)",
+    )
+    tpbp.add_argument(
+        "--no-upload",
+        action="store_true",
+        default=False,
+        help=(
+            "Build the release tarballs + manifest locally but skip "
+            "the GitHub upload.  Useful for offline/air-gap "
+            "transfer or inspecting what would be published."
+        ),
     )
     tpbp.set_defaults(func=cmd_publish)
 

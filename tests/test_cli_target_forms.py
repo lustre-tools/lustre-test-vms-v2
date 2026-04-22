@@ -148,23 +148,24 @@ class TestTargetSubcommandForms:
         args = _parse(["target", "export", "--target", "rocky9"])
         assert args.target == "rocky9"
 
-    def test_target_package_positional(self) -> None:
-        args = _parse(["target", "package", "rocky9"])
-        assert args.target == "rocky9"
-
-    def test_target_package_flag(self) -> None:
-        args = _parse(["target", "package", "--target", "rocky9"])
+    def test_target_publish_positional(self) -> None:
+        args = _parse(["target", "publish", "rocky9"])
         assert args.target == "rocky9"
 
     def test_target_publish_flag(self) -> None:
         args = _parse(["target", "publish", "--target", "rocky9"])
         assert args.target == "rocky9"
 
-    def test_target_package_conflict(
+    def test_target_publish_no_upload_flag(self) -> None:
+        args = _parse(["target", "publish", "rocky9", "--no-upload"])
+        assert args.target == "rocky9"
+        assert args.no_upload is True
+
+    def test_target_publish_conflict(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
         _parse_expect_conflict(
-            ["target", "package", "rocky9", "--target", "rocky10"], capsys
+            ["target", "publish", "rocky9", "--target", "rocky10"], capsys
         )
 
 

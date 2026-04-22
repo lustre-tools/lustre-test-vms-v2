@@ -629,7 +629,7 @@ def cmd_validate(args: argparse.Namespace) -> int:
     # Default to cwd like every other --lustre-tree consumer does
     # (see _resolve_lustre_tree).  Previously this defaulted to
     # ~/lustre-release, which disagreed with `build all / kernel /
-    # image / lustre`, `target package / publish` and surprised users
+    # image / lustre`, `target publish` and surprised users
     # who had ``cd``'d into their tree.
     lustre_arg = getattr(args, "lustre_tree", None)
     lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(lustre_arg)

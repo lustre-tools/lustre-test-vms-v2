@@ -91,10 +91,11 @@ def _do_build_container(target_config: TargetConfig) -> str:
 
 
 def cmd_build_all(args: argparse.Namespace) -> int:
-    """Build container + kernel + image for a target.
+    """Build container + kernel + Lustre + image for a target.
 
-    With --lustre-build, also builds the Lustre source tree
-    against the freshly built kernel.
+    "all" means all four cacheable artifacts.  The Lustre staging
+    is snapshotted into ``artifacts/.../kernels/<kver>/lustre-artifacts/``
+    so ``ltvm target publish`` runs tree-free.
     """
     use_json = args.json
     tc, err = _load_target_args(args, use_json)
@@ -102,9 +103,6 @@ def cmd_build_all(args: argparse.Namespace) -> int:
         return err
     assert tc is not None
 
-    # build-all always requires a Lustre tree -- even for deb targets
-    # where the kernel build itself doesn't need one, the surrounding
-    # workflow (image inject, optional --lustre-build, packaging) does.
     lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(args.lustre_tree)
     if err_msg:
         return _error(
@@ -177,44 +175,65 @@ def cmd_build_all(args: argparse.Namespace) -> int:
     except Exception as e:
         return _error(f"Kernel build failed: {e}", use_json)
 
-    # 3. Lustre (optional -- only when --lustre-build is passed).
-    # Runs BEFORE the image so its per-kernel staging is in place for
-    # the image-bake step to auto-inject.
-    lustre_build = getattr(args, "lustre_build", False)
-    if lustre_build:
-        if not use_json:
-            print(
-                f"==> Building Lustre against {resolved_kernel} kernel tree..."
-            )
-        build_tree = tc.kernel_output_dir(kernel=resolved_kernel) / "build-tree"
-        try:
-            container_tag = tc.container_tag
-            lmeta = _cli_attr("build_lustre")(
-                lustre_tree,
-                build_tree,
-                container_tag=container_tag,
-                target=args.target,
-                enable_server=tc.lustre_mode != LustreMode.CLIENT,
-                extra_configure=list(tc.configure_args),
-                jobs=getattr(args, "jobs", None),
-                force=args.force,
-                arch=tc.arch,
-                kernel=resolved_kernel,
-                variant=tc.variant_name,
-            )
-            results["lustre"] = lmeta
-        except Exception as e:
-            return _error(f"Lustre build failed: {e}", use_json)
+    # The kernel build materializes the full-versioned directory name
+    # (e.g. "5.14-rhel9.7" -> "5.14-rhel9.7-5.14.0-611.13.1.el9_7").
+    # build_lustre re-resolves internally, but snapshot_lustre takes the
+    # name as-is and looks up staging + kernel_dir directly -- so feed
+    # it the resolved full name now that the directory exists.
+    full_kernel = tc.resolve_kernel(getattr(args, "kernel", None))
 
-    # 4. Image (picks up Lustre staging from step 3 if it was built).
+    # 3. Lustre.  Runs BEFORE the image so its per-kernel staging is in
+    # place for the image-bake step to auto-inject.
     if not use_json:
-        print(f"==> Building image for {args.target} (kernel={resolved_kernel})...")
+        print(
+            f"==> Building Lustre against {full_kernel} kernel tree..."
+        )
+    build_tree = tc.kernel_output_dir(kernel=full_kernel) / "build-tree"
+    try:
+        container_tag = tc.container_tag
+        lmeta = _cli_attr("build_lustre")(
+            lustre_tree,
+            build_tree,
+            container_tag=container_tag,
+            target=args.target,
+            enable_server=tc.lustre_mode != LustreMode.CLIENT,
+            extra_configure=list(tc.configure_args),
+            jobs=getattr(args, "jobs", None),
+            force=args.force,
+            arch=tc.arch,
+            kernel=full_kernel,
+            variant=tc.variant_name,
+        )
+        results["lustre"] = lmeta
+    except Exception as e:
+        return _error(f"Lustre build failed: {e}", use_json)
+
+    # 4. Snapshot Lustre staging into the artifacts dir so ``ltvm target
+    # publish`` can bundle it without re-visiting the Lustre tree.  Runs
+    # under build-all so the full artifact set lands in one place.
+    if not use_json:
+        print("==> Snapshotting Lustre staging into artifacts...")
+    try:
+        _cli_attr("snapshot_lustre")(
+            lustre_tree,
+            tc.output_dir,
+            target=args.target,
+            kernel=full_kernel,
+            arch=tc.arch,
+            variant=tc.variant_name,
+        )
+    except Exception as e:
+        return _error(f"Lustre snapshot failed: {e}", use_json)
+
+    # 5. Image (picks up Lustre staging from step 3).
+    if not use_json:
+        print(f"==> Building image for {args.target} (kernel={full_kernel})...")
     try:
         _cli_attr("build_image")(
             tc,
             force=args.force,
-            kernel=resolved_kernel,
-            with_lustre=str(lustre_tree) if lustre_build else None,
+            kernel=full_kernel,
+            with_lustre=str(lustre_tree),
         )
         results["image"] = "ok"
     except Exception as e:

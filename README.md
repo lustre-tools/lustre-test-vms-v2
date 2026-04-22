@@ -26,7 +26,7 @@ ltvm llmount co1-single                          # mount Lustre inside the VM
 
 ```bash
 sudo ./ltvm install
-ltvm build all rocky9 --lustre-tree ~/lustre-release --lustre-build
+ltvm build all rocky9 --lustre-tree ~/lustre-release
 sudo ltvm create co1-single --vcpus 2 --mem 4096 --mdt-disks 1 --ost-disks 3
 ltvm llmount co1-single
 ```
@@ -43,8 +43,8 @@ ltvm deploy-lustre co1-single --build ~/lustre-release --mount
 | Target | Server | Client | Status |
 |--------|--------|--------|--------|
 | Rocky 9 | yes | yes | working |
-| Rocky 8 | yes | yes | working |
-| Rocky 10 | yes | yes | working |
+| Rocky 8 | no  | yes | working |
+| Rocky 10 | no | yes | working |
 | Ubuntu 24.04 | no | yes | working |
 
 ## ltvm commands
@@ -69,7 +69,7 @@ ltvm doctor                     Host health check (--fix on request)
 `build` sub-actions:
 
 ```
-ltvm build all <target>         Container + kernel + image (+ --lustre-build)
+ltvm build all <target>         Container + kernel + Lustre + image
 ltvm build container <target>   Rebuild the build container
 ltvm build kernel <target>      Kernel (+ --kernel, --lustre-tree)
 ltvm build image <target>       Per-kernel VM image (+ --kernel)
@@ -84,14 +84,14 @@ ltvm build status               Staleness table (one row per built kernel)
 ```
 ltvm target list                List configured targets + local/remote status
 ltvm target show <target>       Detailed view of one target
-ltvm target build <target>      Container + kernel + image (alias for build all)
+ltvm target build <target>      Container + kernel + Lustre + image (alias for build all)
 ltvm target clean <target>      Remove built artifacts
 ltvm target delete <target>     Delete artifacts (local; --remote for GitHub release)
 ltvm target validate <target>   Read-only Lustre/kernel compat check
 ltvm target fetch <target>      Download latest release tarballs
 ltvm target export <target>     Bake a bootable qcow2/raw (no ltvm runtime)
-ltvm target package <target>    Bundle artifacts into release tarballs
-ltvm target publish <target>    Upload to GitHub release
+ltvm target publish <target>    Bundle artifacts and upload to GitHub release
+                                (use --no-upload to produce tarballs locally)
 ```
 
 `vm` sub-actions:

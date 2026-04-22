@@ -1,4 +1,4 @@
-"""Tests for cmd_fetch / cmd_publish / cmd_package and their helpers.
+"""Tests for cmd_fetch / cmd_publish and their helpers.
 
 These commands form the maintainer publish + consumer fetch pipeline
 and weren't well-covered behaviorally before this file existed.  The
@@ -29,7 +29,6 @@ from ltvm_pkg.cli import (
     _gh_release_upload,
     _release_status,
     cmd_fetch,
-    cmd_package,
     cmd_publish,
 )
 
@@ -436,18 +435,22 @@ class TestGhReleaseUpload:
 
 
 # ---------------------------------------------------------------------------
-# cmd_package -- success + error paths
+# cmd_publish --no-upload -- local-package-only paths (formerly cmd_package)
 # ---------------------------------------------------------------------------
 
 
-class TestCmdPackage:
-    def test_no_lustre_skips_snapshot(
+class TestCmdPublishNoUpload:
+    """``publish --no-upload`` short-circuits after package_target --
+    the local-package flow (formerly ``target package``).
+    """
+
+    def test_no_lustre_passes_include_lustre_false(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_targets: Path,
         tmp_path: Path,
     ) -> None:
-        """--no-lustre must not call snapshot_lustre or _resolve_lustre_tree."""
+        """--no-lustre forces include_lustre=False into package_target."""
         tc = _tc(tmp_targets)
         assets = {
             "container": tmp_path / "c.tar.zst",
@@ -460,92 +463,60 @@ class TestCmdPackage:
 
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch.object(cli_mod, "snapshot_lustre") as snap,
             patch.object(
                 cli_mod, "package_target", return_value=assets
             ) as pt,
-            patch.object(cli_mod, "_resolve_lustre_tree") as rl,
+            patch.object(cli_mod, "_gh_release_upload") as upl,
         ):
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
+                no_upload=True,
                 output=None,
             )
-            rc = cmd_package(args)
+            rc = cmd_publish(args)
 
         assert rc == EXIT_OK
-        assert not snap.called
-        assert not rl.called
         assert pt.called
+        _, kwargs = pt.call_args
+        assert kwargs.get("include_lustre") is False
+        # --no-upload: must NOT hit GitHub.
+        assert not upl.called
 
-    def test_unresolvable_lustre_tree_returns_error(
-        self,
-        capsys: pytest.CaptureFixture[str],
-        tmp_targets: Path,
-    ) -> None:
-        tc = _tc(tmp_targets)
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch.object(
-                cli_mod,
-                "_resolve_lustre_tree",
-                return_value=(None, "Not a directory: /nope"),
-            ),
-            patch.object(cli_mod, "package_target") as pt,
-        ):
-            args = _ns(
-                target="rocky9",
-                no_lustre=False,
-                lustre_tree="/nope",
-                output=None,
-            )
-            rc = cmd_package(args)
-
-        assert rc == EXIT_ERROR
-        err = capsys.readouterr().err
-        assert "Not a directory" in err
-        # Hint must mention --no-lustre as the opt-out.
-        assert "--no-lustre" in err
-        assert not pt.called
-
-    def test_snapshot_failure_surfaces(
+    def test_default_passes_include_lustre_true(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_targets: Path,
         tmp_path: Path,
     ) -> None:
+        """Without --no-lustre, include_lustre=True -- no tree touched."""
         tc = _tc(tmp_targets)
-        lt = tmp_path / "lustre"
-        lt.mkdir()
+        assets = {"manifest": tmp_path / "m.json"}
+        assets["manifest"].write_text("{}")
+
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
             patch.object(
-                cli_mod,
-                "_resolve_lustre_tree",
-                return_value=(lt, None),
-            ),
-            patch.object(cli_mod, "_gate_lustre_validation"),
-            patch.object(
-                cli_mod,
-                "snapshot_lustre",
-                side_effect=RuntimeError("boom"),
-            ),
-            patch.object(cli_mod, "package_target") as pt,
+                cli_mod, "package_target", return_value=assets
+            ) as pt,
+            patch.object(cli_mod, "_resolve_lustre_tree") as rl,
+            patch.object(cli_mod, "snapshot_lustre") as snap,
         ):
             args = _ns(
                 target="rocky9",
                 no_lustre=False,
-                lustre_tree=str(lt),
+                no_upload=True,
                 output=None,
             )
-            rc = cmd_package(args)
+            rc = cmd_publish(args)
 
-        assert rc == EXIT_ERROR
-        err = capsys.readouterr().err
-        assert "Lustre snapshot failed" in err
-        assert "boom" in err
-        assert not pt.called
+        assert rc == EXIT_OK
+        assert pt.called
+        _, kwargs = pt.call_args
+        assert kwargs.get("include_lustre") is True
+        # Publish must never snapshot from / resolve the Lustre tree.
+        assert not snap.called
+        assert not rl.called
 
     def test_package_target_failure_surfaces(
         self,
@@ -564,10 +535,10 @@ class TestCmdPackage:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
+                no_upload=True,
                 output=None,
             )
-            rc = cmd_package(args)
+            rc = cmd_publish(args)
 
         assert rc == EXIT_ERROR
         err = capsys.readouterr().err
@@ -592,10 +563,10 @@ class TestCmdPackage:
                 target="rocky9",
                 variant="mofed",
                 no_lustre=True,
-                lustre_tree=None,
+                no_upload=True,
                 output=None,
             )
-            rc = cmd_package(args)
+            rc = cmd_publish(args)
 
         assert rc == EXIT_OK
         out = capsys.readouterr().out
@@ -1285,7 +1256,6 @@ class TestCmdPublish:
             patch.object(
                 cli_mod, "package_target", return_value=assets
             ) as pt,
-            patch.object(cli_mod, "snapshot_lustre") as snap,
             patch.object(
                 cli_mod,
                 "_gh_release_upload",
@@ -1295,7 +1265,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=False,
@@ -1304,7 +1273,6 @@ class TestCmdPublish:
 
         assert rc == EXIT_OK
         assert pt.called
-        assert not snap.called
         assert up.called
         out = capsys.readouterr().out
         # Tag derived from manifest name.
@@ -1319,35 +1287,6 @@ class TestCmdPublish:
             tag_file.read_text().strip()
             == "rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre"
         )
-
-    def test_unresolvable_lustre_tree_returns_error(
-        self,
-        capsys: pytest.CaptureFixture[str],
-        tmp_targets: Path,
-    ) -> None:
-        tc = _tc(tmp_targets)
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch.object(
-                cli_mod,
-                "_resolve_lustre_tree",
-                return_value=(None, "Not a directory: /x"),
-            ),
-            patch.object(cli_mod, "package_target") as pt,
-        ):
-            args = _ns(
-                target="rocky9",
-                no_lustre=False,
-                lustre_tree="/x",
-                output=None,
-                tag=None,
-                image=False,
-            )
-            rc = cmd_publish(args)
-        assert rc == EXIT_ERROR
-        err = capsys.readouterr().err
-        assert "kernel-only publish" in err
-        assert not pt.called
 
     def test_package_failure_blocks_upload(
         self,
@@ -1367,7 +1306,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=False,
@@ -1403,7 +1341,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=False,
@@ -1439,7 +1376,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag="my-explicit-tag",
                 image=False,
@@ -1479,7 +1415,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=False,  # ignored in image mode
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=True,
@@ -1511,7 +1446,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=True,
@@ -1546,7 +1480,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=True,
@@ -1566,7 +1499,6 @@ class TestCmdPublish:
             args = _ns(
                 target="not_a_real_target",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=False,

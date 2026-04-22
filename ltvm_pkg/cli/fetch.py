@@ -53,90 +53,6 @@ def _cli_attr(name: str) -> Any:
 
 
 # ------------------------------------------------------------------
-# Subcommand: package
-# ------------------------------------------------------------------
-
-
-def cmd_package(args: argparse.Namespace) -> int:
-    use_json = args.json
-    tc, err = _load_target_args(args, use_json)
-    if err is not None:
-        return err
-    assert tc is not None
-
-    kernel = getattr(args, "kernel", None)
-    variant = getattr(args, "variant", None) or "base"
-
-    if not use_json:
-        from ltvm_pkg.cli.util import _print_target_header
-
-        _print_target_header(
-            tc, kernel=kernel, variant=variant, action="Packaging"
-        )
-
-    # Bundling Lustre is mandatory by default.  The publisher's whole
-    # job is to ship something a fetcher can immediately deploy from --
-    # a "kernel-only" package without Lustre forces every consumer to
-    # build it themselves on first deploy, which defeats the whole
-    # point of the fetch flow.  --no-lustre is the explicit opt-out.
-    no_lustre = getattr(args, "no_lustre", False)
-    if not no_lustre:
-        lustre_tree_arg = getattr(args, "lustre_tree", None)
-        lustre_path, err_msg = _cli_attr("_resolve_lustre_tree")(lustre_tree_arg)
-        if err_msg:
-            return _error(
-                err_msg,
-                use_json,
-                hint=(
-                    "Run from a Lustre tree, pass --lustre-tree, or "
-                    "use --no-lustre to publish a kernel-only package"
-                ),
-            )
-        assert lustre_path is not None
-        if not tc.kernel_deb_source:
-            _cli_attr("_gate_lustre_validation")(
-                tc, lustre_path, force=args.force_compat
-            )
-        if not use_json:
-            print(f"Snapshotting Lustre tree from {lustre_path}...")
-        try:
-            _cli_attr("snapshot_lustre")(
-                lustre_path,
-                tc.output_dir,
-                target=args.target,
-                kernel=kernel,
-                arch=tc.arch,
-                variant=variant,
-            )
-        except Exception as e:
-            return _error(f"Lustre snapshot failed: {e}", use_json)
-
-    if not use_json:
-        v_hint = "" if variant == "base" else f" variant={variant}"
-        print(f"Packaging {args.target}{v_hint}...")
-
-    try:
-        assets = _cli_attr("package_target")(
-            args.target,
-            tc.output_dir,
-            kernel=kernel,
-            dest_dir=getattr(args, "output", None),
-            arch=tc.arch,
-            variant=variant,
-        )
-    except Exception as e:
-        return _error(f"Package failed: {e}", use_json)
-
-    result = {
-        "target": args.target,
-        "variant": variant,
-        "assets": {kind: str(p) for kind, p in assets.items()},
-    }
-    _output(result, use_json)
-    return EXIT_OK
-
-
-# ------------------------------------------------------------------
 # GitHub API helpers
 # ------------------------------------------------------------------
 
@@ -902,12 +818,18 @@ def cmd_publish(args: argparse.Namespace) -> int:
     kernel = getattr(args, "kernel", None)
     variant = getattr(args, "variant", None) or "base"
     image_mode = bool(getattr(args, "image", False))
+    no_upload = bool(getattr(args, "no_upload", False))
     tag = getattr(args, "tag", None)
 
     if not use_json:
         from ltvm_pkg.cli.util import _print_target_header
 
-        action = "Publishing bootable" if image_mode else "Publishing"
+        if image_mode:
+            action = "Publishing bootable"
+        elif no_upload:
+            action = "Packaging"
+        else:
+            action = "Publishing"
         _print_target_header(
             tc, kernel=kernel, variant=variant, action=action
         )
@@ -963,38 +885,13 @@ def cmd_publish(args: argparse.Namespace) -> int:
         )
         return EXIT_OK
 
-    # --- Ecosystem publish: package, then upload every asset. ---
-    # cmd_package did the work if the caller ran it first, but we
-    # can't tell cheaply; re-run it inline so `publish` is always
-    # self-sufficient (package_target is idempotent given fresh
-    # artifacts -- it just recompresses).
+    # --- Ecosystem publish: package, then upload every asset (unless
+    # --no-upload, which short-circuits after packaging). ---
+    # Lustre staging is expected to already live under the target's
+    # artifacts dir (seeded by ``ltvm build all``).  Publish does not
+    # re-visit the Lustre tree; ``--no-lustre`` forces a kernel-only
+    # package even when staging is present on disk.
     no_lustre = getattr(args, "no_lustre", False)
-    if not no_lustre:
-        lustre_tree_arg = getattr(args, "lustre_tree", None)
-        lustre_path, err_msg = _cli_attr("_resolve_lustre_tree")(lustre_tree_arg)
-        if err_msg:
-            return _error(
-                err_msg, use_json,
-                hint=(
-                    "Run from a Lustre tree, pass --lustre-tree, or "
-                    "use --no-lustre for a kernel-only publish"
-                ),
-            )
-        assert lustre_path is not None
-        if not tc.kernel_deb_source:
-            _cli_attr("_gate_lustre_validation")(
-                tc, lustre_path, force=args.force_compat
-            )
-        if not use_json:
-            print(f"Snapshotting Lustre tree from {lustre_path}...")
-        try:
-            _cli_attr("snapshot_lustre")(
-                lustre_path, tc.output_dir,
-                target=args.target, kernel=kernel,
-                arch=tc.arch, variant=variant,
-            )
-        except Exception as e:
-            return _error(f"Lustre snapshot failed: {e}", use_json)
 
     if not use_json:
         v_hint = "" if variant == "base" else f" variant={variant}"
@@ -1004,9 +901,21 @@ def cmd_publish(args: argparse.Namespace) -> int:
             args.target, tc.output_dir,
             kernel=kernel, arch=tc.arch, variant=variant,
             dest_dir=getattr(args, "output", None),
+            include_lustre=not no_lustre,
         )
     except Exception as e:
         return _error(f"Package failed: {e}", use_json)
+
+    if no_upload:
+        _output(
+            {
+                "target": args.target,
+                "variant": variant,
+                "assets": {k: str(p) for k, p in assets.items()},
+            },
+            use_json,
+        )
+        return EXIT_OK
 
     # Tag: derive from the manifest filename (strips .json, natural
     # read).  Variant is embedded in the manifest name for free.

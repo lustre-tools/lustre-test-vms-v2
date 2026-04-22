@@ -813,6 +813,8 @@ class TestValidationGating:
             patch.object(
                 cli_mod, "build_kernel", return_value={"ok": True}
             ) as bk,
+            patch.object(cli_mod, "build_lustre", return_value={"ok": True}),
+            patch.object(cli_mod, "snapshot_lustre"),
             patch.object(cli_mod, "build_image"),
         ):
             rc = _run_main(
@@ -875,6 +877,8 @@ class TestValidationGating:
             ),
             patch.object(cli_mod, "_do_build_container"),
             patch.object(cli_mod, "build_kernel", return_value={}),
+            patch.object(cli_mod, "build_lustre", return_value={}),
+            patch.object(cli_mod, "snapshot_lustre"),
             patch.object(cli_mod, "build_image"),
         ):
             rc = _run_main(
@@ -906,6 +910,8 @@ class TestValidationGating:
             ),
             patch.object(cli_mod, "_do_build_container"),
             patch.object(cli_mod, "build_kernel", return_value={}),
+            patch.object(cli_mod, "build_lustre", return_value={}),
+            patch.object(cli_mod, "snapshot_lustre"),
             patch.object(cli_mod, "build_image"),
         ):
             rc = _run_main(
@@ -1081,47 +1087,15 @@ class TestValidationGating:
         assert rc == EXIT_OK
         assert bl.called
 
-    def test_package_refuse_aborts(
+    def test_publish_no_upload_ok_proceeds(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_targets: Path,
-        lustre_tree: Path,
-    ) -> None:
-        from ltvm_pkg import cli as cli_mod
-
-        tc = self._tc(tmp_targets)
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch.object(
-                cli_mod,
-                "validate_target",
-                return_value=self._vr("refuse", "nope"),
-            ),
-            patch.object(cli_mod, "snapshot_lustre") as snap,
-            patch.object(cli_mod, "package_target") as pt,
-        ):
-            with pytest.raises(SystemExit) as exc:
-                _run_main(
-                    [
-                        "target",
-                        "package",
-                        "rocky9",
-                        "--lustre-tree",
-                        str(lustre_tree),
-                    ],
-                    capsys,
-                )
-        assert exc.value.code == EXIT_ERROR
-        assert not snap.called
-        assert not pt.called
-
-    def test_package_ok_proceeds(
-        self,
-        capsys: pytest.CaptureFixture[str],
-        tmp_targets: Path,
-        lustre_tree: Path,
         tmp_path: Path,
     ) -> None:
+        """--no-upload runs package but skips GitHub upload.  Publish no
+        longer validates or snapshots the Lustre tree -- that's build-all's
+        job."""
         from ltvm_pkg import cli as cli_mod
 
         tc = self._tc(tmp_targets)
@@ -1137,23 +1111,27 @@ class TestValidationGating:
                 cli_mod, "validate_target", return_value=self._vr("ok")
             ),
             patch.object(cli_mod, "snapshot_lustre") as snap,
+            patch.object(cli_mod, "_resolve_lustre_tree") as rl,
             patch.object(
                 cli_mod, "package_target", return_value=assets
             ) as pt,
+            patch.object(cli_mod, "_gh_release_upload") as upl,
         ):
             rc = _run_main(
                 [
                     "target",
-                    "package",
+                    "publish",
                     "rocky9",
-                    "--lustre-tree",
-                    str(lustre_tree),
+                    "--no-upload",
                 ],
                 capsys,
             )
         assert rc == EXIT_OK
-        assert snap.called
         assert pt.called
+        # Publish does not touch the Lustre tree.
+        assert not snap.called
+        assert not rl.called
+        assert not upl.called
 
     def test_deploy_refuse_aborts(
         self,
@@ -1560,6 +1538,8 @@ class TestKernelArgPropagation:
             patch.object(
                 cli_mod, "build_kernel", return_value={"ok": True}
             ),
+            patch.object(cli_mod, "build_lustre", return_value={"ok": True}),
+            patch.object(cli_mod, "snapshot_lustre"),
             patch.object(cli_mod, "build_image") as mock_bi,
         ):
             rc = _run_main(
@@ -1579,14 +1559,15 @@ class TestKernelArgPropagation:
         _, kwargs = mock_bi.call_args
         assert kwargs.get("kernel") == "5.14-rhel9.5"
 
-    def test_build_all_lustre_build_runs_before_image(
+    def test_build_all_runs_kernel_lustre_snapshot_image_in_order(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_targets: Path,
         lustre_tree: Path,
     ) -> None:
-        """--lustre-build must run Lustre before the image so the
-        image-bake step can pick up the freshly staged Lustre."""
+        """build all must run kernel -> lustre -> snapshot -> image so
+        the staging is both on disk for the image bake AND copied into
+        the artifacts dir for later tree-free publish."""
         from ltvm_pkg import cli as cli_mod
         from ltvm_pkg.lustre_compat import ValidationResult
 
@@ -1615,6 +1596,11 @@ class TestKernelArgPropagation:
             ),
             patch.object(
                 cli_mod,
+                "snapshot_lustre",
+                side_effect=lambda *a, **kw: calls.append("snapshot"),
+            ),
+            patch.object(
+                cli_mod,
                 "build_image",
                 side_effect=lambda *a, **kw: calls.append("image"),
             ) as mock_bi,
@@ -1625,13 +1611,12 @@ class TestKernelArgPropagation:
                     "rocky9",
                     "--lustre-tree",
                     str(lustre_tree),
-                    "--lustre-build",
                 ],
                 capsys,
             )
 
         assert rc == EXIT_OK
-        assert calls == ["kernel", "lustre", "image"]
+        assert calls == ["kernel", "lustre", "snapshot", "image"]
         _, img_kwargs = mock_bi.call_args
         assert img_kwargs.get("with_lustre") == str(lustre_tree)
 
