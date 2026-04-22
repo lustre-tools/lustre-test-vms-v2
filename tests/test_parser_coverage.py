@@ -359,6 +359,10 @@ class TestCmdCreateIdempotence:
         "ost_disks": 5,
         "image": "/custom/base.ext4",
         "kernel": "5.14-rhel9.5",
+        # cmd_create (post-merge) reads the OS from args.target, not
+        # args.os.  The assertion below still checks vm.os_id against
+        # _FIELD_SENTINELS["os"], which is derived from args.target.
+        "target": "ubuntu2404",
         "os": "ubuntu2404",
         "arch": "aarch64",
         "disk_size": "1G",
@@ -485,7 +489,7 @@ class TestCmdCreateIdempotence:
     def test_create_passes_os_to_resolve_os_artifacts(
         self, tmp_path: Path
     ) -> None:
-        """--os must reach resolve_os_artifacts on the new-VM path."""
+        """--target must reach resolve_os_artifacts on the new-VM path."""
         from ltvm_pkg import vm_commands
 
         resolve_calls: list[str] = []
@@ -515,7 +519,7 @@ class TestCmdCreateIdempotence:
             ost_disks=0,
             image="",
             kernel="",
-            os="ubuntu2404",
+            target="ubuntu2404",
             arch="x86_64",
             disk_size=None,
         )
@@ -640,6 +644,7 @@ class TestListResilienceToMissingFiles:
             patch("ltvm_pkg.vm_commands.VMInfo") as MockVMInfo,
             patch("builtins.open", side_effect=_open_side),
             patch("os.cpu_count", return_value=4),
+            patch("ltvm_pkg.vm_commands.is_macos", return_value=False),
         ):
             MockVMInfo.all_names.return_value = ["co1-test"]
             MockVMInfo.load.side_effect = VMNotFound("co1-test")

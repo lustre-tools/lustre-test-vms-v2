@@ -40,6 +40,9 @@ def _load_ltvm() -> Any:
 ltvm = _load_ltvm()
 
 from ltvm_pkg.cli import EXIT_ERROR, EXIT_OK  # noqa: E402
+from ltvm_pkg.cli.build import (  # noqa: E402
+    _preflight_container as _REAL_PREFLIGHT_CONTAINER,
+)
 
 
 def _run_main(argv: list[str]) -> int:
@@ -158,6 +161,111 @@ class TestCmdBuildContainer:
 
         rc = _run_main(["build", "container", "no_such_target"])
         assert rc == EXIT_NOT_FOUND
+
+
+# ---------------------------------------------------------------------------
+# _podman_machine_autostop -- only stops on a happy exit
+# ---------------------------------------------------------------------------
+
+
+class TestPodmanMachineAutostop:
+    """The context manager yields a handle; callers flip ``success``
+    True on the happy path.  On macOS we stop the machine iff
+    success AND the ps heuristic says it's safe.  On an unset flag
+    (error return) OR an exception we must NOT stop the machine, so
+    retries don't pay the cold-start cost.
+    """
+
+    def test_sets_success_stops_machine_on_macos(self) -> None:
+        from ltvm_pkg.cli.build import _podman_machine_autostop
+
+        with (
+            patch("ltvm_pkg.cli.build.is_macos", return_value=True),
+            patch(
+                "ltvm_pkg.cli.build.should_stop_podman_machine_macos",
+                return_value=True,
+            ),
+            patch(
+                "ltvm_pkg.cli.build.stop_podman_machine_macos"
+            ) as stop,
+        ):
+            with _podman_machine_autostop() as h:
+                h.success = True
+        stop.assert_called_once()
+
+    def test_error_return_does_not_stop_machine(self) -> None:
+        """Callers that return an error code leave ``success`` False;
+        the machine must keep running."""
+        from ltvm_pkg.cli.build import _podman_machine_autostop
+
+        with (
+            patch("ltvm_pkg.cli.build.is_macos", return_value=True),
+            patch(
+                "ltvm_pkg.cli.build.should_stop_podman_machine_macos",
+                return_value=True,
+            ),
+            patch(
+                "ltvm_pkg.cli.build.stop_podman_machine_macos"
+            ) as stop,
+        ):
+            with _podman_machine_autostop():
+                pass
+        stop.assert_not_called()
+
+    def test_exception_does_not_stop_machine(self) -> None:
+        from ltvm_pkg.cli.build import _podman_machine_autostop
+
+        with (
+            patch("ltvm_pkg.cli.build.is_macos", return_value=True),
+            patch(
+                "ltvm_pkg.cli.build.should_stop_podman_machine_macos",
+                return_value=True,
+            ),
+            patch(
+                "ltvm_pkg.cli.build.stop_podman_machine_macos"
+            ) as stop,
+        ):
+            with pytest.raises(RuntimeError):
+                with _podman_machine_autostop() as h:
+                    h.success = True  # even if set, exception wins
+                    raise RuntimeError("boom")
+        stop.assert_not_called()
+
+    def test_non_macos_noop(self) -> None:
+        """Off-macOS hosts never call any podman-machine helpers."""
+        from ltvm_pkg.cli.build import _podman_machine_autostop
+
+        with (
+            patch("ltvm_pkg.cli.build.is_macos", return_value=False),
+            patch(
+                "ltvm_pkg.cli.build.should_stop_podman_machine_macos"
+            ) as should,
+            patch(
+                "ltvm_pkg.cli.build.stop_podman_machine_macos"
+            ) as stop,
+        ):
+            with _podman_machine_autostop() as h:
+                h.success = True
+        should.assert_not_called()
+        stop.assert_not_called()
+
+    def test_heuristic_says_dont_stop(self) -> None:
+        """Success flag on but the ps heuristic vetoes: don't stop."""
+        from ltvm_pkg.cli.build import _podman_machine_autostop
+
+        with (
+            patch("ltvm_pkg.cli.build.is_macos", return_value=True),
+            patch(
+                "ltvm_pkg.cli.build.should_stop_podman_machine_macos",
+                return_value=False,
+            ),
+            patch(
+                "ltvm_pkg.cli.build.stop_podman_machine_macos"
+            ) as stop,
+        ):
+            with _podman_machine_autostop() as h:
+                h.success = True
+        stop.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -398,7 +506,7 @@ class TestCmdBuildLustre:
             patch.object(cli_mod, "build_lustre") as bl,
         ):
             rc = _run_main(
-                ["build", "lustre", "rocky9", str(lustre_tree)]
+                ["build", "lustre", "rocky9", "--lustre-tree", str(lustre_tree)]
             )
         assert rc == EXIT_ERROR
         err = capsys.readouterr().err
@@ -416,31 +524,36 @@ class TestCmdBuildLustre:
         hint to run `ltvm build container ...` rather than burying it in
         a 'Lustre build failed: ...' wrapper."""
         from ltvm_pkg import cli as cli_mod
+        from ltvm_pkg.cli import build as build_mod
         from ltvm_pkg.lustre_compat import ValidationResult
 
         tc = _make_tc(tmp_targets)
-        # Make build-tree exist so we get past that check.
         bt = tc.kernel_output_dir() / "build-tree"
         bt.mkdir(parents=True, exist_ok=True)
         vr = ValidationResult(
             status="ok", mode=None, kernel_version=None,
             matched_in=None, message="ok",
         )
-        # podman image exists -> non-zero (image absent).
         miss_proc = MagicMock()
         miss_proc.returncode = 1
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
             patch.object(cli_mod, "validate_target", return_value=vr),
-            patch("subprocess.run", return_value=miss_proc),
+            # Bypass the autouse conftest fixture so the real preflight
+            # fires against our stubbed `podman image exists`.
+            patch.object(
+                build_mod, "_preflight_container",
+                _REAL_PREFLIGHT_CONTAINER,
+            ),
+            patch.object(build_mod.subprocess, "run", return_value=miss_proc),
             patch.object(cli_mod, "build_lustre") as bl,
         ):
             rc = _run_main(
-                ["build", "lustre", "rocky9", str(lustre_tree)]
+                ["build", "lustre", "rocky9", "--lustre-tree", str(lustre_tree)]
             )
         assert rc == EXIT_ERROR
         err = capsys.readouterr().err
-        assert "not found in podman storage" in err
+        assert "not found" in err
         assert "ltvm build container rocky9" in err
         assert not bl.called
 
@@ -470,7 +583,7 @@ class TestCmdBuildLustre:
             ),
         ):
             rc = _run_main(
-                ["build", "lustre", "rocky9", str(lustre_tree)]
+                ["build", "lustre", "rocky9", "--lustre-tree", str(lustre_tree)]
             )
         assert rc == EXIT_ERROR
         assert "Lustre build failed" in capsys.readouterr().err
@@ -502,7 +615,7 @@ class TestCmdBuildLustre:
             ) as bl,
         ):
             rc = _run_main(
-                ["build", "lustre", "rocky9", str(lustre_tree),
+                ["build", "lustre", "rocky9", "--lustre-tree", str(lustre_tree),
                  "--disable-server"]
             )
         assert rc == EXIT_OK
@@ -535,7 +648,7 @@ class TestCmdBuildLustre:
             ) as bl,
         ):
             _run_main(
-                ["build", "lustre", "rocky9", str(lustre_tree),
+                ["build", "lustre", "rocky9", "--lustre-tree", str(lustre_tree),
                  "--configure", "--enable-foo --with-bar=baz"]
             )
         _, kwargs = bl.call_args
@@ -575,12 +688,17 @@ class TestCmdBuildShell:
         """When the container image is absent in podman storage, give a
         distinct error with a build-container hint."""
         from ltvm_pkg import cli as cli_mod
+        from ltvm_pkg.cli import build as build_mod
 
         tc = _make_tc(tmp_targets)
         miss = MagicMock()
         miss.returncode = 1
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                build_mod, "_preflight_container",
+                _REAL_PREFLIGHT_CONTAINER,
+            ),
             patch("subprocess.run", return_value=miss),
         ):
             rc = _run_main(
@@ -588,7 +706,7 @@ class TestCmdBuildShell:
             )
         assert rc == EXIT_ERROR
         err = capsys.readouterr().err
-        assert "Container image" in err
+        assert "not found" in err
         assert "ltvm build container rocky9" in err
 
     def test_podman_not_installed_errors(
@@ -598,10 +716,15 @@ class TestCmdBuildShell:
         tmp_path: Path,
     ) -> None:
         from ltvm_pkg import cli as cli_mod
+        from ltvm_pkg.cli import build as build_mod
 
         tc = _make_tc(tmp_targets)
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
+            patch.object(
+                build_mod, "_preflight_container",
+                _REAL_PREFLIGHT_CONTAINER,
+            ),
             patch("subprocess.run", side_effect=FileNotFoundError("podman")),
         ):
             rc = _run_main(
@@ -775,6 +898,7 @@ class TestVariantKernelPinPropagation:
             rc = _run_main(
                 ["build", "all", "rocky9",
                  "--variant", "mofed-24",
+                 "--skip-lustre",
                  "--lustre-tree", str(lustre_tree)]
             )
         assert rc == EXIT_OK
@@ -848,7 +972,8 @@ class TestVariantKernelPinPropagation:
             )
         assert rc != EXIT_OK
         err = capsys.readouterr().err
-        assert "no Lustre staging" in err
+        assert "Lustre not built" in err
+        assert "--no-lustre" in err
         bi.assert_not_called()
 
 

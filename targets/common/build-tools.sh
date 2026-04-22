@@ -48,12 +48,21 @@ elif command -v apt-get &>/dev/null; then
 		libtool git curl python3-pip 2>/dev/null || true
 fi
 
-# Install cross-compiler if cross-compiling
+# Install cross-compiler if cross-compiling.  Cross direction is
+# implied by TARGET_ARCH vs HOST_ARCH (already captured in
+# CONFIGURE_HOST above).  The triple in CONFIGURE_HOST is
+# --host=<triple>; derive the package-name stem from it so we support
+# either direction (aarch64 target from x86 host, x86 target from
+# aarch64 host).
 if [[ -n "$CONFIGURE_HOST" ]]; then
+	CROSS_TRIPLE="${CONFIGURE_HOST#--host=}"
 	if command -v dnf &>/dev/null; then
-		dnf -y install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu 2>/dev/null || true
+		dnf -y install "gcc-${CROSS_TRIPLE}" "binutils-${CROSS_TRIPLE}" 2>/dev/null || true
 	elif command -v apt-get &>/dev/null; then
-		apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu 2>/dev/null || true
+		# Debian's cross package naming uses x86-64-linux-gnu (hyphen)
+		# rather than the RHEL x86_64-linux-gnu (underscore).
+		APT_TRIPLE="${CROSS_TRIPLE//x86_64/x86-64}"
+		apt-get install -y "gcc-${APT_TRIPLE}" "g++-${APT_TRIPLE}" 2>/dev/null || true
 	fi
 fi
 

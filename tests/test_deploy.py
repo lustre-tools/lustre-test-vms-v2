@@ -470,7 +470,7 @@ class TestCmdDeployPerKernelStaging:
             run_mock.return_value = MagicMock(returncode=0, stdout="")
             args = ap.Namespace(
                 vm="co1-eh9",
-                build=str(build_path),
+                lustre_tree=str(build_path),
                 mount=False,
                 target=None,
                 kernel=None,
@@ -516,7 +516,7 @@ class TestCmdDeployPerKernelStaging:
         ):
             args = ap.Namespace(
                 vm="co1-eh9-legacy",
-                build=str(build_path),
+                lustre_tree=str(build_path),
                 mount=False,
                 target=None,
                 kernel=None,
@@ -556,9 +556,12 @@ def _deploy_args(
 ) -> "argparse.Namespace":
     import argparse as ap
 
+    # Post-merge, cmd_deploy reads the tree from args.lustre_tree
+    # (unified with other subcommands); ``build`` here is kept as the
+    # test-side kwarg for readability.
     return ap.Namespace(
         vm=vm,
-        build=build,
+        lustre_tree=build,
         mount=mount,
         target=target,
         kernel=kernel,

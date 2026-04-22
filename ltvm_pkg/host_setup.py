@@ -7,14 +7,21 @@ and sets up SSH.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import platform
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 from typing import Any
+
+
+def is_macos() -> bool:
+    return platform.system() == "Darwin"
 
 
 def is_wsl2() -> bool:
@@ -23,6 +30,78 @@ def is_wsl2() -> bool:
         return "microsoft" in v or "wsl" in v
     except OSError:
         return False
+
+
+class PodmanMachineError(RuntimeError):
+    """Raised when podman is unusable on macOS (no binary, no running machine)."""
+
+
+def check_podman_machine_macos() -> None:
+    """Ensure podman is usable on macOS, auto-starting the machine if stopped.
+
+    No-op on non-macOS hosts. On macOS, containers require a running
+    ``podman machine``, so we pre-flight that before any container build.
+    If the machine exists but is stopped, we start it; the user should
+    not have to type the same command ltvm already knows it needs.
+    Raises PodmanMachineError only when podman is absent or no machine
+    has been initialized -- cases that genuinely need the user.
+    """
+    if not is_macos():
+        return
+
+    if not shutil.which("podman"):
+        raise PodmanMachineError(
+            "podman not found.\n"
+            "Install it with:\n"
+            "  brew install podman\n"
+            "Then run:\n"
+            "  podman machine init      # first time only\n"
+            "  podman machine start"
+        )
+
+    try:
+        r = subprocess.run(
+            ["podman", "machine", "list", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise PodmanMachineError(
+            f"failed to query podman machine: {e}"
+        ) from e
+
+    machines: list[dict[str, Any]] = []
+    if r.returncode == 0 and r.stdout.strip():
+        try:
+            parsed = json.loads(r.stdout)
+            if isinstance(parsed, list):
+                machines = parsed
+        except json.JSONDecodeError:
+            machines = []
+
+    if not machines:
+        raise PodmanMachineError(
+            "no podman machine configured.\n"
+            "Run:\n"
+            "  podman machine init\n"
+            "Then retry."
+        )
+
+    if any(m.get("Running") for m in machines):
+        return
+
+    log.info("Starting podman machine...")
+    try:
+        subprocess.run(
+            ["podman", "machine", "start"],
+            check=True,
+            timeout=180,
+        )
+    except (OSError, subprocess.SubprocessError) as e:
+        raise PodmanMachineError(
+            f"failed to start podman machine: {e}"
+        ) from e
 
 
 log = logging.getLogger(__name__)
@@ -38,6 +117,12 @@ QEMU_VERSION = "9.2.2"
 QEMU_PREFIX = Path(os.environ.get("LTVM_QEMU_PREFIX", "/opt/qemu"))
 VM_DIR = Path(os.environ.get("LTVM_VM_DIR", "/opt/qemu-vms"))
 DEFAULT_SUBNET = "192.168.100"
+
+DEFAULT_VMNET_GATEWAY = os.environ.get("LTVM_VMNET_GATEWAY", "192.168.105.1")
+SOCKET_VMNET_PLIST_LABEL = "io.github.lima-vm.socket_vmnet"
+SOCKET_VMNET_PLIST_PATH = Path(
+    f"/Library/LaunchDaemons/{SOCKET_VMNET_PLIST_LABEL}.plist"
+)
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # ltvm_pkg/ holds scripts, host-config templates, etc.
@@ -128,6 +213,27 @@ def _run_quiet(
     cmd: list[str], check: bool = True
 ) -> subprocess.CompletedProcess[str]:
     return _run(cmd, check=check, quiet=True)
+
+
+def _sudo_run(
+    cmd: list[str],
+    check: bool = True,
+    quiet: bool = False,
+) -> subprocess.CompletedProcess[str]:
+    """Run a command under sudo (no-op prefix if already root)."""
+    if os.geteuid() == 0:
+        return _run(cmd, check=check, quiet=quiet)
+    return _run(["sudo", *cmd], check=check, quiet=quiet)
+
+
+def _sudo_prime(reason: str) -> None:
+    """Prompt for sudo credentials up front so later _sudo_run calls
+    don't interrupt with a surprise password prompt mid-install.
+    """
+    if os.geteuid() == 0:
+        return
+    log.info("%s -- prompting for sudo credentials now.", reason)
+    _run(["sudo", "-v"])
 
 
 def _pkg_install(host: HostInfo, *pkgs: str) -> None:
@@ -488,6 +594,404 @@ def _system_qemu_has_microvm() -> str | None:
 def _system_qemu_has_virt() -> str | None:
     """Check if the system-packaged QEMU aarch64 has virt machine support."""
     return _system_qemu_has_machine(("qemu-system-aarch64",), "virt")
+
+
+def _brew_qemu_prefix() -> Path | None:
+    """Return the Homebrew prefix for the qemu package, or None."""
+    brew = shutil.which("brew")
+    if not brew:
+        return None
+    r = _run_quiet([brew, "--prefix", "qemu"], check=False)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    p = Path(r.stdout.strip())
+    if not (p / "bin" / "qemu-system-x86_64").exists():
+        return None
+    return p
+
+
+def _brew_socket_vmnet_prefix() -> Path | None:
+    """Return the Homebrew prefix for the socket_vmnet package, or None."""
+    brew = shutil.which("brew")
+    if not brew:
+        return None
+    r = _run_quiet([brew, "--prefix", "socket_vmnet"], check=False)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    p = Path(r.stdout.strip())
+    if not (p / "bin" / "socket_vmnet").exists():
+        return None
+    return p
+
+
+def socket_vmnet_path() -> Path | None:
+    """Return the path to the socket_vmnet daemon binary, or None."""
+    prefix = _brew_socket_vmnet_prefix()
+    if prefix is None:
+        return None
+    return prefix / "bin" / "socket_vmnet"
+
+
+def socket_vmnet_socket_path() -> Path:
+    """Return the Unix socket path that the socket_vmnet daemon listens on.
+
+    Defaults to ``<brew-prefix>/var/run/socket_vmnet`` when socket_vmnet is
+    installed via Homebrew (per the Lima convention), falling back to
+    ``/var/run/socket_vmnet`` otherwise.  Overridable via
+    ``LTVM_VMNET_SOCKET`` for custom daemon layouts.
+    """
+    env = os.environ.get("LTVM_VMNET_SOCKET")
+    if env:
+        return Path(env)
+    prefix = _brew_socket_vmnet_prefix()
+    if prefix is not None:
+        return prefix / "var" / "run" / "socket_vmnet"
+    return Path("/var/run/socket_vmnet")
+
+
+def install_socket_vmnet_macos(force: bool = False) -> None:
+    """Install socket_vmnet on macOS via Homebrew.
+
+    socket_vmnet (from the Lima project) runs as a privileged daemon and
+    provides vmnet-shared networking to unprivileged QEMU processes.
+    """
+    brew_prefix = _brew_socket_vmnet_prefix()
+    if brew_prefix and not force:
+        log.info(
+            "socket_vmnet already installed at %s/bin/socket_vmnet",
+            brew_prefix,
+        )
+        return
+
+    brew = shutil.which("brew")
+    if not brew:
+        raise RuntimeError(
+            "Homebrew not found. Install it from https://brew.sh, "
+            "then run: brew install socket_vmnet"
+        )
+    log.info("Installing socket_vmnet via Homebrew...")
+    _run([brew, "install", "socket_vmnet"])
+    brew_prefix = _brew_socket_vmnet_prefix()
+    if not brew_prefix:
+        raise RuntimeError(
+            "brew install socket_vmnet succeeded but socket_vmnet binary not "
+            "found in the expected Homebrew prefix. "
+            "Check: brew --prefix socket_vmnet"
+        )
+    log.info("socket_vmnet installed at %s/bin/socket_vmnet", brew_prefix)
+
+
+def _render_socket_vmnet_plist() -> str:
+    """Render the launchd plist from the template, substituting paths."""
+    bin_path = socket_vmnet_path()
+    if bin_path is None:
+        raise RuntimeError(
+            "socket_vmnet binary not found -- run `ltvm install` or "
+            "`brew install socket_vmnet` first"
+        )
+    sock_path = socket_vmnet_socket_path()
+    template = (
+        HOST_CONFIG_DIR / f"{SOCKET_VMNET_PLIST_LABEL}.plist"
+    ).read_text()
+    return (
+        template.replace("@SOCKET_VMNET_BIN@", str(bin_path))
+        .replace("@SOCKET_VMNET_SOCKET@", str(sock_path))
+        .replace("@VMNET_GATEWAY@", DEFAULT_VMNET_GATEWAY)
+    )
+
+
+def _socket_vmnet_daemon_loaded() -> bool:
+    """Return True if launchd has the socket_vmnet job loaded."""
+    r = _run_quiet(
+        ["launchctl", "print", f"system/{SOCKET_VMNET_PLIST_LABEL}"],
+        check=False,
+    )
+    return r.returncode == 0
+
+
+def socket_vmnet_reachable() -> bool:
+    """Return True if the socket_vmnet socket exists and is a UNIX socket."""
+    import stat as _stat
+
+    sock = socket_vmnet_socket_path()
+    try:
+        mode = sock.stat().st_mode
+        return _stat.S_ISSOCK(mode)
+    except (OSError, TypeError):
+        return False
+
+
+def install_socket_vmnet_launchd_macos(force: bool = False) -> None:
+    """Install and load the socket_vmnet launchd plist.
+
+    Mirrors Lima's approach: a root-owned LaunchDaemon that starts at load
+    and stays up (KeepAlive=true).  Only installed when the user runs
+    `ltvm install`, so laptops that never do pay nothing.
+    """
+    desired = _render_socket_vmnet_plist()
+    needs_write = True
+    if SOCKET_VMNET_PLIST_PATH.exists() and not force:
+        try:
+            if SOCKET_VMNET_PLIST_PATH.read_text() == desired:
+                needs_write = False
+        except OSError:
+            pass
+
+    if needs_write:
+        _sudo_prime(f"Installing {SOCKET_VMNET_PLIST_PATH} requires root")
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".plist", delete=False
+        ) as tf:
+            tf.write(desired)
+            tmp_path = tf.name
+        try:
+            _sudo_run(["mkdir", "-p", "/var/log/socket_vmnet"])
+            _sudo_run(
+                [
+                    "install",
+                    "-m",
+                    "0644",
+                    "-o",
+                    "root",
+                    "-g",
+                    "wheel",
+                    tmp_path,
+                    str(SOCKET_VMNET_PLIST_PATH),
+                ]
+            )
+        finally:
+            Path(tmp_path).unlink(missing_ok=True)
+        if _socket_vmnet_daemon_loaded():
+            _sudo_run(
+                ["launchctl", "bootout", f"system/{SOCKET_VMNET_PLIST_LABEL}"],
+                check=False,
+            )
+        log.info("Installed %s", SOCKET_VMNET_PLIST_PATH)
+
+    if not _socket_vmnet_daemon_loaded():
+        _sudo_prime("Loading the socket_vmnet launchd job requires root")
+        _sudo_run(
+            ["launchctl", "bootstrap", "system", str(SOCKET_VMNET_PLIST_PATH)]
+        )
+        log.info("Loaded %s", SOCKET_VMNET_PLIST_LABEL)
+    else:
+        log.info("%s already loaded", SOCKET_VMNET_PLIST_LABEL)
+
+
+def ensure_socket_vmnet_running() -> None:
+    """Ensure the socket_vmnet daemon is reachable before launching a VM.
+
+    Safe to call repeatedly: no-op when the socket is already reachable.
+    If the plist is installed but the daemon isn't running, loads or
+    kickstarts it and waits briefly for the socket to appear.
+    """
+    if socket_vmnet_reachable():
+        return
+
+    if SOCKET_VMNET_PLIST_PATH.exists():
+        if not _socket_vmnet_daemon_loaded():
+            log.info("socket_vmnet not loaded; loading launchd job...")
+            _sudo_prime("Loading the socket_vmnet launchd job requires root")
+            _sudo_run(
+                [
+                    "launchctl",
+                    "bootstrap",
+                    "system",
+                    str(SOCKET_VMNET_PLIST_PATH),
+                ],
+                check=False,
+            )
+        else:
+            _sudo_run(
+                [
+                    "launchctl",
+                    "kickstart",
+                    f"system/{SOCKET_VMNET_PLIST_LABEL}",
+                ],
+                check=False,
+            )
+        import time as _time
+
+        for _ in range(50):
+            if socket_vmnet_reachable():
+                return
+            _time.sleep(0.1)
+
+    raise RuntimeError(
+        f"socket_vmnet is not reachable at {socket_vmnet_socket_path()}.\n"
+        f"VMs on macOS need the socket_vmnet daemon running.\n"
+        f"Fix with:\n"
+        f"  ltvm install          # installs + loads the launchd plist\n"
+        f"or manually:\n"
+        f"  sudo launchctl bootstrap system {SOCKET_VMNET_PLIST_PATH}"
+    )
+
+
+def _podman_machine_list_macos() -> list[dict[str, Any]]:
+    """Return `podman machine list --format json` parsed, or [] on failure."""
+    try:
+        r = subprocess.run(
+            ["podman", "machine", "list", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return []
+    if r.returncode != 0 or not r.stdout.strip():
+        return []
+    try:
+        parsed = json.loads(r.stdout)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return parsed
+
+
+def install_podman_macos(force: bool = False) -> bool:
+    """Install podman on macOS and ensure a podman machine is running.
+
+    Returns True if this call started (or initialized+started) the machine,
+    False if it was already running.  Idempotent and safe to re-run.
+    """
+    if not shutil.which("podman"):
+        brew = shutil.which("brew")
+        if not brew:
+            raise RuntimeError(
+                "Homebrew not found. Install it from https://brew.sh, "
+                "then run: brew install podman"
+            )
+        log.info("Installing podman via Homebrew...")
+        _run([brew, "install", "podman"])
+    elif not force:
+        log.info("podman already installed")
+
+    machines = _podman_machine_list_macos()
+    if not machines:
+        log.info("Initializing podman machine (podman machine init)...")
+        _run(["podman", "machine", "init"])
+        machines = _podman_machine_list_macos()
+
+    if any(m.get("Running") for m in machines):
+        log.info("podman machine already running")
+        return False
+
+    log.info("Starting podman machine (podman machine start)...")
+    _run(["podman", "machine", "start"])
+    return True
+
+
+def should_stop_podman_machine_macos() -> bool:
+    """Return True if it's safe to auto-stop the podman machine.
+
+    Safe means: no containers running, or every running container uses an
+    ltvm build image (tag starts with 'ltvm-build-' or 'ltvm-').  If any
+    non-ltvm container is running the user is doing other podman work, so
+    we leave the machine up.
+    """
+    try:
+        r = subprocess.run(
+            ["podman", "ps", "--format", "json"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if r.returncode != 0:
+        return False
+    try:
+        parsed = json.loads(r.stdout or "[]")
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, list):
+        return False
+    if not parsed:
+        return True
+    for c in parsed:
+        images: list[str] = []
+        img = c.get("Image")
+        if isinstance(img, str):
+            images.append(img)
+        names = c.get("ImageName") or c.get("Names")
+        if isinstance(names, list):
+            images.extend(n for n in names if isinstance(n, str))
+        elif isinstance(names, str):
+            images.append(names)
+        if not images:
+            return False
+        if not all(_is_ltvm_image_tag(t) for t in images):
+            return False
+    return True
+
+
+def _is_ltvm_image_tag(tag: str) -> bool:
+    """Return True if the image tag is an ltvm-produced build image."""
+    base = tag.rsplit("/", 1)[-1]
+    return base.startswith("ltvm-build-") or base.startswith("ltvm-")
+
+
+def stop_podman_machine_macos() -> None:
+    """Stop the podman machine; log and swallow errors."""
+    log.info("Stopping podman machine (podman machine stop)...")
+    try:
+        _run(["podman", "machine", "stop"], check=False, quiet=True)
+    except OSError as e:
+        log.warning("podman machine stop failed: %s", e)
+
+
+def install_qemu_macos(force: bool = False) -> None:
+    """Install QEMU on macOS via Homebrew."""
+    existing = _qemu_installed_version()
+    if existing and not force:
+        log.info("QEMU %s already installed", existing)
+        return
+
+    brew_prefix = _brew_qemu_prefix()
+
+    if not brew_prefix:
+        brew = shutil.which("brew")
+        if not brew:
+            raise RuntimeError(
+                "Homebrew not found. Install it from https://brew.sh, "
+                "then run: brew install qemu"
+            )
+        log.info("Installing QEMU via Homebrew...")
+        _run([brew, "install", "qemu"])
+        brew_prefix = _brew_qemu_prefix()
+        if not brew_prefix:
+            raise RuntimeError(
+                "brew install qemu succeeded but qemu-system-x86_64 not found "
+                "in the expected Homebrew prefix. Check: brew --prefix qemu"
+            )
+
+    _sudo_run(["mkdir", "-p", str(QEMU_PREFIX / "bin")], quiet=True)
+
+    for tool in ("qemu-system-x86_64", "qemu-system-aarch64", "qemu-img"):
+        src = brew_prefix / "bin" / tool
+        if src.exists():
+            link = QEMU_PREFIX / "bin" / tool
+            _sudo_run(["rm", "-f", str(link)], quiet=True)
+            _sudo_run(["ln", "-s", str(src), str(link)], quiet=True)
+
+    # Homebrew puts firmware under <prefix>/share/qemu/; we need
+    # QEMU_PREFIX/share/qemu/ to point there so QEMU finds it.
+    brew_share_qemu = brew_prefix / "share" / "qemu"
+    if brew_share_qemu.is_dir():
+        share_dir = QEMU_PREFIX / "share"
+        _sudo_run(["mkdir", "-p", str(share_dir)], quiet=True)
+        share_link = share_dir / "qemu"
+        _sudo_run(["rm", "-f", str(share_link)], quiet=True)
+        _sudo_run(["ln", "-s", str(brew_share_qemu), str(share_link)], quiet=True)
+
+    ver_r = _run_quiet(
+        [str(QEMU_PREFIX / "bin" / "qemu-system-x86_64"), "--version"],
+        check=False,
+    )
+    ver_m = re.search(r"version (\d+\.\d+\.\d+)", ver_r.stdout)
+    ver = ver_m.group(1) if ver_m else "unknown"
+    log.info("Using Homebrew QEMU %s (%s)", ver, brew_prefix)
 
 
 def install_qemu(host: HostInfo, force: bool = False) -> None:
@@ -923,6 +1427,7 @@ Host {subnet}.*
 def verify(subnet: str = DEFAULT_SUBNET) -> dict[str, Any]:
     """Check existing setup.  Returns dict of results."""
     results: dict[str, Any] = {}
+    macos = is_macos()
 
     # QEMU (x86_64)
     ver = _qemu_installed_version("x86_64")
@@ -938,26 +1443,62 @@ def verify(subnet: str = DEFAULT_SUBNET) -> dict[str, Any]:
         "version": ver_arm,
     }
 
-    # KVM
-    results["kvm"] = {"available": Path("/dev/kvm").exists()}
+    if macos:
+        # macOS uses Hypervisor.framework; no /dev/kvm
+        results["kvm"] = {
+            "available": True,
+            "note": "Hypervisor.framework (macOS)",
+        }
+        results["bridge"] = {
+            "up": True,
+            "address": None,
+            "note": "not required on macOS",
+        }
+        results["dnsmasq"] = {"running": True, "note": "not required on macOS"}
+        results["ssh"] = {"configured": True, "note": "not required on macOS"}
+        bin_path = socket_vmnet_path()
+        results["socket_vmnet"] = {
+            "installed": bin_path is not None,
+            "path": str(bin_path) if bin_path else None,
+            "plist": (
+                str(SOCKET_VMNET_PLIST_PATH)
+                if SOCKET_VMNET_PLIST_PATH.exists()
+                else None
+            ),
+            "loaded": _socket_vmnet_daemon_loaded(),
+            "reachable": socket_vmnet_reachable(),
+            "socket": str(socket_vmnet_socket_path()),
+        }
+    else:
+        # KVM
+        results["kvm"] = {"available": Path("/dev/kvm").exists()}
 
-    # Bridge
-    r = _run_quiet(["ip", "-4", "addr", "show", "fcbr0"], check=False)
-    bridge_up = r.returncode == 0
-    addr = None
-    if bridge_up:
-        m = re.search(r"inet (\S+)", r.stdout)
-        addr = m.group(1) if m else None
-    results["bridge"] = {
-        "up": bridge_up,
-        "address": addr,
-    }
+        # Bridge
+        r = _run_quiet(["ip", "-4", "addr", "show", "fcbr0"], check=False)
+        bridge_up = r.returncode == 0
+        addr = None
+        if bridge_up:
+            m = re.search(r"inet (\S+)", r.stdout)
+            addr = m.group(1) if m else None
+        results["bridge"] = {
+            "up": bridge_up,
+            "address": addr,
+        }
 
-    # dnsmasq
-    r = _run_quiet(["systemctl", "is-active", "dnsmasq"], check=False)
-    results["dnsmasq"] = {
-        "running": r.returncode == 0,
-    }
+        # dnsmasq
+        r = _run_quiet(["systemctl", "is-active", "dnsmasq"], check=False)
+        results["dnsmasq"] = {
+            "running": r.returncode == 0,
+        }
+
+        # SSH config
+        ssh_config = Path("/root/.ssh/config")
+        results["ssh"] = {
+            "configured": (
+                ssh_config.exists()
+                and SSH_BLOCK_MARKER in ssh_config.read_text()
+            ),
+        }
 
     # Scripts
     results["ltvm"] = {
@@ -988,27 +1529,20 @@ def verify(subnet: str = DEFAULT_SUBNET) -> dict[str, Any]:
         "version": zv,
     }
 
-    # SSH config
-    ssh_config = Path("/root/.ssh/config")
-    results["ssh"] = {
-        "configured": (
-            ssh_config.exists() and SSH_BLOCK_MARKER in ssh_config.read_text()
-        ),
-    }
-
     # Overall
-    results["all_ok"] = all(
-        [
-            results["qemu"]["installed"],
-            results["kvm"]["available"],
-            results["bridge"]["up"],
-            results["dnsmasq"]["running"],
-            results["ltvm"]["installed"],
-            results["podman"]["installed"],
-            results["zstd"]["installed"],
-            results["ssh"]["configured"],
-        ]
-    )
+    checks = [
+        results["qemu"]["installed"],
+        results["kvm"]["available"],
+        results["bridge"]["up"],
+        results["dnsmasq"]["running"],
+        results["ltvm"]["installed"],
+        results["podman"]["installed"],
+        results["zstd"]["installed"],
+        results["ssh"]["configured"],
+    ]
+    if macos:
+        checks.append(results["socket_vmnet"]["installed"])
+    results["all_ok"] = all(checks)
 
     return results
 
@@ -1034,18 +1568,26 @@ def print_verify(results: dict[str, Any]) -> None:
     else:
         ok("QEMU aarch64: not installed (optional, for cross-arch targets)")
 
-    if results["kvm"]["available"]:
+    kvm = results["kvm"]
+    if kvm.get("note"):
+        ok(f"KVM: {kvm['note']}")
+    elif kvm["available"]:
         ok("KVM: available")
     else:
         fail("KVM: /dev/kvm not found")
 
     b = results["bridge"]
-    if b["up"]:
+    if b.get("note"):
+        ok(f"Bridge: {b['note']}")
+    elif b["up"]:
         ok(f"Bridge: fcbr0 at {b['address']}")
     else:
         fail("Bridge: fcbr0 not found")
 
-    if results["dnsmasq"]["running"]:
+    dns = results["dnsmasq"]
+    if dns.get("note"):
+        ok(f"dnsmasq: {dns['note']}")
+    elif dns["running"]:
         ok("dnsmasq: running")
     else:
         fail("dnsmasq: not running")
@@ -1068,10 +1610,38 @@ def print_verify(results: dict[str, Any]) -> None:
     else:
         fail("zstd: not installed (needed by ltvm target publish/fetch)")
 
-    if results["ssh"]["configured"]:
+    ssh = results["ssh"]
+    if ssh.get("note"):
+        ok(f"SSH config: {ssh['note']}")
+    elif ssh["configured"]:
         ok("SSH config: configured")
     else:
         fail("SSH config: not configured")
+
+    sv = results.get("socket_vmnet")
+    if sv is not None:
+        if not sv["installed"]:
+            fail(
+                "socket_vmnet: not installed "
+                "(run `ltvm install` or `brew install socket_vmnet`)"
+            )
+        elif sv["reachable"]:
+            ok(f"socket_vmnet: reachable at {sv['socket']}")
+        elif sv["loaded"]:
+            fail(
+                f"socket_vmnet: launchd job loaded but socket "
+                f"{sv['socket']} not yet open"
+            )
+        elif sv["plist"]:
+            fail(
+                f"socket_vmnet: plist at {sv['plist']} not loaded "
+                f"(sudo launchctl bootstrap system {sv['plist']})"
+            )
+        else:
+            fail(
+                "socket_vmnet: installed but launchd plist missing "
+                "(run `ltvm install`)"
+            )
 
     print()
     if results["all_ok"]:
@@ -1081,8 +1651,147 @@ def print_verify(results: dict[str, Any]) -> None:
 
 
 # ------------------------------------------------------------------
+# ltvm launcher wrapper
+# ------------------------------------------------------------------
+
+
+def _render_ltvm_launcher(python: str, script: str) -> str:
+    """Render the /usr/local/bin/ltvm wrapper script text.
+
+    Pins the Python interpreter so PATH drift on the host (e.g. an older
+    /usr/bin/python3 shadowing a brew python) can't send ltvm through a
+    Python that fails its own 3.10 floor check.
+    """
+    return (
+        "#!/bin/sh\n"
+        f"exec '{python}' '{script}' \"$@\"\n"
+    )
+
+
+def _desired_ltvm_launcher(repo_ltvm: Path) -> str:
+    return _render_ltvm_launcher(sys.executable, str(repo_ltvm.resolve()))
+
+
+def _ltvm_launcher_needs_write(link: Path, repo_ltvm: Path) -> bool:
+    """True if ``link`` isn't already our exact wrapper for ``repo_ltvm``."""
+    desired = _desired_ltvm_launcher(repo_ltvm)
+    try:
+        if link.is_symlink() or not link.exists():
+            return True
+        return link.read_text() != desired
+    except OSError:
+        return True
+
+
+def _install_ltvm_launcher(link: Path, repo_ltvm: Path) -> bool:
+    """Install a shell wrapper at ``link`` that exec()s the repo's ltvm
+    under the Python currently executing this code.
+
+    Returns True if a write was performed, False if the existing wrapper
+    was already identical (no sudo rewrite needed).
+    """
+    if not _ltvm_launcher_needs_write(link, repo_ltvm):
+        return False
+
+    desired = _desired_ltvm_launcher(repo_ltvm)
+    with tempfile.NamedTemporaryFile(
+        mode="w", prefix="ltvm-launcher.", delete=False
+    ) as tf:
+        tf.write(desired)
+        tmp_path = tf.name
+    try:
+        _sudo_run(["install", "-m", "0755", tmp_path, str(link)])
+    finally:
+        Path(tmp_path).unlink(missing_ok=True)
+    log.info("ltvm launcher installed to %s -> %s", link, sys.executable)
+    return True
+
+
+def _check_stale_ltvm_launcher(link: Path) -> None:
+    """Warn if ``link`` is a wrapper pinning a Python that no longer exists.
+
+    Happens after a Homebrew Python version change or a pyenv cleanup:
+    the old wrapper still points at a binary that's gone, so any `ltvm`
+    invocation fails with a cryptic /bin/sh exec error before Python runs.
+    """
+    try:
+        if not link.exists() or link.is_symlink():
+            return
+        text = link.read_text()
+    except OSError:
+        return
+    m = re.search(r"^exec '([^']+)'", text, flags=re.MULTILINE)
+    if not m:
+        return
+    pinned = m.group(1)
+    if Path(pinned).exists():
+        return
+    log.warning(
+        "stale ltvm launcher at %s points to missing Python %s; "
+        "re-run `./ltvm install` to repin it.",
+        link,
+        pinned,
+    )
+
+
+# ------------------------------------------------------------------
 # Top-level orchestration
 # ------------------------------------------------------------------
+
+
+def _run_setup_macos(
+    steps: list[str] | None = None,
+    force: bool = False,
+) -> None:
+    if os.geteuid() == 0:
+        raise RuntimeError(
+            "Do not run `ltvm install` as root on macOS: Homebrew refuses "
+            "to run as root.  Run it as your normal user -- it will invoke "
+            "sudo only for the specific operations that need it."
+        )
+
+    all_steps = steps is None
+    active: set[str] = set(steps or ["qemu", "network", "podman"])
+
+    log.info("Host: macOS %s (%s)", platform.mac_ver()[0], platform.machine())
+
+    ltvm_script = REPO_ROOT / "ltvm"
+    link = Path("/usr/local/bin/ltvm")
+    _check_stale_ltvm_launcher(link)
+    need_launcher = ltvm_script.exists() and _ltvm_launcher_needs_write(
+        link, ltvm_script
+    )
+    if "qemu" in active or need_launcher:
+        _sudo_prime(
+            "Installing ltvm on macOS needs sudo for /opt/qemu and "
+            f"{link}"
+        )
+
+    if "qemu" in active:
+        install_qemu_macos(force=force)
+
+    if "network" in active:
+        install_socket_vmnet_macos(force=force)
+        install_socket_vmnet_launchd_macos(force=force)
+
+    if "podman" in active:
+        install_podman_macos(force=force)
+
+    if ltvm_script.exists():
+        if need_launcher:
+            _install_ltvm_launcher(link, ltvm_script)
+        else:
+            log.info("ltvm launcher already current at %s", link)
+
+    if all_steps:
+        log.info("")
+        log.info("Install complete.")
+        log.info("")
+        log.info("Note: network bridge (fcbr0) and dnsmasq are not configured")
+        log.info("on macOS -- VMs use vmnet-shared or user networking instead.")
+        log.info("")
+        log.info("Next:")
+        log.info("  ltvm target fetch rocky9")
 
 
 def run_setup(
@@ -1095,6 +1804,10 @@ def run_setup(
     steps: list of step names, or None for all.
            Valid: "qemu", "network", "install", "ssh".
     """
+    if is_macos():
+        _run_setup_macos(steps=steps, force=force)
+        return
+
     if os.geteuid() != 0:
         raise RuntimeError("Must run as root")
 
@@ -1122,13 +1835,12 @@ def run_setup(
     if "ssh" in active:
         setup_ssh(subnet=subnet)
 
-    # Always symlink ltvm to PATH
+    # Always install the ltvm launcher in PATH
     ltvm_script = REPO_ROOT / "ltvm"
     if ltvm_script.exists():
         link = Path("/usr/local/bin/ltvm")
-        link.unlink(missing_ok=True)
-        link.symlink_to(ltvm_script)
-        log.info("ltvm installed to %s", link)
+        _check_stale_ltvm_launcher(link)
+        _install_ltvm_launcher(link, ltvm_script)
 
         # Some distros (Rocky 9, RHEL) ship sudoers with secure_path that
         # excludes /usr/local/bin, so `sudo ltvm` would fail with "command

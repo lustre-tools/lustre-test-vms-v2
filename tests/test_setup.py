@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import platform
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -11,8 +12,12 @@ import pytest
 from ltvm_pkg.host_setup import (
     SSH_BLOCK_MARKER,
     HostInfo,
+    _check_stale_ltvm_launcher,
+    _install_ltvm_launcher,
+    _ltvm_launcher_needs_write,
     _network_already_configured,
     _qemu_installed_version,
+    _render_ltvm_launcher,
     _translate_pkgs,
     check_kvm,
     check_prerequisites,
@@ -22,6 +27,9 @@ from ltvm_pkg.host_setup import (
 )
 
 
+@pytest.mark.skipif(
+    platform.system() == "Darwin", reason="HostInfo is Linux-only"
+)
 class TestHostInfo:
     def test_detects_current_host(self) -> None:
         """Should not raise on this machine."""
@@ -136,6 +144,9 @@ class TestSetupSsh:
 # ------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    platform.system() == "Darwin", reason="HostInfo is Linux-only"
+)
 class TestHostInfoNoPkgMgr:
     def test_raises_when_no_package_manager(self) -> None:
         """RuntimeError raised when neither dnf nor apt-get found."""
@@ -466,6 +477,12 @@ class TestVerify:
                 "shutil.which",
                 side_effect=lambda cmd: f"/usr/bin/{cmd}",
             ),
+            patch(
+                "ltvm_pkg.host_setup.socket_vmnet_path",
+                return_value=Path(
+                    "/opt/homebrew/opt/socket_vmnet/bin/socket_vmnet"
+                ),
+            ),
         ):
             result = verify()
 
@@ -516,6 +533,10 @@ class TestVerify:
         assert result["qemu"]["installed"] is False
         assert result["all_ok"] is False
 
+    @pytest.mark.skipif(
+        platform.system() == "Darwin",
+        reason="verify() KVM check is Linux-only",
+    )
     def test_kvm_missing(self) -> None:
         """all_ok=False when /dev/kvm is absent."""
         ssh_mock = MagicMock()
@@ -671,3 +692,480 @@ class TestPrintVerify:
         captured = capsys.readouterr()
         assert "WARNING" in captured.out
         assert "kvm" in captured.out.lower()
+
+
+# ------------------------------------------------------------------
+# TestInstallPodmanMacos
+# ------------------------------------------------------------------
+
+
+class TestInstallPodmanMacos:
+    """Covers the four install_podman_macos branches on macOS.
+
+    Uses mocks for brew + podman so no real binaries are invoked.
+    """
+
+    def _completed(
+        self, returncode: int = 0, stdout: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr=""
+        )
+
+    def test_podman_not_installed_and_no_machine(self) -> None:
+        """brew install podman; then init + start (no existing machine)."""
+        from ltvm_pkg.host_setup import install_podman_macos
+
+        which_calls: list[str] = []
+
+        def which(cmd: str) -> str | None:
+            which_calls.append(cmd)
+            if cmd == "podman":
+                return None if len(which_calls) == 1 else "/opt/homebrew/bin/podman"
+            if cmd == "brew":
+                return "/opt/homebrew/bin/brew"
+            return None
+
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            run_calls.append(list(cmd))
+            if "machine" in cmd and "list" in cmd:
+                return self._completed(0, "[]")
+            return self._completed(0, "")
+
+        with (
+            patch("ltvm_pkg.host_setup.shutil.which", side_effect=which),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+        ):
+            started = install_podman_macos()
+
+        assert started is True
+        assert any("brew" in c[0] and "install" in c for c in run_calls)
+        assert any("machine" in c and "init" in c for c in run_calls)
+        assert any("machine" in c and "start" in c for c in run_calls)
+
+    def test_podman_installed_no_machine(self) -> None:
+        """podman present, no machine defined: init + start."""
+        from ltvm_pkg.host_setup import install_podman_macos
+
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            run_calls.append(list(cmd))
+            if "machine" in cmd and "list" in cmd:
+                return self._completed(0, "[]")
+            return self._completed(0, "")
+
+        with (
+            patch(
+                "ltvm_pkg.host_setup.shutil.which",
+                return_value="/opt/homebrew/bin/podman",
+            ),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+        ):
+            started = install_podman_macos()
+
+        assert started is True
+        assert not any("brew" in c[0] and "install" in c for c in run_calls)
+        assert any("machine" in c and "init" in c for c in run_calls)
+        assert any("machine" in c and "start" in c for c in run_calls)
+
+    def test_podman_installed_machine_stopped(self) -> None:
+        """Machine exists but not running: start it (no init)."""
+        from ltvm_pkg.host_setup import install_podman_macos
+
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            run_calls.append(list(cmd))
+            if "machine" in cmd and "list" in cmd:
+                return self._completed(
+                    0,
+                    '[{"Name": "podman-machine-default", "Running": false}]',
+                )
+            return self._completed(0, "")
+
+        with (
+            patch(
+                "ltvm_pkg.host_setup.shutil.which",
+                return_value="/opt/homebrew/bin/podman",
+            ),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+        ):
+            started = install_podman_macos()
+
+        assert started is True
+        assert not any("machine" in c and "init" in c for c in run_calls)
+        assert any("machine" in c and "start" in c for c in run_calls)
+
+    def test_podman_installed_machine_running(self) -> None:
+        """Already running: no init, no start, returns False."""
+        from ltvm_pkg.host_setup import install_podman_macos
+
+        run_calls: list[list[str]] = []
+
+        def fake_run(cmd, **kw):
+            run_calls.append(list(cmd))
+            if "machine" in cmd and "list" in cmd:
+                return self._completed(
+                    0,
+                    '[{"Name": "podman-machine-default", "Running": true}]',
+                )
+            return self._completed(0, "")
+
+        with (
+            patch(
+                "ltvm_pkg.host_setup.shutil.which",
+                return_value="/opt/homebrew/bin/podman",
+            ),
+            patch(
+                "ltvm_pkg.host_setup._run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.subprocess.run",
+                side_effect=lambda c, **kw: fake_run(c, **kw),
+            ),
+        ):
+            started = install_podman_macos()
+
+        assert started is False
+        assert not any("machine" in c and "init" in c for c in run_calls)
+        assert not any("machine" in c and "start" in c for c in run_calls)
+
+    def test_no_brew_raises(self) -> None:
+        """If podman missing and Homebrew also missing: RuntimeError."""
+        from ltvm_pkg.host_setup import install_podman_macos
+
+        with (
+            patch("ltvm_pkg.host_setup.shutil.which", return_value=None),
+        ):
+            with pytest.raises(RuntimeError, match="Homebrew not found"):
+                install_podman_macos()
+
+
+# ------------------------------------------------------------------
+# TestShouldStopPodmanMachineMacos
+# ------------------------------------------------------------------
+
+
+class TestShouldStopPodmanMachineMacos:
+    """The auto-stop heuristic: stop when no non-ltvm containers running."""
+
+    def _completed(
+        self, returncode: int = 0, stdout: str = ""
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.CompletedProcess(
+            args=[], returncode=returncode, stdout=stdout, stderr=""
+        )
+
+    def test_no_containers_running_returns_true(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(0, "[]"),
+        ):
+            assert should_stop_podman_machine_macos() is True
+
+    def test_all_ltvm_build_images_returns_true(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        stdout = (
+            '[{"Image": "localhost/ltvm-build-rocky9:latest"},'
+            ' {"Image": "ltvm-build-rocky10"}]'
+        )
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(0, stdout),
+        ):
+            assert should_stop_podman_machine_macos() is True
+
+    def test_mix_with_non_ltvm_returns_false(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        stdout = (
+            '[{"Image": "ltvm-build-rocky9"},'
+            ' {"Image": "docker.io/library/postgres:15"}]'
+        )
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(0, stdout),
+        ):
+            assert should_stop_podman_machine_macos() is False
+
+    def test_non_ltvm_only_returns_false(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        stdout = '[{"Image": "docker.io/library/nginx:latest"}]'
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(0, stdout),
+        ):
+            assert should_stop_podman_machine_macos() is False
+
+    def test_podman_ps_fails_returns_false(self) -> None:
+        """Don't stop if we can't tell what's running."""
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(1, ""),
+        ):
+            assert should_stop_podman_machine_macos() is False
+
+    def test_podman_ps_raises_returns_false(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            side_effect=subprocess.TimeoutExpired(cmd="podman", timeout=10),
+        ):
+            assert should_stop_podman_machine_macos() is False
+
+    def test_malformed_json_returns_false(self) -> None:
+        from ltvm_pkg.host_setup import should_stop_podman_machine_macos
+
+        with patch(
+            "ltvm_pkg.host_setup.subprocess.run",
+            return_value=self._completed(0, "not json"),
+        ):
+            assert should_stop_podman_machine_macos() is False
+
+
+# ------------------------------------------------------------------
+# TestLtvmLauncher
+# ------------------------------------------------------------------
+
+
+class TestRenderLtvmLauncher:
+    def test_contains_shebang(self) -> None:
+        text = _render_ltvm_launcher("/opt/homebrew/bin/python3.13", "/r/ltvm")
+        assert text.startswith("#!/bin/sh\n")
+
+    def test_exec_line_pins_python_and_script(self) -> None:
+        text = _render_ltvm_launcher(
+            "/opt/homebrew/bin/python3.13",
+            "/Users/me/repo/ltvm",
+        )
+        assert (
+            "exec '/opt/homebrew/bin/python3.13' '/Users/me/repo/ltvm' \"$@\"\n"
+            in text
+        )
+
+    def test_different_python_produces_different_text(self) -> None:
+        a = _render_ltvm_launcher("/usr/bin/python3.11", "/r/ltvm")
+        b = _render_ltvm_launcher("/opt/homebrew/bin/python3.13", "/r/ltvm")
+        assert a != b
+
+
+class TestInstallLtvmLauncher:
+    def _make_repo_ltvm(self, tmp_path: Path) -> Path:
+        repo = tmp_path / "repo"
+        repo.mkdir()
+        script = repo / "ltvm"
+        script.write_text("#!/usr/bin/env python3\n")
+        script.chmod(0o755)
+        return script
+
+    def test_writes_wrapper_when_missing(self, tmp_path: Path) -> None:
+        script = self._make_repo_ltvm(tmp_path)
+        link = tmp_path / "bin" / "ltvm"
+        link.parent.mkdir()
+
+        def fake_sudo(cmd: list, **kw: object) -> subprocess.CompletedProcess:
+            # Simulate `install -m 0755 <tmp> <dest>` by copying.
+            src, dst = cmd[-2], cmd[-1]
+            Path(dst).write_text(Path(src).read_text())
+            Path(dst).chmod(0o755)
+            return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+        with (
+            patch(
+                "ltvm_pkg.host_setup.sys.executable",
+                "/opt/homebrew/bin/python3.13",
+            ),
+            patch("ltvm_pkg.host_setup._sudo_run", side_effect=fake_sudo) as sr,
+        ):
+            wrote = _install_ltvm_launcher(link, script)
+
+        assert wrote is True
+        sr.assert_called_once()
+        text = link.read_text()
+        assert text.startswith("#!/bin/sh\n")
+        assert (
+            f"exec '/opt/homebrew/bin/python3.13' '{script.resolve()}' \"$@\"\n"
+            in text
+        )
+
+    def test_idempotent_no_rewrite(self, tmp_path: Path) -> None:
+        """Existing identical wrapper -> no sudo call, returns False."""
+        script = self._make_repo_ltvm(tmp_path)
+        link = tmp_path / "bin" / "ltvm"
+        link.parent.mkdir()
+
+        python = "/opt/homebrew/bin/python3.13"
+        link.write_text(_render_ltvm_launcher(python, str(script.resolve())))
+        link.chmod(0o755)
+
+        with (
+            patch("ltvm_pkg.host_setup.sys.executable", python),
+            patch("ltvm_pkg.host_setup._sudo_run") as sr,
+        ):
+            wrote = _install_ltvm_launcher(link, script)
+
+        assert wrote is False
+        sr.assert_not_called()
+
+    def test_changed_python_triggers_rewrite(self, tmp_path: Path) -> None:
+        """A different sys.executable than last install -> rewrite."""
+        script = self._make_repo_ltvm(tmp_path)
+        link = tmp_path / "bin" / "ltvm"
+        link.parent.mkdir()
+        link.write_text(
+            _render_ltvm_launcher("/usr/bin/python3.11", str(script.resolve()))
+        )
+        link.chmod(0o755)
+
+        def fake_sudo(cmd: list, **kw: object) -> subprocess.CompletedProcess:
+            src, dst = cmd[-2], cmd[-1]
+            Path(dst).write_text(Path(src).read_text())
+            return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+        with (
+            patch(
+                "ltvm_pkg.host_setup.sys.executable",
+                "/opt/homebrew/bin/python3.13",
+            ),
+            patch("ltvm_pkg.host_setup._sudo_run", side_effect=fake_sudo) as sr,
+        ):
+            wrote = _install_ltvm_launcher(link, script)
+
+        assert wrote is True
+        sr.assert_called_once()
+        assert "/opt/homebrew/bin/python3.13" in link.read_text()
+        assert "/usr/bin/python3.11" not in link.read_text()
+
+    def test_replaces_symlink(self, tmp_path: Path) -> None:
+        """A pre-existing symlink (old install layout) is replaced by a file."""
+        script = self._make_repo_ltvm(tmp_path)
+        link = tmp_path / "bin" / "ltvm"
+        link.parent.mkdir()
+        link.symlink_to(script)
+
+        def fake_sudo(cmd: list, **kw: object) -> subprocess.CompletedProcess:
+            src, dst = cmd[-2], cmd[-1]
+            dst_p = Path(dst)
+            if dst_p.is_symlink() or dst_p.exists():
+                dst_p.unlink()
+            dst_p.write_text(Path(src).read_text())
+            return subprocess.CompletedProcess(args=cmd, returncode=0)
+
+        with (
+            patch(
+                "ltvm_pkg.host_setup.sys.executable",
+                "/opt/homebrew/bin/python3.13",
+            ),
+            patch("ltvm_pkg.host_setup._sudo_run", side_effect=fake_sudo),
+        ):
+            wrote = _install_ltvm_launcher(link, script)
+
+        assert wrote is True
+        assert not link.is_symlink()
+        assert link.read_text().startswith("#!/bin/sh\n")
+
+
+class TestLtvmLauncherNeedsWrite:
+    def test_missing_link_needs_write(self, tmp_path: Path) -> None:
+        script = tmp_path / "ltvm"
+        script.write_text("x")
+        link = tmp_path / "bin" / "ltvm"
+        with patch(
+            "ltvm_pkg.host_setup.sys.executable", "/opt/homebrew/bin/python3.13"
+        ):
+            assert _ltvm_launcher_needs_write(link, script) is True
+
+    def test_symlink_needs_write(self, tmp_path: Path) -> None:
+        script = tmp_path / "ltvm"
+        script.write_text("x")
+        link = tmp_path / "ltvm-link"
+        link.symlink_to(script)
+        with patch(
+            "ltvm_pkg.host_setup.sys.executable", "/opt/homebrew/bin/python3.13"
+        ):
+            assert _ltvm_launcher_needs_write(link, script) is True
+
+    def test_matching_wrapper_no_write(self, tmp_path: Path) -> None:
+        script = tmp_path / "ltvm"
+        script.write_text("x")
+        link = tmp_path / "bin"
+        link.parent.mkdir(parents=True, exist_ok=True)
+        python = "/opt/homebrew/bin/python3.13"
+        link.write_text(_render_ltvm_launcher(python, str(script.resolve())))
+        with patch("ltvm_pkg.host_setup.sys.executable", python):
+            assert _ltvm_launcher_needs_write(link, script) is False
+
+
+class TestCheckStaleLtvmLauncher:
+    def test_missing_link_silent(self, tmp_path: Path) -> None:
+        link = tmp_path / "ltvm"
+        with patch("ltvm_pkg.host_setup.log") as mock_log:
+            _check_stale_ltvm_launcher(link)
+        mock_log.warning.assert_not_called()
+
+    def test_symlink_silent(self, tmp_path: Path) -> None:
+        """Old-style symlink: not our wrapper, don't complain."""
+        target = tmp_path / "ltvm"
+        target.write_text("x")
+        link = tmp_path / "ltvm-link"
+        link.symlink_to(target)
+        with patch("ltvm_pkg.host_setup.log") as mock_log:
+            _check_stale_ltvm_launcher(link)
+        mock_log.warning.assert_not_called()
+
+    def test_live_python_silent(self, tmp_path: Path) -> None:
+        """Wrapper pointing at an existing Python -> no warning."""
+        script = tmp_path / "ltvm"
+        script.write_text("x")
+        python = tmp_path / "python"
+        python.write_text("")
+        link = tmp_path / "bin-ltvm"
+        link.write_text(_render_ltvm_launcher(str(python), str(script)))
+        with patch("ltvm_pkg.host_setup.log") as mock_log:
+            _check_stale_ltvm_launcher(link)
+        mock_log.warning.assert_not_called()
+
+    def test_dead_python_warns(self, tmp_path: Path) -> None:
+        script = tmp_path / "ltvm"
+        script.write_text("x")
+        dead = tmp_path / "does-not-exist"
+        link = tmp_path / "bin-ltvm"
+        link.write_text(_render_ltvm_launcher(str(dead), str(script)))
+        with patch("ltvm_pkg.host_setup.log") as mock_log:
+            _check_stale_ltvm_launcher(link)
+        mock_log.warning.assert_called_once()
+        args = mock_log.warning.call_args[0]
+        assert "stale" in args[0]
+        assert str(dead) in args

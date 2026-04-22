@@ -9,11 +9,17 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ltvm_pkg.kernel_build import (
+    SrpmNotFoundError,
     _build_config_fragment,
     _ensure_container_image,
+    _kernel_outputs_complete,
+    _list_lustre_kernel_targets,
+    _lustre_target_family,
+    _run_kernel_podman,
     _shell_var,
     _srpm_fallback_urls,
     apply_srpm_override,
+    diagnose_srpm_not_found,
     download_srpm,
     kernel_status,
     parse_lustre_target,
@@ -313,6 +319,135 @@ class TestSrpmFallbackUrls:
 
 
 # ------------------------------------------------------------------
+# SRPM-not-found diagnostics
+# ------------------------------------------------------------------
+
+
+class TestLustreTargetFamily:
+    def test_rhel9(self) -> None:
+        assert _lustre_target_family("5.14-rhel9.7") == "rhel9"
+
+    def test_rhel8_double_digit_minor(self) -> None:
+        assert _lustre_target_family("4.18-rhel8.10") == "rhel8"
+
+    def test_non_matching(self) -> None:
+        assert _lustre_target_family("random") is None
+
+
+class TestListLustreKernelTargets:
+    def test_picks_matching_family_only(self, tmp_path: Path) -> None:
+        td = tmp_path / "lustre" / "kernel_patches" / "targets"
+        td.mkdir(parents=True)
+        for n in (
+            "5.14-rhel9.0",
+            "5.14-rhel9.5",
+            "5.14-rhel9.7",
+            "4.18-rhel8.10",
+            "3.10-rhel7.9",
+        ):
+            (td / f"{n}.target.in").write_text("")
+        out = _list_lustre_kernel_targets(tmp_path, "rhel9")
+        assert out == ["5.14-rhel9.0", "5.14-rhel9.5", "5.14-rhel9.7"]
+
+    def test_natural_sort_of_minor(self, tmp_path: Path) -> None:
+        td = tmp_path / "lustre" / "kernel_patches" / "targets"
+        td.mkdir(parents=True)
+        for n in ("4.18-rhel8.2", "4.18-rhel8.10", "4.18-rhel8.1"):
+            (td / f"{n}.target.in").write_text("")
+        out = _list_lustre_kernel_targets(tmp_path, "rhel8")
+        assert out == ["4.18-rhel8.1", "4.18-rhel8.2", "4.18-rhel8.10"]
+
+    def test_missing_dir_returns_empty(self, tmp_path: Path) -> None:
+        assert _list_lustre_kernel_targets(tmp_path, "rhel9") == []
+
+
+class TestDiagnoseSrpmNotFound:
+    _PUB = "https://dl.rockylinux.org/pub/rocky/9/BaseOS/source/tree/Packages/k"
+    _SRPM = "kernel-5.14.0-611.42.1.el9_7.src.rpm"
+
+    def _lustre_tree_with_rhel9(self, tmp_path: Path) -> Path:
+        td = tmp_path / "lustre" / "kernel_patches" / "targets"
+        td.mkdir(parents=True)
+        for n in (
+            "5.14-rhel9.0",
+            "5.14-rhel9.1",
+            "5.14-rhel9.2",
+            "5.14-rhel9.3",
+            "5.14-rhel9.4",
+            "5.14-rhel9.5",
+            "5.14-rhel9.6",
+            "5.14-rhel9.7",
+        ):
+            (td / f"{n}.target.in").write_text("")
+        return tmp_path
+
+    def test_all_404_plus_index_probe(self, tmp_path: Path) -> None:
+        lt = self._lustre_tree_with_rhel9(tmp_path)
+
+        def fake_404(url: str, timeout: float = 5.0) -> bool:
+            return True
+
+        def fake_probe(parent: str, srpm: str, timeout: float = 5.0) -> str:
+            return "kernel-5.14.0-611.13.1.el9_7.src.rpm"
+
+        with (
+            patch(
+                "ltvm_pkg.kernel_build._url_returns_404", side_effect=fake_404
+            ),
+            patch(
+                "ltvm_pkg.kernel_build._probe_latest_rocky_srpm",
+                side_effect=fake_probe,
+            ),
+        ):
+            err = diagnose_srpm_not_found(
+                self._SRPM, self._PUB, "rocky9", "5.14-rhel9.7", lt
+            )
+
+        assert isinstance(err, SrpmNotFoundError)
+        msg = str(err)
+        assert self._SRPM in msg
+        assert "kernel-5.14.0-611.13.1.el9_7.src.rpm" in msg
+        assert "--kernel 5.14-rhel9.6" in msg
+        assert "5.14-rhel9.0" in msg
+        assert "5.14-rhel9.7" in msg
+        assert "Available Lustre rhel9 targets:" in msg
+
+    def test_offline_skips_probe_but_still_lists_targets(
+        self, tmp_path: Path
+    ) -> None:
+        lt = self._lustre_tree_with_rhel9(tmp_path)
+
+        with (
+            patch(
+                "ltvm_pkg.kernel_build._url_returns_404",
+                return_value=None,
+            ),
+            patch(
+                "ltvm_pkg.kernel_build._probe_latest_rocky_srpm"
+            ) as mock_probe,
+        ):
+            err = diagnose_srpm_not_found(
+                self._SRPM, self._PUB, "rocky9", "5.14-rhel9.7", lt
+            )
+
+        mock_probe.assert_not_called()
+        assert isinstance(err, SrpmNotFoundError)
+        msg = str(err)
+        assert "could not be probed" in msg or "offline" in msg
+        assert "5.14-rhel9.5" in msg
+
+    def test_non_404_returns_none(self, tmp_path: Path) -> None:
+        lt = self._lustre_tree_with_rhel9(tmp_path)
+        with patch(
+            "ltvm_pkg.kernel_build._url_returns_404", return_value=False
+        ):
+            err = diagnose_srpm_not_found(
+                self._SRPM, self._PUB, "rocky9", "5.14-rhel9.7", lt
+            )
+        assert err is None
+
+
+# ------------------------------------------------------------------
 # TestEnsureContainerImage
 # ------------------------------------------------------------------
 
@@ -359,6 +494,62 @@ class TestEnsureContainerImage:
             _ensure_container_image(cfg)
         cmd = mock_run.call_args[0][0]
         assert dockerfile in cmd
+
+    def _platform_after(self, cmd: list[str]) -> str:
+        assert "--platform" in cmd
+        return cmd[cmd.index("--platform") + 1]
+
+    def test_native_build_uses_host_platform(self, tmp_path: Path) -> None:
+        """host == target: --platform resolves to the host arch (no
+        emulation)."""
+        cfg = self._make_target_config(tmp_path)
+        cfg.arch = "x86_64"
+        with patch(
+            "ltvm_pkg.kernel_build.subprocess.run"
+        ) as mock_run, patch(
+            "ltvm_pkg.cross_compile.platform.machine",
+            return_value="x86_64",
+        ):
+            _ensure_container_image(cfg)
+        assert self._platform_after(mock_run.call_args[0][0]) == "linux/amd64"
+
+    def test_cross_build_picks_host_not_target_platform(
+        self, tmp_path: Path
+    ) -> None:
+        """The core bead-s3f invariant: on a cross host, --platform
+        MUST be the host's platform so the container runs natively.
+        Forcing target arch here is what caused emulation to kick in
+        and silently bypassed the cross-compile code path."""
+        cfg = self._make_target_config(tmp_path)
+        cfg.arch = "x86_64"  # target
+        with patch(
+            "ltvm_pkg.kernel_build.subprocess.run"
+        ) as mock_run, patch(
+            "ltvm_pkg.cross_compile.platform.machine",
+            return_value="aarch64",  # host
+        ):
+            _ensure_container_image(cfg)
+        plat = self._platform_after(mock_run.call_args[0][0])
+        assert plat == "linux/arm64", (
+            "cross build on aarch64 host targeting x86_64 must run the "
+            "container as linux/arm64 (host-native), NOT linux/amd64 "
+            "(target/emulated) -- otherwise cross-compile-env.sh sees "
+            "HOST_ARCH == TARGET_ARCH and never sets CROSSING=1"
+        )
+
+    def test_reverse_cross_build_picks_host(self, tmp_path: Path) -> None:
+        """Symmetric case: x86_64 host targeting aarch64."""
+        cfg = self._make_target_config(tmp_path)
+        cfg.arch = "aarch64"  # target
+        with patch(
+            "ltvm_pkg.kernel_build.subprocess.run"
+        ) as mock_run, patch(
+            "ltvm_pkg.cross_compile.platform.machine",
+            return_value="x86_64",  # host
+        ):
+            _ensure_container_image(cfg)
+        plat = self._platform_after(mock_run.call_args[0][0])
+        assert plat == "linux/amd64"
 
 
 # ------------------------------------------------------------------
@@ -520,3 +711,100 @@ class TestApplySrpmOverride:
     def test_invalid_override_raises(self) -> None:
         with pytest.raises(ValueError, match="must be '<lnxmaj>-<lnxrel>'"):
             apply_srpm_override(self._TI, "nohyphen", "6.12-rhel10.0")
+
+
+class TestKernelOutputsComplete:
+    """Artifact presence check used by the cleanup-EOF tolerance path."""
+
+    def _make_complete(self, base: Path) -> None:
+        (base / "vmlinux").write_bytes(b"\x7fELF")
+        (base / "vmlinuz").write_bytes(b"MZ")
+        bt = base / "build-tree"
+        bt.mkdir()
+        (bt / ".config").write_text("CONFIG_FOO=y\n")
+        mod = base / "modules" / "lib" / "modules" / "6.1.0"
+        mod.mkdir(parents=True)
+        (mod / "kernel.ko").write_bytes(b"x")
+
+    def test_complete(self, tmp_path: Path) -> None:
+        self._make_complete(tmp_path)
+        assert _kernel_outputs_complete(tmp_path)
+
+    def test_missing_vmlinux(self, tmp_path: Path) -> None:
+        self._make_complete(tmp_path)
+        (tmp_path / "vmlinux").unlink()
+        assert not _kernel_outputs_complete(tmp_path)
+
+    def test_missing_build_tree_config(self, tmp_path: Path) -> None:
+        self._make_complete(tmp_path)
+        (tmp_path / "build-tree" / ".config").unlink()
+        assert not _kernel_outputs_complete(tmp_path)
+
+    def test_no_modules(self, tmp_path: Path) -> None:
+        self._make_complete(tmp_path)
+        import shutil as _sh
+        _sh.rmtree(tmp_path / "modules")
+        (tmp_path / "modules").mkdir()
+        assert not _kernel_outputs_complete(tmp_path)
+
+
+class TestRunKernelPodman:
+    """Wrapper that tolerates cleanup EOF when outputs are on disk."""
+
+    def _populate_outputs(self, base: Path) -> None:
+        (base / "vmlinux").write_bytes(b"\x7fELF")
+        (base / "vmlinuz").write_bytes(b"MZ")
+        bt = base / "build-tree"
+        bt.mkdir()
+        (bt / ".config").write_text("CONFIG_FOO=y\n")
+        mod = base / "modules" / "lib" / "modules" / "6.1.0"
+        mod.mkdir(parents=True)
+        (mod / "kernel.ko").write_bytes(b"x")
+
+    def test_cleanup_eof_with_outputs_is_success(
+        self, tmp_path: Path
+    ) -> None:
+        self._populate_outputs(tmp_path)
+        fake = MagicMock()
+        fake.returncode = 126
+        fake.cleanup_eof = True
+        with patch(
+            "ltvm_pkg.kernel_build.run_podman_with_cleanup", return_value=fake
+        ):
+            _run_kernel_podman(["podman", "run", "foo"], tmp_path)
+
+    def test_cleanup_eof_without_outputs_raises(
+        self, tmp_path: Path
+    ) -> None:
+        import subprocess as _subprocess
+
+        fake = MagicMock()
+        fake.returncode = 126
+        fake.cleanup_eof = True
+        with patch(
+            "ltvm_pkg.kernel_build.run_podman_with_cleanup", return_value=fake
+        ):
+            with pytest.raises(_subprocess.CalledProcessError):
+                _run_kernel_podman(["podman", "run", "foo"], tmp_path)
+
+    def test_nonzero_without_eof_raises(self, tmp_path: Path) -> None:
+        import subprocess as _subprocess
+
+        self._populate_outputs(tmp_path)
+        fake = MagicMock()
+        fake.returncode = 2
+        fake.cleanup_eof = False
+        with patch(
+            "ltvm_pkg.kernel_build.run_podman_with_cleanup", return_value=fake
+        ):
+            with pytest.raises(_subprocess.CalledProcessError):
+                _run_kernel_podman(["podman", "run", "foo"], tmp_path)
+
+    def test_success_returns(self, tmp_path: Path) -> None:
+        fake = MagicMock()
+        fake.returncode = 0
+        fake.cleanup_eof = False
+        with patch(
+            "ltvm_pkg.kernel_build.run_podman_with_cleanup", return_value=fake
+        ):
+            _run_kernel_podman(["podman", "run", "foo"], tmp_path)

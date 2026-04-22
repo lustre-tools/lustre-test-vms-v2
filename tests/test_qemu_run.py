@@ -3,12 +3,25 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from ltvm_pkg import qemu_run
 from ltvm_pkg.vm_state import VMInfo
+
+
+@pytest.fixture(autouse=True)
+def _force_linux_host() -> Any:
+    """Existing tests assert Linux /proc behaviour; pin is_macos() off.
+
+    The qemu_run module branches on platform so host memory / is_running
+    checks can run on macOS.  These tests drive the Linux code paths;
+    without this pin they'd fail when the test runner is Darwin.
+    """
+    with patch("ltvm_pkg.qemu_run.is_macos", return_value=False):
+        yield
 
 
 @pytest.fixture
@@ -446,7 +459,6 @@ class TestLaunchQemuCommand:
             f"expected rollback to tear down TAP, saw: {h.run_calls}"
         )
 
-
     def test_pidfile_appears_late_no_rollback(self, tmp_vmdir: Path) -> None:
         """-daemonize may return before child writes pidfile; we poll briefly."""
         vm = _make_vm(tmp_vmdir)
@@ -476,6 +488,92 @@ class TestLaunchQemuCommand:
         ):
             qemu_run.launch_qemu(vm)
         assert sleep_calls["n"] >= 1
+
+
+class TestLaunchQemuMacos:
+    """On macOS, launch_qemu replaces -netdev tap with -netdev stream pointed
+    at the socket_vmnet Unix socket.  No host TAPs are created or torn down --
+    socket_vmnet multiplexes every guest onto a single shared daemon.
+    """
+
+    _SOCK = "/opt/homebrew/var/run/socket_vmnet"
+
+    def _launch_macos(self, vm: VMInfo, h: _LaunchHarness) -> None:
+        vm.pid_path.write_text("12345\n")
+        with (
+            patch("ltvm_pkg.qemu_run.is_macos", return_value=True),
+            patch(
+                "ltvm_pkg.qemu_run.socket_vmnet_socket_path",
+                return_value=Path(self._SOCK),
+            ),
+            patch(
+                "ltvm_pkg.host_setup.ensure_socket_vmnet_running",
+                return_value=None,
+            ),
+            patch("ltvm_pkg.qemu_run.run", side_effect=h.run),
+            patch(
+                "ltvm_pkg.qemu_run.subprocess.run",
+                side_effect=h.subprocess_run,
+            ),
+            patch("ltvm_pkg.qemu_run.is_running", return_value=False),
+            patch("ltvm_pkg.qemu_run._check_memory_for_launch"),
+            patch("ltvm_pkg.qemu_run.time.time", return_value=1700000000),
+            patch.object(VMInfo, "update_pid"),
+            patch.object(VMInfo, "update_last_boot"),
+        ):
+            qemu_run.launch_qemu(vm)
+
+    def test_mgmt_nic_uses_stream_unix(self, tmp_vmdir: Path) -> None:
+        """-netdev stream,addr.type=unix,addr.path=<socket>,server=off."""
+        vm = _make_vm(tmp_vmdir)
+        h = _LaunchHarness()
+        self._launch_macos(vm, h)
+        joined = " ".join(h.qemu_args or [])
+        assert "tap,id=net0" not in joined
+        assert (
+            f"stream,id=net0,addr.type=unix,addr.path={self._SOCK},server=off"
+            in joined
+        )
+        assert f"mac={vm.mac}" in joined
+
+    def test_no_ip_commands_run(self, tmp_vmdir: Path) -> None:
+        """macOS has no TAP/bridge; launch must not shell out to `ip`."""
+        vm = _make_vm(tmp_vmdir, name="co1-two")
+        vm.nics = ["tcp", "tcp"]
+        h = _LaunchHarness()
+        self._launch_macos(vm, h)
+        ip_calls = [c for c in h.run_calls if c and c[0] == "ip"]
+        assert ip_calls == [], f"unexpected ip commands on macOS: {ip_calls}"
+
+    def test_extra_nics_share_one_socket(self, tmp_vmdir: Path) -> None:
+        """Each extra NIC gets its own -netdev stream entry, all pointed at
+        the same socket_vmnet Unix socket (shared L2 fabric).
+        """
+        vm = _make_vm(tmp_vmdir, name="co1-two")
+        vm.nics = ["tcp", "tcp"]
+        h = _LaunchHarness()
+        self._launch_macos(vm, h)
+        joined = " ".join(h.qemu_args or [])
+        assert joined.count("-netdev") == 3
+        assert joined.count(f"addr.path={self._SOCK}") == 3
+        assert "id=net0" in joined
+        assert "id=net1" in joined
+        assert "id=net2" in joined
+        assert "virtio-net-pci" in joined
+
+    def test_kill_qemu_no_ip_commands(self, tmp_vmdir: Path) -> None:
+        """kill_qemu on macOS must skip `ip link del` / `ip neigh flush`."""
+        vm = _make_vm(tmp_vmdir)
+        vm.pid = 0  # skip the signal path; exercise teardown only
+        h = _LaunchHarness()
+        with (
+            patch("ltvm_pkg.qemu_run.is_macos", return_value=True),
+            patch("ltvm_pkg.qemu_run.run", side_effect=h.run),
+            patch.object(VMInfo, "update_pid"),
+        ):
+            qemu_run.kill_qemu(vm)
+        ip_calls = [c for c in h.run_calls if c and c[0] == "ip"]
+        assert ip_calls == [], f"unexpected ip commands on macOS: {ip_calls}"
 
 
 # ── memory budget check ──────────────────────────────────
@@ -798,9 +896,7 @@ class TestLaunchQemuSocketPerms:
             qemu_run.launch_qemu(vm)
 
         socket_str = str(vm.socket_path)
-        chmod_for_socket = [
-            (p, m) for p, m in chmod_calls if p == socket_str
-        ]
+        chmod_for_socket = [(p, m) for p, m in chmod_calls if p == socket_str]
         assert chmod_for_socket, (
             f"expected os.chmod({socket_str!r}, 0o666); got {chmod_calls}"
         )

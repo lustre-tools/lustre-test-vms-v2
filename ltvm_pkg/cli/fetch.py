@@ -35,6 +35,7 @@ from ltvm_pkg.cli.util import (
     _load_target,
     _load_target_args,
     _output,
+    host_arch,
 )
 
 
@@ -320,24 +321,6 @@ def _list_releases(
     return result
 
 
-def _native_arch() -> str:
-    """Return the host machine's arch in ltvm's canonical naming.
-
-    Maps ``amd64`` -> ``x86_64`` and ``arm64`` -> ``aarch64`` so the
-    result is comparable to the ``arch`` field in ``targets.yaml``.
-    Unknown values fall through so a pass-through-and-let-lookup-fail
-    surfaces a useful error rather than a silent wrong default.
-    """
-    import platform
-
-    m = platform.machine().lower()
-    if m in ("x86_64", "amd64"):
-        return "x86_64"
-    if m in ("aarch64", "arm64"):
-        return "aarch64"
-    return m or "x86_64"
-
-
 def _lookup_release_date(release_tag: str) -> str:
     """Return ``YYYY-MM-DD`` for ``release_tag``, or ``""`` on failure.
 
@@ -438,7 +421,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     # Default arch to the native host arch so `ltvm target fetch rocky9`
     # picks x86_64 on an Intel host and aarch64 on an ARM host without
     # the user having to remember --arch.  Explicit --arch still wins.
-    arch = getattr(args, "arch", None) or _native_arch()
+    arch = getattr(args, "arch", None) or host_arch()
     kernel = getattr(args, "kernel", None)
     variant = getattr(args, "variant", None) or "base"
     image_mode = bool(getattr(args, "image", False))
@@ -712,7 +695,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     if not use_json:
         print()
         print("Next:")
-        arch_flag = f" --arch {arch}" if arch != "x86_64" else ""
+        arch_flag = f" --arch {arch}" if arch != host_arch() else ""
         print(
             f"  sudo ltvm create co1-test --target {target}{arch_flag} "
             f"--vcpus 2 --mdt-disks 1 --ost-disks 2"
@@ -1049,7 +1032,7 @@ def cmd_delete(args: argparse.Namespace) -> int:
     kernel = getattr(args, "kernel", None)
     variant = getattr(args, "variant", None) or "base"
     image_mode = bool(getattr(args, "image", False))
-    arch = getattr(args, "arch", None) or _native_arch()
+    arch = getattr(args, "arch", None) or host_arch()
     cleanup_tag = bool(getattr(args, "cleanup_tag", False))
 
     if not tag:

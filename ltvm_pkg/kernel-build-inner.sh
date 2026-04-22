@@ -31,44 +31,24 @@ JOBS="${JOBS:-$(nproc)}"
 TARGET_ARCH="${TARGET_ARCH:-x86_64}"
 BUILD=/build/kernel-src
 
-# Architecture-dependent paths and cross-compilation
-HOST_ARCH=$(uname -m)
-MAKE_ARCH_FLAGS=()
-
-case "$TARGET_ARCH" in
-	aarch64)
-		SRPM_CONFIG_ARCH="aarch64"
-		KERNEL_IMAGE="arch/arm64/boot/Image.gz"
-		MAKE_TARGETS="vmlinux Image.gz"
-		MAKE_ARCH_FLAGS=(ARCH=arm64)
-		if [[ "$HOST_ARCH" != "aarch64" ]]; then
-			MAKE_ARCH_FLAGS+=(CROSS_COMPILE=aarch64-linux-gnu-)
-			# Cross-compiler may be stricter than native; demote -Werror
-			# variants to warnings.
-			MAKE_ARCH_FLAGS+=("KCFLAGS=-Wno-error -Wno-error=incompatible-pointer-types -Wno-error=missing-prototypes -Wno-error=enum-int-mismatch")
-			echo "    Cross-compiling: ${HOST_ARCH} -> aarch64"
-		fi
-		;;
-	*)
-		SRPM_CONFIG_ARCH="x86_64"
-		KERNEL_IMAGE="arch/x86/boot/bzImage"
-		MAKE_TARGETS="vmlinux bzImage"
-		;;
-esac
+# Source the shared cross-compile env helper.  It reads TARGET_ARCH
+# and exports HOST_ARCH, CROSSING, KBUILD_ARCH, KERNEL_IMAGE,
+# MAKE_TARGETS, CROSS_TRIPLE, CROSS_COMPILE, MAKE_ARCH_FLAGS,
+# CONFIGURE_HOST, DEB_ARCH, IOZONE_TARGET.  The SRPM ships per-arch
+# config files named by target_arch (aarch64, x86_64), which matches
+# TARGET_ARCH verbatim -- no separate SRPM_CONFIG_ARCH mapping needed.
+# shellcheck disable=SC1091
+source /input/staging/cross-compile-env.sh
+SRPM_CONFIG_ARCH="$TARGET_ARCH"
 
 echo "=== kernel-build-inner.sh ==="
 echo "    Jobs: ${JOBS}"
 echo "    Target arch: ${TARGET_ARCH}"
-
-# Install cross-compiler if cross-compiling
-if [[ "$TARGET_ARCH" == "aarch64" && "$(uname -m)" != "aarch64" ]]; then
-	echo "--- Installing aarch64 cross-compiler..."
-	if command -v dnf &>/dev/null; then
-		dnf -y install gcc-aarch64-linux-gnu binutils-aarch64-linux-gnu 2>&1 | tail -3
-	elif command -v apt-get &>/dev/null; then
-		apt-get update -qq && apt-get install -y gcc-aarch64-linux-gnu 2>&1 | tail -3
-	fi
+if [[ "$CROSSING" == "1" ]]; then
+	echo "    Cross-compiling: ${HOST_ARCH} -> ${TARGET_ARCH}"
 fi
+
+cross_ensure_toolchain
 
 echo "    GCC: $(gcc --version | head -1)"
 
@@ -236,6 +216,26 @@ if [[ -n "$LNXREL" ]]; then
 	sed -i "s/^EXTRAVERSION.*/EXTRAVERSION = ${EXTRAVER}/" Makefile
 	echo "    EXTRAVERSION set to: ${EXTRAVER}"
 fi
+
+# The RHEL kernel source ships two top-level files that case-fold to
+# the same name: `Makefile` (the real kernel Makefile, 2000+ lines,
+# what kbuild and Lustre's `include Makefile` probe expect) and
+# `makefile` (a 16-line RH dist wrapper whose `include Makefile`
+# self-references and triggers infinite make recursion if it ever
+# stands in for the real one).
+#
+# They coexist fine on Linux (case-sensitive) -- the build uses
+# `Makefile` and `makefile` is inert.  But when the build tree gets
+# rsynced to /output (bind-mounted from a macOS host with a
+# case-insensitive filesystem) the two paths collapse and the
+# smaller `makefile` silently overwrites the real `Makefile`.  The
+# kernel build has already finished at that point so it succeeds,
+# but Lustre's configure then dies in a Makefile:2 loop with
+# "Too many open files.  Stop." when it `include Makefile`s.
+#
+# Removing the dist wrapper before the rsync avoids the collision.
+# It is only used by RH's `make dist-*` targets which we never run.
+rm -f makefile
 
 # ------------------------------------------------------------------
 # 5. Build

@@ -24,7 +24,11 @@ from typing import Any
 from ltvm_pkg import host_setup
 from ltvm_pkg.deploy import deploy_to_vm, lustre_mount_vm
 from ltvm_pkg.image_build import build_image, image_status
-from ltvm_pkg.kernel_build import build_kernel, kernel_status
+from ltvm_pkg.kernel_build import (
+    SrpmNotFoundError,
+    build_kernel,
+    kernel_status,
+)
 from ltvm_pkg.lustre_build import (
     build_lustre,
     read_staging_meta,

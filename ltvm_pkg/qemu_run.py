@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 from typing import Any, NoReturn
 
+from .host_setup import is_macos, socket_vmnet_socket_path
 from .vm_state import (
     BRIDGE,
     EXIT_ERROR,
@@ -36,7 +37,24 @@ def die(msg: str, code: int = EXIT_ERROR) -> NoReturn:
 
 
 def _read_meminfo_mb(key: str) -> int:
-    """Return /proc/meminfo's <key> value in MiB, or 0 if unreadable."""
+    """Return /proc/meminfo's <key> value in MiB, or 0 if unreadable.
+
+    On macOS only MemTotal is supported, resolved via
+    ``sysctl -n hw.memsize``.  Other keys return 0.
+    """
+    if is_macos():
+        if key != "MemTotal":
+            return 0
+        try:
+            r = subprocess.run(
+                ["sysctl", "-n", "hw.memsize"],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            return int(r.stdout.strip()) // (1024 * 1024)
+        except (OSError, subprocess.CalledProcessError, ValueError):
+            return 0
     try:
         with open("/proc/meminfo") as f:
             for line in f:
@@ -139,6 +157,20 @@ def is_running(vm: VMInfo) -> bool:
     """
     if vm.pid <= 0:
         return False
+    if is_macos():
+        try:
+            r = subprocess.run(
+                ["ps", "-p", str(vm.pid), "-o", "comm="],
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+        except OSError:
+            return False
+        if r.returncode != 0:
+            return False
+        comm = Path(r.stdout.strip()).name
+        return comm.startswith("qemu-system")
     try:
         comm = Path(f"/proc/{vm.pid}/comm").read_text().strip()
     except OSError:
@@ -154,6 +186,14 @@ def launch_qemu(vm: VMInfo) -> None:
 
     if not vm.overlay_path.exists():
         die(f"overlay missing for '{vm.name}'")
+
+    if is_macos():
+        from .host_setup import ensure_socket_vmnet_running
+
+        try:
+            ensure_socket_vmnet_running()
+        except RuntimeError as e:
+            die(str(e))
 
     _check_memory_for_launch(vm)
 
@@ -199,17 +239,23 @@ def launch_qemu(vm: VMInfo) -> None:
     # Recreate TAP and flush any stale ARP entry for this IP.  Also
     # tear down any extra-NIC TAPs from a previous launch so ``ltvm
     # start`` on a VM created with ``--nic tcp`` doesn't leak TAPs
-    # across restarts.
+    # across restarts.  macOS has no per-VM host device: socket_vmnet
+    # multiplexes every guest onto one Unix socket managed by launchd.
     all_taps = [vm.tap] + [t for (_i, _n, t, _m) in extra_nics]
-    for _tap in all_taps:
-        run(["ip", "link", "del", _tap], capture_output=True)
-    run(["ip", "neigh", "flush", vm.ip, "dev", BRIDGE], capture_output=True)
-    run(
-        ["ip", "tuntap", "add", "dev", vm.tap, "mode", "tap"],
-        check=True,
-    )
-    run(["ip", "link", "set", vm.tap, "master", BRIDGE], check=True)
-    run(["ip", "link", "set", vm.tap, "up"], check=True)
+    macos = is_macos()
+    vmnet_socket: str | None = None
+    if macos:
+        vmnet_socket = str(socket_vmnet_socket_path())
+    else:
+        for _tap in all_taps:
+            run(["ip", "link", "del", _tap], capture_output=True)
+        run(["ip", "neigh", "flush", vm.ip, "dev", BRIDGE], capture_output=True)
+        run(
+            ["ip", "tuntap", "add", "dev", vm.tap, "mode", "tap"],
+            check=True,
+        )
+        run(["ip", "link", "set", vm.tap, "master", BRIDGE], check=True)
+        run(["ip", "link", "set", vm.tap, "up"], check=True)
 
     # Extra NICs: create one TAP per declared nic.  They all join the
     # same bridge as the mgmt NIC for now (tcp only); softroce (-r55)
@@ -227,6 +273,8 @@ def launch_qemu(vm: VMInfo) -> None:
             # softroce presents to QEMU exactly like tcp (a virtio-net
             # on the bridge); the rxe layer is built inside the guest
             # at boot via setup-nic-softroce.sh.
+            if macos:
+                continue
             run(
                 ["ip", "tuntap", "add", "dev", _tap, "mode", "tap"],
                 check=True,
@@ -305,7 +353,12 @@ def launch_qemu(vm: VMInfo) -> None:
         "-drive",
         f"id=rootfs,file={vm.overlay_path},format=qcow2,if=none",
         "-netdev",
-        f"tap,id=net0,ifname={vm.tap},script=no,downscript=no",
+        (
+            f"stream,id=net0,addr.type=unix,addr.path={vmnet_socket},"
+            f"server=off"
+            if macos
+            else f"tap,id=net0,ifname={vm.tap},script=no,downscript=no"
+        ),
         "-device",
         f"{net_driver},netdev=net0,mac={vm.mac}",
         "-daemonize",
@@ -327,9 +380,7 @@ def launch_qemu(vm: VMInfo) -> None:
     # host=<BDF>` with no -netdev / no TAP.  The current CLI parser
     # rejects both, so those branches aren't emitted today -- but the
     # loop shape is what lets them slot in without reworking.
-    has_passthrough = any(
-        n.split(":", 1)[0] == "passthrough" for n in vm.nics
-    )
+    has_passthrough = any(n.split(":", 1)[0] == "passthrough" for n in vm.nics)
     if has_passthrough:
         # vfio-pci pins guest memory; QEMU needs -mem-prealloc up-front
         # so DMA translations are stable at launch time.  Harmless for
@@ -343,10 +394,19 @@ def launch_qemu(vm: VMInfo) -> None:
         if _base_type in ("tcp", "softroce"):
             # softroce's QEMU surface is identical to tcp; see the
             # TAP-create loop above.
+            if macos:
+                _netdev_arg = (
+                    f"stream,id={_netdev_id},addr.type=unix,"
+                    f"addr.path={vmnet_socket},server=off"
+                )
+            else:
+                _netdev_arg = (
+                    f"tap,id={_netdev_id},ifname={_tap},"
+                    f"script=no,downscript=no"
+                )
             qemu_args += [
                 "-netdev",
-                f"tap,id={_netdev_id},ifname={_tap},"
-                f"script=no,downscript=no",
+                _netdev_arg,
                 "-device",
                 f"{net_driver},netdev={_netdev_id},mac={_mac}",
             ]
@@ -415,9 +475,11 @@ def launch_qemu(vm: VMInfo) -> None:
         # directly with no rollback path, so the TAPs would otherwise
         # leak until the next restart of this VM.  BaseException
         # catches SystemExit raised by die() so cleanup runs before
-        # the process exits.
-        for _tap in all_taps:
-            run(["ip", "link", "del", _tap], capture_output=True)
+        # the process exits.  macOS has no TAPs -- socket_vmnet owns
+        # the L2 fabric and no per-VM host state was created here.
+        if not macos:
+            for _tap in all_taps:
+                run(["ip", "link", "del", _tap], capture_output=True)
         raise
 
     vm.update_pid(pid)
@@ -465,7 +527,11 @@ def kill_qemu(vm: VMInfo) -> None:
     # Delete the mgmt TAP plus every extra NIC TAP.  Missing TAPs are
     # ignored (capture_output swallows the ip-link error), so this is
     # safe even when launch_qemu never created them (e.g. a kill on a
-    # VM that failed partway through its own launch).
+    # VM that failed partway through its own launch).  On macOS there
+    # are no per-VM TAPs -- socket_vmnet multiplexes every guest onto
+    # one Unix socket -- so teardown is a no-op there.
+    if is_macos():
+        return
     run(["ip", "link", "del", vm.tap], capture_output=True)
     for _idx, _nic_type, _tap, _mac in vm.extra_nics():
         run(["ip", "link", "del", _tap], capture_output=True)

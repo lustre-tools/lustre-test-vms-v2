@@ -74,19 +74,42 @@ def _container_image_tag(target_config: TargetConfig) -> str:
 
 
 def _is_cross_build(target_config: TargetConfig) -> bool:
-    """True if the target arch differs from the host."""
+    """True if the target arch differs from the host.
+
+    Normalises both sides through ``cross_compile.normalize_arch`` so
+    Apple Silicon (``platform.machine() == 'arm64'``) is correctly
+    treated as native when the target arch is ``aarch64``.
+    """
     import platform
 
-    return target_config.arch != platform.machine()
+    from .cross_compile import normalize_arch
+
+    return normalize_arch(target_config.arch) != normalize_arch(
+        platform.machine()
+    )
 
 
 def _podman_platform(target_config: TargetConfig) -> list[str]:
-    """Return --platform flag for podman if cross-arch build needed."""
+    """Return --platform flag for podman if cross-arch build needed.
+
+    Unlike kernel_build (which flips to host arch so its cross
+    toolchain runs natively), the image build needs a target-arch
+    rootfs: the package manager inside pulls packages for whatever
+    platform the container image was resolved as.  Running the image
+    container as host arch would install host-arch binaries into the
+    ext4, which then fails to boot on the target.
+
+    Switching to a host-native builder + dnf/apt --forcearch install
+    into a target-arch sysroot is the clean fix but is non-trivial
+    across distros; tracked as a follow-up to bead s3f.  Until then
+    image cross-builds pay the emulation tax (mitigated in part by
+    `_prebuild_tools_native`, which cross-builds IOR/iozone/e2fsprogs
+    natively and COPYs them into the emulated image build).
+    """
     if not _is_cross_build(target_config):
         return []
-    _PLAT = {"aarch64": "linux/arm64", "x86_64": "linux/amd64"}
-    plat = _PLAT.get(target_config.arch)
-    return ["--platform", plat] if plat else []
+    from .cross_compile import podman_platform_for
+    return ["--platform", podman_platform_for(target_config.arch)]
 
 
 def _prebuild_tools_native(
@@ -108,12 +131,14 @@ def _prebuild_tools_native(
     # unsuffixed tag does not exist there.
     import platform as _platform
 
+    from .cross_compile import normalize_arch
+
     arch = target_config.arch
-    host_machine = _platform.machine()
-    if host_machine in ("x86_64", "amd64"):
+    host_arch = normalize_arch(_platform.machine())
+    if host_arch == "x86_64":
         build_tag = f"ltvm-build-{target_config.name}"
     else:
-        build_tag = f"ltvm-build-{target_config.name}-{host_machine}"
+        build_tag = f"ltvm-build-{target_config.name}-{host_arch}"
 
     output_dir.mkdir(parents=True, exist_ok=True)
 

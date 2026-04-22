@@ -101,8 +101,6 @@ class TestBuildTargetForms:
         assert args.target == "rocky9"
 
     def test_build_lustre_flag(self, tmp_path: Path) -> None:
-        # build lustre is the one exception with two positionals:
-        # <target> <lustre-tree>.  Target via --target still works.
         args = _parse(
             ["build", "lustre", "--target", "rocky9",
              "--lustre-tree", str(tmp_path)]
@@ -115,11 +113,14 @@ class TestBuildTargetForms:
         )
         assert args.target == "rocky9"
 
-    def test_build_lustre_default_rocky9(self) -> None:
-        # Historical: `build lustre` defaults to rocky9 when neither
-        # positional nor --target is given.
-        args = _parse(["build", "lustre"])
+    def test_build_lustre_second_positional(self, tmp_path: Path) -> None:
+        # `build lustre <target> <lustre-tree>` is the documented shape
+        # (see ~/lustre-test-vms-v2/CLAUDE.md); the second positional
+        # binds to `lustre_tree_pos` and cmd_build_lustre falls back to
+        # it when --lustre-tree is not given.
+        args = _parse(["build", "lustre", "rocky9", str(tmp_path)])
         assert args.target == "rocky9"
+        assert args.lustre_tree_pos == str(tmp_path)
 
 
 # ---------------------------------------------------------------------------
@@ -177,18 +178,17 @@ class TestTargetSubcommandForms:
 class TestCreateTargetForms:
     def test_create_flag(self) -> None:
         args = _parse(["create", "vm1", "--target", "rocky9"])
-        # create's downstream reads args.os; reconciler must mirror.
-        assert args.os == "rocky9"
+        # create's downstream reads args.target (not args.os anymore).
         assert args.target == "rocky9"
+        assert not hasattr(args, "os")
 
     def test_create_positional(self) -> None:
         args = _parse(["create", "vm1", "rocky9"])
-        assert args.os == "rocky9"
         assert args.target == "rocky9"
+        assert not hasattr(args, "os")
 
     def test_create_both_same(self) -> None:
         args = _parse(["create", "vm1", "rocky9", "--target", "rocky9"])
-        assert args.os == "rocky9"
         assert args.target == "rocky9"
 
     def test_create_both_conflict(
@@ -199,11 +199,11 @@ class TestCreateTargetForms:
         )
 
     def test_create_no_target(self) -> None:
-        # Omitting the target leaves args.os=None; vm_commands falls
+        # Omitting the target leaves args.target=None; vm_commands falls
         # back to DEFAULT_TARGET downstream.
         args = _parse(["create", "vm1"])
-        assert args.os is None
         assert args.target is None
+        assert not hasattr(args, "os")
 
 
 # ---------------------------------------------------------------------------

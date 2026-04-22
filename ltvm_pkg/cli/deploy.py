@@ -82,11 +82,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     os_family = tc.os_family
 
     # Resolve build path:
-    #   1. Explicit --build PATH wins (including --build .)
+    #   1. Explicit --lustre-tree PATH wins (including --lustre-tree .)
     #   2. Otherwise, if a bundled snapshot from `ltvm fetch` exists,
     #      copy it into staging and use it directly (no source rebuild)
     #   3. Otherwise, fall back to cwd
-    build_arg = getattr(args, "build", None)
+    build_arg = getattr(args, "lustre_tree", None)
     bundled_snapshot: Path | None = None
     if build_arg is not None:
         build_path = Path(build_arg).resolve()
@@ -113,11 +113,11 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if not build_path.is_dir():
         return _error(f"Build path not found: {build_path}", use_json)
 
-    # Validate that --build points at an actual Lustre source tree
+    # Validate that --lustre-tree points at an actual Lustre source tree
     # before we try to feed it to `ltvm build lustre`.  Skip this when
     # we picked up a bundled snapshot, which is a DESTDIR layout (usr/,
     # lib/modules/), not a source tree.  Without this validation a typo
-    # like `--build /wrong/dir` produces a confusing error several
+    # like `--lustre-tree /wrong/dir` produces a confusing error several
     # subprocess hops away inside the build container.
     if bundled_snapshot is None:
         missing = [
@@ -127,7 +127,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
         ]
         if missing:
             return _error(
-                f"--build:'{build_path}' does not look like a Lustre "
+                f"--lustre-tree:'{build_path}' does not look like a Lustre "
                 f"source tree (missing: {', '.join(missing)})",
                 use_json,
             )
