@@ -1,0 +1,12 @@
+# packages-skip-aarch64.txt -- packages from the common lists that are
+# x86_64-only (or otherwise unavailable) on aarch64 EL/Ubuntu repos.
+#
+# Listed here rather than reached for via dnf --skip-broken because the
+# explicit allowlist preserves error signal: a typo or genuinely
+# missing package on the happy arch still fails the build, instead of
+# being silently dropped along with the known gaps.
+#
+# One package per line.  Comments (#) and blank lines ignored.
+
+# Intel-specific NUMA observability tool; no aarch64 build in EL repos.
+numatop
