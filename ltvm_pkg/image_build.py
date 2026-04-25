@@ -242,7 +242,19 @@ def _lustre_inject_lines(
     )
     if modules_src.is_dir():
         dest = inject_dir / "lustre-extra"
-        shutil.copytree(modules_src, dest, symlinks=False)
+        # copy_function=shutil.copy intentionally drops metadata
+        # (xattrs, ACLs).  podman build COPY scans listxattr on each
+        # file as it ingests the build context; on the macOS->podman
+        # machine virtiofs path, listxattr can return ENOMEM ("cannot
+        # allocate memory") on otherwise-fine .ko files and aborts the
+        # build.  We don't need any of the source-tree metadata for
+        # the in-image install -- contents and perms are enough.
+        shutil.copytree(
+            modules_src,
+            dest,
+            symlinks=False,
+            copy_function=shutil.copy,
+        )
         lines.append(f"COPY lustre-extra/ /lib/modules/{kver}/extra/")
 
     # Userland subtrees.  /usr/ is the usual catch-all (sbin, bin,
@@ -261,7 +273,14 @@ def _lustre_inject_lines(
         src = staging / rel
         if src.is_dir():
             dest = inject_dir / f"lustre-userland-{rel}"
-            shutil.copytree(src, dest, symlinks=False)
+            # See lustre-extra branch above: drop xattrs to avoid
+            # podman machine virtiofs listxattr ENOMEM.
+            shutil.copytree(
+                src,
+                dest,
+                symlinks=False,
+                copy_function=shutil.copy,
+            )
             lines.append(
                 f"COPY lustre-userland-{rel}/ /{rel}/"
             )
