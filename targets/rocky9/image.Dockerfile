@@ -19,6 +19,9 @@ COPY rocky9/packages-os.txt /tmp/packages-os.txt
 
 # Parse package lists (strip comments/blanks) and install.
 # Exclude kernel-devel -- Lustre builds on the host, not in VM.
+# --skip-broken: a few entries (e.g. numatop) are x86-only on EL9
+# and absent from the aarch64 repos.  Skip them rather than fail
+# the whole build; matches the rocky8/rocky10 pattern.
 RUN cat /tmp/packages-base.txt \
         /tmp/packages-test.txt \
         /tmp/packages-debug.txt \
@@ -27,7 +30,7 @@ RUN cat /tmp/packages-base.txt \
     | grep -v '^\s*#' | grep -v '^\s*$' \
     | grep -v '^kernel-devel$' \
     | sort -u \
-    | xargs dnf -y --allowerasing install \
+    | xargs dnf -y --allowerasing --skip-broken install \
     && dnf clean all
 
 # Copy shared setup scripts
