@@ -994,6 +994,57 @@ def install_qemu_macos(force: bool = False) -> None:
     log.info("Using Homebrew QEMU %s (%s)", ver, brew_prefix)
 
 
+def install_image_tools_macos(force: bool = False) -> None:
+    """Install host tools needed by `ltvm build image` on macOS.
+
+    image_build assembles the ext4 rootfs on the host with `mke2fs -d`
+    + `fakeroot`, neither of which ship in macOS.  Brew has both.
+    e2fsprogs is keg-only (mke2fs collides with macOS's BSD mke2fs in
+    /sbin), so we symlink the brew binary into /usr/local/bin/mke2fs
+    where shutil.which() will find it without polluting the rest of
+    e2fsprogs onto PATH.  fakeroot installs at /opt/homebrew/bin which
+    is already on PATH for typical Mac shells.
+    """
+    brew = shutil.which("brew")
+    if not brew:
+        raise RuntimeError(
+            "Homebrew not found.  Install it from https://brew.sh, "
+            "then run: brew install e2fsprogs fakeroot"
+        )
+
+    have_fakeroot = bool(shutil.which("fakeroot"))
+    if not have_fakeroot:
+        log.info("Installing fakeroot via Homebrew...")
+        _run([brew, "install", "fakeroot"])
+
+    e2fs_prefix: Path | None = None
+    r = _run_quiet([brew, "--prefix", "e2fsprogs"], check=False)
+    if r.returncode == 0 and r.stdout.strip():
+        candidate = Path(r.stdout.strip())
+        if (candidate / "sbin" / "mke2fs").exists():
+            e2fs_prefix = candidate
+    if not e2fs_prefix:
+        log.info("Installing e2fsprogs via Homebrew...")
+        _run([brew, "install", "e2fsprogs"])
+        r = _run_quiet([brew, "--prefix", "e2fsprogs"], check=True)
+        e2fs_prefix = Path(r.stdout.strip())
+
+    src = e2fs_prefix / "sbin" / "mke2fs"
+    link = Path("/usr/local/bin/mke2fs")
+    need_link = (
+        force
+        or not link.is_symlink()
+        or link.resolve() != src.resolve()
+    )
+    if need_link:
+        _sudo_run(["mkdir", "-p", "/usr/local/bin"], quiet=True)
+        _sudo_run(["rm", "-f", str(link)], quiet=True)
+        _sudo_run(["ln", "-s", str(src), str(link)], quiet=True)
+        log.info("mke2fs symlinked at %s -> %s", link, src)
+    else:
+        log.info("mke2fs already at %s", link)
+
+
 def install_qemu(host: HostInfo, force: bool = False) -> None:
     """Install QEMU with microvm support.
 
@@ -1769,6 +1820,7 @@ def _run_setup_macos(
 
     if "qemu" in active:
         install_qemu_macos(force=force)
+        install_image_tools_macos(force=force)
 
     if "network" in active:
         install_socket_vmnet_macos(force=force)
