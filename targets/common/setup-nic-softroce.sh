@@ -10,11 +10,12 @@
 # netdev for sane SoftRoCE performance.
 #
 # Link-name convention: rxe<N>, where N counts softroce interfaces
-# from 0 in invocation order. This matches what setup-lnet-config.sh
-# (the LNet emitter) expects -- it counts rxe entries within softroce
-# transport blocks only, starting at 0. If this script is run twice
-# for the same ifname the second call is a no-op (the existing rxe
-# link is detected and preserved).
+# from 0 in invocation order. These names are for userspace verbs
+# tooling (ibv_devices, perftest) -- lnet.conf does NOT reference
+# rxe<N>; ko2iblnd takes the backing netdev (ethI) and finds the rxe
+# ibdev via rdma_cm. If this script is run twice for the same ifname
+# the second call is a no-op (the existing rxe link is detected and
+# preserved).
 #
 # Assumes rdma_rxe kernel module, rdma-core userspace (rdma, ibv_*),
 # ip, and ethtool are all present -- image plumbing is handled
@@ -81,10 +82,9 @@ if [ -n "$existing" ]; then
 	exit 0
 fi
 
-# 3. Compute next rxe<N>: count existing rxe* links. This matches the
-# LNet emitter convention (counts softroce entries from 0). Since
-# SoftRoCE is the only producer of rxe* links in this image, counting
-# all of them is equivalent.
+# 3. Compute next rxe<N>: count existing rxe* links. Since SoftRoCE
+# is the only producer of rxe* links in this image, counting all of
+# them gives invocation order.
 count=$(rdma link show 2>/dev/null | \
 	awk '/^link rxe[0-9]+/ { n++ } END { print n+0 }')
 linkname="rxe${count}"

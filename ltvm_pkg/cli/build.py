@@ -31,6 +31,7 @@ from ltvm_pkg.cli.util import (
     _load_target,
     _load_target_args,
     _output,
+    _print_target_header,
 )
 from ltvm_pkg.host_setup import (
     PodmanMachineError,
@@ -170,10 +171,11 @@ def _do_build_container(target_config: TargetConfig) -> str:
 
 
 def cmd_build_all(args: argparse.Namespace) -> int:
-    """Build container + kernel + image for a target.
+    """Build container + kernel + Lustre + image for a target.
 
-    Also builds the Lustre source tree against the freshly built
-    kernel by default; pass --skip-lustre to opt out.
+    "all" means all four cacheable artifacts.  The Lustre staging
+    is snapshotted into ``artifacts/.../kernels/<kver>/lustre-artifacts/``
+    so ``ltvm target publish`` runs tree-free.
     """
     use_json = args.json
     tc, err = _load_target_args(args, use_json)
@@ -195,10 +197,6 @@ def cmd_build_all(args: argparse.Namespace) -> int:
 def _cmd_build_all_body(
     args: argparse.Namespace, tc: TargetConfig, use_json: bool
 ) -> int:
-
-    # build-all always requires a Lustre tree -- even for deb targets
-    # where the kernel build itself doesn't need one, the surrounding
-    # workflow (image inject, optional Lustre build, packaging) does.
     lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(args.lustre_tree)
     if err_msg:
         return _error(
@@ -227,6 +225,25 @@ def _cmd_build_all_body(
         kernel_build_tree=tc.kernel_output_dir(kernel=resolved_kernel) / "build-tree",
     )
 
+    if not use_json:
+        from ltvm_pkg.cli.util import _lustre_tree_version
+
+        _print_target_header(
+            tc,
+            kernel=getattr(args, "kernel", None),
+            variant=getattr(args, "variant", None) or "base",
+            action="Building",
+            lustre_version=_lustre_tree_version(lustre_tree),
+        )
+        if not getattr(args, "yes", False) and sys.stdin.isatty():
+            try:
+                reply = input("Proceed? [Y/n]: ").strip().lower()
+            except EOFError:
+                reply = ""
+            if reply and reply not in ("y", "yes"):
+                print("aborted")
+                return EXIT_ERROR
+
     results: dict[str, Any] = {}
 
     # 1. Container
@@ -254,44 +271,65 @@ def _cmd_build_all_body(
     except Exception as e:
         return _error(f"Kernel build failed: {e}", use_json)
 
-    # 3. Lustre (enabled by default; --skip-lustre opts out).
-    # Runs BEFORE the image so its per-kernel staging is in place for
-    # the image-bake step to auto-inject.
-    lustre_build = not getattr(args, "skip_lustre", False)
-    if lustre_build:
-        if not use_json:
-            print(
-                f"==> Building Lustre against {resolved_kernel} kernel tree..."
-            )
-        build_tree = tc.kernel_output_dir(kernel=resolved_kernel) / "build-tree"
-        try:
-            container_tag = tc.container_tag
-            lmeta = _cli_attr("build_lustre")(
-                lustre_tree,
-                build_tree,
-                container_tag=container_tag,
-                target=args.target,
-                enable_server=tc.lustre_mode != LustreMode.CLIENT,
-                extra_configure=list(tc.configure_args),
-                jobs=getattr(args, "jobs", None),
-                force=args.force,
-                arch=tc.arch,
-                kernel=resolved_kernel,
-                variant=tc.variant_name,
-            )
-            results["lustre"] = lmeta
-        except Exception as e:
-            return _error(f"Lustre build failed: {e}", use_json)
+    # The kernel build materializes the full-versioned directory name
+    # (e.g. "5.14-rhel9.7" -> "5.14-rhel9.7-5.14.0-611.13.1.el9_7").
+    # build_lustre re-resolves internally, but snapshot_lustre takes the
+    # name as-is and looks up staging + kernel_dir directly -- so feed
+    # it the resolved full name now that the directory exists.
+    full_kernel = tc.resolve_kernel(getattr(args, "kernel", None))
 
-    # 4. Image (picks up Lustre staging from step 3 if it was built).
+    # 3. Lustre.  Runs BEFORE the image so its per-kernel staging is in
+    # place for the image-bake step to auto-inject.
     if not use_json:
-        print(f"==> Building image for {args.target} (kernel={resolved_kernel})...")
+        print(
+            f"==> Building Lustre against {full_kernel} kernel tree..."
+        )
+    build_tree = tc.kernel_output_dir(kernel=full_kernel) / "build-tree"
+    try:
+        container_tag = tc.container_tag
+        lmeta = _cli_attr("build_lustre")(
+            lustre_tree,
+            build_tree,
+            container_tag=container_tag,
+            target=args.target,
+            enable_server=tc.lustre_mode != LustreMode.CLIENT,
+            extra_configure=list(tc.configure_args),
+            jobs=getattr(args, "jobs", None),
+            force=args.force,
+            arch=tc.arch,
+            kernel=full_kernel,
+            variant=tc.variant_name,
+        )
+        results["lustre"] = lmeta
+    except Exception as e:
+        return _error(f"Lustre build failed: {e}", use_json)
+
+    # 4. Snapshot Lustre staging into the artifacts dir so ``ltvm target
+    # publish`` can bundle it without re-visiting the Lustre tree.  Runs
+    # under build-all so the full artifact set lands in one place.
+    if not use_json:
+        print("==> Snapshotting Lustre staging into artifacts...")
+    try:
+        _cli_attr("snapshot_lustre")(
+            lustre_tree,
+            tc.output_dir,
+            target=args.target,
+            kernel=full_kernel,
+            arch=tc.arch,
+            variant=tc.variant_name,
+        )
+    except Exception as e:
+        return _error(f"Lustre snapshot failed: {e}", use_json)
+
+    # 5. Image (picks up Lustre staging from step 3).
+    if not use_json:
+        print(f"==> Building image for {args.target} (kernel={full_kernel})...")
     try:
         _cli_attr("build_image")(
             tc,
             force=args.force,
-            kernel=resolved_kernel,
-            with_lustre=str(lustre_tree) if lustre_build else None,
+            kernel=full_kernel,
+            with_lustre=str(lustre_tree),
         )
         results["image"] = "ok"
     except Exception as e:
@@ -316,6 +354,14 @@ def cmd_build_container(args: argparse.Namespace) -> int:
     err = _preflight_podman(use_json)
     if err is not None:
         return err
+
+    if not use_json:
+        _print_target_header(
+            tc,
+            kernel=getattr(args, "kernel", None),
+            variant=getattr(args, "variant", None) or "base",
+            action="Building container",
+        )
 
     with _podman_machine_autostop() as autostop:
         if not use_json:
@@ -372,8 +418,11 @@ def cmd_build_kernel(args: argparse.Namespace) -> int:
         kernel = getattr(args, "kernel", None)
 
         if not use_json:
-            k = tc.resolve_kernel(kernel)
-            print(f"Building kernel {k} for {args.target}...")
+            _print_target_header(
+                tc, kernel=kernel,
+                variant=getattr(args, "variant", None) or "base",
+                action="Building kernel",
+            )
 
         try:
             meta = _cli_attr("build_kernel")(
@@ -422,6 +471,13 @@ def cmd_build_mofed_kmods(args: argparse.Namespace) -> int:
     err = _preflight_container(tc, use_json)
     if err is not None:
         return err
+
+    if not use_json:
+        _print_target_header(
+            tc, kernel=getattr(args, "kernel", None),
+            variant=tc.variant_name,
+            action="Building MOFED kmods",
+        )
 
     try:
         out_dir = build_mofed_kmods(
@@ -523,11 +579,13 @@ def cmd_build_image(args: argparse.Namespace) -> int:
             with_lustre = str(lustre_tree)
 
         if not use_json:
-            extra = f" +lustre={with_lustre}" if with_lustre else ""
-            print(
-                f"Building image for {args.target} "
-                f"(kernel={resolved_kernel}){extra}..."
+            _print_target_header(
+                tc, kernel=kernel,
+                variant=getattr(args, "variant", None) or "base",
+                action="Building image",
             )
+            if with_lustre:
+                print(f"  with_lustre: {with_lustre}")
 
         try:
             path = _cli_attr("build_image")(
@@ -582,13 +640,13 @@ def _format_bytes(n: int) -> str:
 def cmd_clean(args: argparse.Namespace) -> int:
     """Remove built artifacts for a target.
 
-    By default wipes output/<target>/<arch>/ for the target's default
+    By default wipes artifacts/<target>/<arch>/ for the target's default
     arch (x86_64).  --arch narrows to a specific arch; --all-arches
-    wipes the whole output/<target>/ tree.
+    wipes the whole artifacts/<target>/ tree.
     """
     import shutil
 
-    from ltvm_pkg.target_config import OUTPUT_DIR
+    from ltvm_pkg.target_config import ARTIFACTS_DIR
 
     use_json = args.json
     target = args.target
@@ -609,11 +667,11 @@ def cmd_clean(args: argparse.Namespace) -> int:
         )
 
     if all_arches:
-        wipe_paths = [OUTPUT_DIR / target]
+        wipe_paths = [ARTIFACTS_DIR / target]
     else:
         # Use the arch actually configured in the TargetConfig (honors
         # --arch override; defaults to x86_64).
-        wipe_paths = [OUTPUT_DIR / target / tc.arch]
+        wipe_paths = [ARTIFACTS_DIR / target / tc.arch]
 
     wiped: list[dict[str, Any]] = []
     for p in wipe_paths:
@@ -718,8 +776,13 @@ def cmd_build_lustre(args: argparse.Namespace) -> int:
         jobs = getattr(args, "jobs", None)
 
         if not use_json:
+            _print_target_header(
+                tc, kernel=kernel,
+                variant=tc.variant_name,
+                action="Building Lustre",
+            )
             srv = "server+client" if enable_server else "client-only"
-            print(f"Building Lustre ({srv}) against {args.target} kernel tree...")
+            print(f"  scope: {srv}")
 
         container_tag = tc.container_tag
 

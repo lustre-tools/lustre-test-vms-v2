@@ -55,6 +55,7 @@ from ltvm_pkg.cli.util import (
     _load_target_args,
     _maybe_print_traceback,
     _output,
+    _print_target_header,
     _qemu_ns,
     _require_root,
 )
@@ -93,8 +94,8 @@ from ltvm_pkg.cli.fetch import (  # noqa: E402
     _kernel_release_signature,
     _list_releases,
     _release_matches_kernel,
+    cmd_delete,
     cmd_fetch,
-    cmd_package,
     cmd_publish,
 )
 from ltvm_pkg.cli.targets import (  # noqa: E402

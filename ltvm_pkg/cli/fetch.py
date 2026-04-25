@@ -54,83 +54,6 @@ def _cli_attr(name: str) -> Any:
 
 
 # ------------------------------------------------------------------
-# Subcommand: package
-# ------------------------------------------------------------------
-
-
-def cmd_package(args: argparse.Namespace) -> int:
-    use_json = args.json
-    tc, err = _load_target_args(args, use_json)
-    if err is not None:
-        return err
-    assert tc is not None
-
-    kernel = getattr(args, "kernel", None)
-    variant = getattr(args, "variant", None) or "base"
-
-    # Bundling Lustre is mandatory by default.  The publisher's whole
-    # job is to ship something a fetcher can immediately deploy from --
-    # a "kernel-only" package without Lustre forces every consumer to
-    # build it themselves on first deploy, which defeats the whole
-    # point of the fetch flow.  --no-lustre is the explicit opt-out.
-    no_lustre = getattr(args, "no_lustre", False)
-    if not no_lustre:
-        lustre_tree_arg = getattr(args, "lustre_tree", None)
-        lustre_path, err_msg = _cli_attr("_resolve_lustre_tree")(lustre_tree_arg)
-        if err_msg:
-            return _error(
-                err_msg,
-                use_json,
-                hint=(
-                    "Run from a Lustre tree, pass --lustre-tree, or "
-                    "use --no-lustre to publish a kernel-only package"
-                ),
-            )
-        assert lustre_path is not None
-        if not tc.kernel_deb_source:
-            _cli_attr("_gate_lustre_validation")(
-                tc, lustre_path, force=args.force_compat
-            )
-        if not use_json:
-            print(f"Snapshotting Lustre tree from {lustre_path}...")
-        try:
-            _cli_attr("snapshot_lustre")(
-                lustre_path,
-                tc.output_dir,
-                target=args.target,
-                kernel=kernel,
-                arch=tc.arch,
-                variant=variant,
-            )
-        except Exception as e:
-            return _error(f"Lustre snapshot failed: {e}", use_json)
-
-    if not use_json:
-        v_hint = "" if variant == "base" else f" variant={variant}"
-        print(f"Packaging {args.target}{v_hint}...")
-
-    try:
-        assets = _cli_attr("package_target")(
-            args.target,
-            tc.output_dir,
-            kernel=kernel,
-            dest_dir=getattr(args, "output", None),
-            arch=tc.arch,
-            variant=variant,
-        )
-    except Exception as e:
-        return _error(f"Package failed: {e}", use_json)
-
-    result = {
-        "target": args.target,
-        "variant": variant,
-        "assets": {kind: str(p) for kind, p in assets.items()},
-    }
-    _output(result, use_json)
-    return EXIT_OK
-
-
-# ------------------------------------------------------------------
 # GitHub API helpers
 # ------------------------------------------------------------------
 
@@ -353,8 +276,9 @@ def _find_release_url(
         hint += f" kernel-signature={kernel_signature!r}"
     if variant != "base":
         hint += f" variant={variant!r}"
+    kind = "published bootable image" if mode == "bootable" else "published artifacts"
     raise RuntimeError(
-        f"No {mode} release found for '{target}'{hint}\n"
+        f"No {kind} found for '{target}'{hint}\n"
         f"  Available releases: {', '.join(avail)}\n"
         f"  Try: ltvm target fetch --list"
     )
@@ -397,46 +321,164 @@ def _list_releases(
     return result
 
 
+def _native_arch() -> str:
+    """Return the host machine's arch in ltvm's canonical naming.
+
+    Maps ``amd64`` -> ``x86_64`` and ``arm64`` -> ``aarch64`` so the
+    result is comparable to the ``arch`` field in ``targets.yaml``.
+    Unknown values fall through so a pass-through-and-let-lookup-fail
+    surfaces a useful error rather than a silent wrong default.
+    """
+    import platform
+
+    m = platform.machine().lower()
+    if m in ("x86_64", "amd64"):
+        return "x86_64"
+    if m in ("aarch64", "arm64"):
+        return "aarch64"
+    return m or "x86_64"
+
+
+def _lookup_release_date(release_tag: str) -> str:
+    """Return ``YYYY-MM-DD`` for ``release_tag``, or ``""`` on failure.
+
+    Used only by the divergent-local-copy refusal path to annotate the
+    error message.  A failure here (network hiccup, unknown tag) must
+    not block the fetch logic -- we fall back to showing just the tag
+    without a date.
+    """
+    try:
+        rel = _cli_attr("_gh_api")(f"releases/tags/{release_tag}")
+    except Exception:
+        return ""
+    if not isinstance(rel, dict):
+        return ""
+    return (rel.get("published_at") or "")[:10]
+
+
+def _tag_file_date(tag_file: Any) -> str:
+    """Return ``YYYY-MM-DD`` of ``tag_file``'s mtime, or ``""`` on error.
+
+    The tag file is written at fetch/publish time, so its mtime is a
+    reasonable stand-in for "when the local copy was produced".
+    """
+    from datetime import datetime
+
+    try:
+        return datetime.fromtimestamp(
+            tag_file.stat().st_mtime
+        ).strftime("%Y-%m-%d")
+    except OSError:
+        return ""
+
+
+def _compare_dates(local: str, remote: str) -> str:
+    """Return ``"newer"``, ``"older"``, or ``""`` comparing ISO dates.
+
+    Empty-string inputs (missing data) yield ``""`` so the caller
+    degrades gracefully to a direction-less refusal message.
+    """
+    if not local or not remote:
+        return ""
+    if local > remote:
+        return "newer"
+    if local < remote:
+        return "older"
+    return ""
+
+
+def _dry_run_report(
+    url: str,
+    *,
+    target: str,
+    arch: str,
+    variant: str,
+    mode: str,
+    use_json: bool,
+    existing_tag: str = "",
+    release_tag: str = "",
+) -> None:
+    """Print (or JSON-emit) what a fetch would do without doing it.
+
+    Shared by the ecosystem and bootable paths.  ``existing_tag`` /
+    ``release_tag`` are ecosystem-only; the bootable path leaves them
+    as the empty-string defaults because it doesn't track them.
+    """
+    if use_json:
+        payload: dict[str, Any] = {
+            "dry_run": True,
+            "target": target,
+            "arch": arch,
+            "variant": variant,
+            "mode": mode,
+            "url": url,
+        }
+        if release_tag:
+            payload["release_tag"] = release_tag
+        if existing_tag:
+            payload["existing_tag"] = existing_tag
+        print(json.dumps(payload, indent=2))
+        return
+
+    print("Dry run -- no files will be downloaded or modified.")
+    print(f"  url:        {url}")
+    if release_tag:
+        print(f"  release:    {release_tag}")
+    if existing_tag:
+        if existing_tag == release_tag:
+            print(f"  local tag:  {existing_tag} (already up to date)")
+        else:
+            print(f"  local tag:  {existing_tag} (would be replaced)")
+
+
 def cmd_fetch(args: argparse.Namespace) -> int:
     use_json = args.json
     url = getattr(args, "url", None)
     target = getattr(args, "target", None)
     filt = getattr(args, "filter", None)
-    arch = getattr(args, "arch", None) or host_arch()
+    # Default arch to the native host arch so `ltvm target fetch rocky9`
+    # picks x86_64 on an Intel host and aarch64 on an ARM host without
+    # the user having to remember --arch.  Explicit --arch still wins.
+    arch = getattr(args, "arch", None) or _native_arch()
     kernel = getattr(args, "kernel", None)
     variant = getattr(args, "variant", None) or "base"
     image_mode = bool(getattr(args, "image", False))
+    dry_run = bool(getattr(args, "dry_run", False))
 
-    # Validate --kernel against the target's declared kernels (if both
-    # are given).  This is user-friendly: it catches typos before we
-    # make a round trip to GitHub.
+    # Load TargetConfig whenever a target is named.  We need it for
+    # kernel validation (pre-existing), for resolving the default
+    # kernel (used in the description), and for printing os/mode
+    # details.  Without a target (e.g. `--list` across all targets)
+    # we just skip the lookup.
+    tc = None
     kernel_signature: str | None = None
-    if kernel:
-        if not target:
-            return _error(
-                "--kernel requires a target (e.g. ltvm target fetch rocky9 "
-                "--kernel 5.14-rhel9.5)",
-                use_json,
-            )
+    if kernel and not target:
+        return _error(
+            "--kernel requires a target (e.g. ltvm target fetch rocky9 "
+            "--kernel 5.14-rhel9.5)",
+            use_json,
+        )
+    if target:
         tc, err = _load_target(target, use_json, arch=arch)
         if err is not None:
             return err
         assert tc is not None
-        declared = tc.declared_kernels()
-        if kernel not in declared:
-            return _error(
-                f"--kernel {kernel!r} not in targets.yaml kernels.available "
-                f"for {target}",
-                use_json,
-                hint=f"Available: {', '.join(declared)}",
-            )
-        kernel_signature = _kernel_release_signature(kernel)
-        if kernel_signature is None and not use_json:
-            print(
-                f"warning: could not derive release signature from "
-                f"--kernel {kernel!r}; falling back to first match.",
-                file=sys.stderr,
-            )
+        if kernel:
+            declared = tc.declared_kernels()
+            if kernel not in declared:
+                return _error(
+                    f"--kernel {kernel!r} not in targets.yaml "
+                    f"kernels.available for {target}",
+                    use_json,
+                    hint=f"Available: {', '.join(declared)}",
+                )
+            kernel_signature = _kernel_release_signature(kernel)
+            if kernel_signature is None and not use_json:
+                print(
+                    f"warning: could not derive release signature from "
+                    f"--kernel {kernel!r}; falling back to first match.",
+                    file=sys.stderr,
+                )
 
     # --list: show available releases
     if getattr(args, "list", False):
@@ -458,7 +500,18 @@ def cmd_fetch(args: argparse.Namespace) -> int:
     if not target:
         return _error("target required (e.g. ltvm target fetch rocky9)", use_json)
 
-    from ltvm_pkg.target_config import OUTPUT_DIR
+    from ltvm_pkg.target_config import ARTIFACTS_DIR
+
+    # Print a target-description header so the user can see exactly
+    # what they're about to pull (OS, arch, kernel, mode, variant)
+    # before the bytes start flying.  JSON mode stays quiet -- the
+    # result envelope is the machine-readable contract.
+    assert tc is not None
+    if not use_json:
+        from ltvm_pkg.cli.util import _print_target_header
+        _print_target_header(
+            tc, kernel=kernel, variant=variant, action="Fetching"
+        )
 
     # Bootable mode: fetch a single qcow2.zst asset, no manifest, no
     # ecosystem.  Handled up-front so we skip all the tag/ecosystem
@@ -484,9 +537,16 @@ def cmd_fetch(args: argparse.Namespace) -> int:
             except RuntimeError as e:
                 return _error(str(e), use_json)
 
+        if dry_run:
+            _dry_run_report(
+                url, target=target, arch=arch, variant=variant,
+                mode="bootable", use_json=use_json,
+            )
+            return EXIT_OK
+
         try:
             path = fetch_bootable(
-                target, url, OUTPUT_DIR, arch=arch, variant=variant
+                target, url, ARTIFACTS_DIR, arch=arch, variant=variant
             )
         except Exception as e:
             return _error(f"Fetch bootable failed: {e}", use_json)
@@ -527,12 +587,25 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         release_tag = url.split("/releases/download/")[1].split("/")[0]
     else:
         release_tag = ""
-    tag_file = OUTPUT_DIR / target / arch / ".ltvm-release-tag"
+    tag_file = ARTIFACTS_DIR / target / arch / ".ltvm-release-tag"
     replace = bool(getattr(args, "replace", False))
     force = bool(getattr(args, "force", False))
     existing_tag = (
         tag_file.read_text().strip() if tag_file.exists() else ""
     )
+
+    if dry_run:
+        # Early return so --dry-run ALWAYS reports the resolved URL,
+        # even in the no-op "already up to date" and divergent-tag
+        # cases below.  Users expect --dry-run to show what fetch
+        # sees, not get short-circuited by idempotency checks.
+        _dry_run_report(
+            url, target=target, arch=arch, variant=variant,
+            mode="ecosystem", use_json=use_json,
+            existing_tag=existing_tag, release_tag=release_tag,
+        )
+        return EXIT_OK
+
     if release_tag and existing_tag == release_tag:
         # Same tag already on disk.  Without --replace: no-op success.
         # With --replace but no --force: refuse, because the "clean
@@ -548,16 +621,57 @@ def cmd_fetch(args: argparse.Namespace) -> int:
         if not replace:
             if not use_json:
                 print(f"  Already up to date ({release_tag})")
-            result = {"target": target, "path": str(OUTPUT_DIR / target / arch)}
+            result = {"target": target, "path": str(ARTIFACTS_DIR / target / arch)}
             _output(result, use_json)
             return EXIT_OK
+    elif release_tag and existing_tag and existing_tag != release_tag:
+        # Different tag already on disk.  Silently extracting the new
+        # release on top of (or alongside) the existing one mixes two
+        # releases' files and leaves the output dir in a state that's
+        # hard to reason about -- so refuse by default.  --replace opts
+        # into a clean overwrite; --force bypasses the guard for
+        # scripts that have already decided.
+        if not replace and not force:
+            remote_date = _lookup_release_date(release_tag)
+            local_date = _tag_file_date(tag_file)
+            local_desc = existing_tag + (
+                f" (fetched {local_date})" if local_date else ""
+            )
+            remote_desc = release_tag + (
+                f" (published {remote_date})" if remote_date else ""
+            )
+            direction = _compare_dates(local_date, remote_date)
+            if direction == "newer":
+                header = "local copy is NEWER than remote release"
+            elif direction == "older":
+                header = "local copy is older than remote release"
+            else:
+                header = "local copy differs from remote release"
+            return _error(
+                f"{header}:\n"
+                f"    local:  {local_desc}\n"
+                f"    remote: {remote_desc}",
+                use_json,
+                hint=(
+                    "pass --replace to overwrite with the remote "
+                    "release, or leave the local copy as-is"
+                ),
+            )
+
+    if dry_run:
+        _dry_run_report(
+            url, target=target, arch=arch, variant=variant,
+            mode="ecosystem", use_json=use_json,
+            existing_tag=existing_tag, release_tag=release_tag,
+        )
+        return EXIT_OK
 
     # --replace: wipe the target's output dir so a partial or
     # mismatched prior fetch doesn't leave stale files behind the
     # new extraction.  The reference directory is target/arch, not
-    # target/, because per-arch fetches share output/<target>/.
+    # target/, because per-arch fetches share artifacts/<target>/.
     if replace:
-        target_out = OUTPUT_DIR / target / arch
+        target_out = ARTIFACTS_DIR / target / arch
         if target_out.exists():
             if not use_json:
                 print(f"  Removing existing {target_out}...")
@@ -569,7 +683,7 @@ def cmd_fetch(args: argparse.Namespace) -> int:
 
     try:
         target_dir = _cli_attr("fetch_target")(
-            target, url, OUTPUT_DIR, arch=arch, variant=variant
+            target, url, ARTIFACTS_DIR, arch=arch, variant=variant
         )
         # Record the release tag so repeat fetches are instant
         tag_file.parent.mkdir(parents=True, exist_ok=True)
@@ -705,7 +819,21 @@ def cmd_publish(args: argparse.Namespace) -> int:
     kernel = getattr(args, "kernel", None)
     variant = getattr(args, "variant", None) or "base"
     image_mode = bool(getattr(args, "image", False))
+    no_upload = bool(getattr(args, "no_upload", False))
     tag = getattr(args, "tag", None)
+
+    if not use_json:
+        from ltvm_pkg.cli.util import _print_target_header
+
+        if image_mode:
+            action = "Publishing bootable"
+        elif no_upload:
+            action = "Packaging"
+        else:
+            action = "Publishing"
+        _print_target_header(
+            tc, kernel=kernel, variant=variant, action=action
+        )
 
     if image_mode:
         from ltvm_pkg.release_package import package_bootable
@@ -758,38 +886,13 @@ def cmd_publish(args: argparse.Namespace) -> int:
         )
         return EXIT_OK
 
-    # --- Ecosystem publish: package, then upload every asset. ---
-    # cmd_package did the work if the caller ran it first, but we
-    # can't tell cheaply; re-run it inline so `publish` is always
-    # self-sufficient (package_target is idempotent given fresh
-    # artifacts -- it just recompresses).
+    # --- Ecosystem publish: package, then upload every asset (unless
+    # --no-upload, which short-circuits after packaging). ---
+    # Lustre staging is expected to already live under the target's
+    # artifacts dir (seeded by ``ltvm build all``).  Publish does not
+    # re-visit the Lustre tree; ``--no-lustre`` forces a kernel-only
+    # package even when staging is present on disk.
     no_lustre = getattr(args, "no_lustre", False)
-    if not no_lustre:
-        lustre_tree_arg = getattr(args, "lustre_tree", None)
-        lustre_path, err_msg = _cli_attr("_resolve_lustre_tree")(lustre_tree_arg)
-        if err_msg:
-            return _error(
-                err_msg, use_json,
-                hint=(
-                    "Run from a Lustre tree, pass --lustre-tree, or "
-                    "use --no-lustre for a kernel-only publish"
-                ),
-            )
-        assert lustre_path is not None
-        if not tc.kernel_deb_source:
-            _cli_attr("_gate_lustre_validation")(
-                tc, lustre_path, force=args.force_compat
-            )
-        if not use_json:
-            print(f"Snapshotting Lustre tree from {lustre_path}...")
-        try:
-            _cli_attr("snapshot_lustre")(
-                lustre_path, tc.output_dir,
-                target=args.target, kernel=kernel,
-                arch=tc.arch, variant=variant,
-            )
-        except Exception as e:
-            return _error(f"Lustre snapshot failed: {e}", use_json)
 
     if not use_json:
         v_hint = "" if variant == "base" else f" variant={variant}"
@@ -799,9 +902,21 @@ def cmd_publish(args: argparse.Namespace) -> int:
             args.target, tc.output_dir,
             kernel=kernel, arch=tc.arch, variant=variant,
             dest_dir=getattr(args, "output", None),
+            include_lustre=not no_lustre,
         )
     except Exception as e:
         return _error(f"Package failed: {e}", use_json)
+
+    if no_upload:
+        _output(
+            {
+                "target": args.target,
+                "variant": variant,
+                "assets": {k: str(p) for k, p in assets.items()},
+            },
+            use_json,
+        )
+        return EXIT_OK
 
     # Tag: derive from the manifest filename (strips .json, natural
     # read).  Variant is embedded in the manifest name for free.
@@ -828,11 +943,12 @@ def cmd_publish(args: argparse.Namespace) -> int:
         print(f"  Published: {url}")
 
     # Record the release tag locally so subsequent `ltvm fetch` knows
-    # the artifacts already on disk match this release.
-    from ltvm_pkg.target_config import OUTPUT_DIR
-
-    arch = getattr(args, "arch", None) or "x86_64"
-    tag_file = OUTPUT_DIR / args.target / arch / ".ltvm-release-tag"
+    # the artifacts already on disk match this release.  Use
+    # ``tc.output_dir`` rather than the module-level ARTIFACTS_DIR so a
+    # test that patches TargetConfig automatically gets the redirected
+    # path -- otherwise the write lands on the real filesystem while
+    # the rest of the publish flow is mocked.
+    tag_file = tc.output_dir / ".ltvm-release-tag"
     tag_file.parent.mkdir(parents=True, exist_ok=True)
     tag_file.write_text(tag + "\n")
 
@@ -844,4 +960,176 @@ def cmd_publish(args: argparse.Namespace) -> int:
         "url": url,
     }
     _output(result, use_json)
+    return EXIT_OK
+
+
+# ------------------------------------------------------------------
+# Subcommand: delete
+# ------------------------------------------------------------------
+
+
+def cmd_delete(args: argparse.Namespace) -> int:
+    """Delete a target's artifacts.
+
+    Default mode wipes local ``artifacts/<target>/<arch>/`` (same as
+    ``ltvm target clean``).  ``--remote`` instead deletes the published
+    GitHub release -- tag is either explicit (``--tag``) or resolved
+    via the same lookup ``fetch`` uses (target + optional
+    ``--kernel`` / ``--variant`` / ``--image``).
+    """
+    import ltvm_pkg.cli as _cli
+
+    use_json = args.json
+    remote = bool(getattr(args, "remote", False))
+    yes = bool(getattr(args, "yes", False))
+
+    if not remote:
+        from ltvm_pkg.cli.build import (
+            _dir_size_bytes,
+            _format_bytes,
+            cmd_clean as _cmd_clean,
+        )
+        from ltvm_pkg.target_config import ARTIFACTS_DIR
+
+        target = args.target
+        all_arches = bool(getattr(args, "all_arches", False))
+        arch_flag = getattr(args, "arch", None)
+        tc, err = _load_target(target, use_json, arch=arch_flag)
+        if err is not None:
+            return err
+        assert tc is not None
+        if all_arches and arch_flag:
+            return _error(
+                "--arch and --all-arches are mutually exclusive", use_json
+            )
+        preview_paths = (
+            [ARTIFACTS_DIR / target]
+            if all_arches
+            else [ARTIFACTS_DIR / target / tc.arch]
+        )
+        existing = [(p, _dir_size_bytes(p)) for p in preview_paths if p.exists()]
+        if not existing:
+            for p in preview_paths:
+                print(f"nothing to delete at {p}")
+            return EXIT_OK
+        if not use_json:
+            from ltvm_pkg.cli.util import _print_target_header
+
+            _print_target_header(
+                tc,
+                kernel=getattr(args, "kernel", None),
+                variant=getattr(args, "variant", None) or "base",
+                action="Deleting",
+            )
+            for p, sz in existing:
+                print(f"  {p} ({_format_bytes(sz)})")
+            total = sum(sz for _, sz in existing)
+            print(f"  total: {_format_bytes(total)}")
+        if not yes:
+            if use_json:
+                return _error(
+                    "--yes required to delete in --json mode",
+                    use_json,
+                    hint=f"Would delete: "
+                    f"{', '.join(str(p) for p, _ in existing)}",
+                )
+            try:
+                reply = input("Proceed? [y/N]: ").strip().lower()
+            except EOFError:
+                reply = ""
+            if reply not in ("y", "yes"):
+                print("aborted")
+                return EXIT_ERROR
+        return _cmd_clean(args)
+
+    target = args.target
+    if not target:
+        return _error("target required for --remote delete", use_json)
+
+    tag = getattr(args, "tag", None)
+    kernel = getattr(args, "kernel", None)
+    variant = getattr(args, "variant", None) or "base"
+    image_mode = bool(getattr(args, "image", False))
+    arch = getattr(args, "arch", None) or _native_arch()
+    cleanup_tag = bool(getattr(args, "cleanup_tag", False))
+
+    if not tag:
+        kernel_signature: str | None = None
+        if kernel:
+            tc, err = _load_target(target, use_json, arch=arch)
+            if err is not None:
+                return err
+            assert tc is not None
+            declared = tc.declared_kernels()
+            if kernel not in declared:
+                return _error(
+                    f"--kernel {kernel!r} not in targets.yaml "
+                    f"kernels.available for {target}",
+                    use_json,
+                    hint=f"Available: {', '.join(declared)}",
+                )
+            kernel_signature = _kernel_release_signature(kernel)
+        mode = "bootable" if image_mode else "ecosystem"
+        try:
+            url = _cli_attr("_find_release_url")(
+                target,
+                arch=arch,
+                kernel_signature=kernel_signature,
+                variant=variant,
+                mode=mode,
+            )
+        except RuntimeError as e:
+            return _error(str(e), use_json)
+        # URL: https://github.com/<repo>/releases/download/<tag>/<asset>
+        marker = "/releases/download/"
+        if marker not in url:
+            return _error(
+                f"could not derive tag from release URL: {url}", use_json
+            )
+        tag = url.split(marker, 1)[1].split("/", 1)[0]
+
+    if not use_json:
+        from ltvm_pkg.cli.util import _print_target_header
+
+        tc, err = _load_target(target, use_json, arch=arch)
+        if err is None and tc is not None:
+            _print_target_header(
+                tc,
+                kernel=kernel,
+                variant=variant,
+                action="Deleting remote",
+            )
+        extra = " (and git tag)" if cleanup_tag else ""
+        print(f"  release tag: {tag}{extra}")
+
+    if not yes:
+        return _error(
+            f"refusing to delete remote release {tag!r} without --yes",
+            use_json,
+            hint="re-run with --yes to confirm",
+        )
+
+    cmd = [
+        "gh", "release", "delete", tag,
+        "--repo", _cli.GITHUB_REPO, "--yes",
+    ]
+    if cleanup_tag:
+        cmd.append("--cleanup-tag")
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True)
+    except FileNotFoundError:
+        return _error(
+            "gh CLI not found (https://cli.github.com/)", use_json
+        )
+    if r.returncode != 0:
+        return _error(
+            f"gh release delete failed (rc={r.returncode}): "
+            f"{(r.stderr or r.stdout).strip()}",
+            use_json,
+        )
+    _output(
+        {"target": target, "tag": tag, "deleted": True,
+         "cleanup_tag": cleanup_tag},
+        use_json,
+    )
     return EXIT_OK

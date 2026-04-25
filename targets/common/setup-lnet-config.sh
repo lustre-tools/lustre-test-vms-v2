@@ -21,8 +21,13 @@
 #   none        -> (skipped; keeps eth slot for later entries)
 #   tcp         -> tcpK(ethI)              I = eth index (slot), K =
 #                                          tcp index (per-type counter)
-#   softroce    -> o2ibK(rxeM)             K = o2ib index, M = softroce
-#                                          index (rxe link on ethI)
+#   softroce    -> o2ibK(ethI)             K = o2ib index, I = eth
+#                                          index.  Lustre's ko2iblnd
+#                                          takes a NETDEV name here and
+#                                          finds the rxe ibdev via
+#                                          rdma_cm -- the rxe link
+#                                          itself is not a netdev and
+#                                          cannot appear in lnet.conf.
 #   passthrough -> o2ibK(@ib-of-ethI))     K = o2ib index, I = eth
 #                                          index; '@' marker replaced
 #                                          at runtime by -5a0.
@@ -37,7 +42,6 @@ emit_lnet_conf() {
 	local -a parts=()
 	local i
 	local nic
-	local rxe_idx=0
 	local o2ib_idx=0
 	local tcp_idx=0
 
@@ -54,9 +58,8 @@ emit_lnet_conf() {
 			tcp_idx=$((tcp_idx + 1))
 			;;
 		softroce)
-			parts+=("o2ib${o2ib_idx}(rxe${rxe_idx})")
+			parts+=("o2ib${o2ib_idx}(eth${i})")
 			o2ib_idx=$((o2ib_idx + 1))
-			rxe_idx=$((rxe_idx + 1))
 			;;
 		passthrough)
 			parts+=("o2ib${o2ib_idx}(@ib-of-eth${i}))")

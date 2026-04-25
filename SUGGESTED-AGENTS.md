@@ -14,7 +14,7 @@ published to GitHub releases for use on other hosts.
 
 Images are **per-kernel**: for a target with two kernels
 (e.g. rocky9 5.14-rhel9.7 and 5.14-rhel9.5), each gets its
-own `output/<target>/<arch>/images/<kernel-full-name>/base.ext4`
+own `artifacts/<target>/<arch>/images/<kernel-full-name>/base.ext4`
 with `/lib/modules/<kver>/` and kdump pre-baked.
 
 ## Quick Start (download pre-built artifacts)
@@ -83,17 +83,18 @@ ltvm build lustre rocky9 ~/lustre-release --force-compat
 ```
 
 `--force-compat` is wired into `build-all`, `build-kernel`,
-`build-lustre`, `package`, and `deploy`.
+`build-lustre`, `publish`, and `deploy`.
 
-## Packaging and Publishing
+## Publishing
 
 ```bash
-# Bundle kernel + image + Lustre into a tarball (per kernel,
-# named <target>-<kver>_lustre.tar.gz)
-ltvm target package rocky9
-
-# Publish to GitHub releases (tag derived from tarball name)
+# Bundle kernel + image + Lustre and upload to a GitHub release
+# (tag derived from the manifest name)
 ltvm target publish rocky9
+
+# Same bundling, but stop before the upload -- useful for
+# offline transfer or inspecting the tarballs first.
+ltvm target publish rocky9 --no-upload
 ```
 
 `ltvm target fetch <target>` discovers the latest release tag for
@@ -184,7 +185,7 @@ ltvm vm crash-collect co1-single --mod-dir ~/lustre-release
 
 crash-tool recipes lustre \
     --vmcore /path/to/vmcore \
-    --vmlinux output/rocky9/x86_64/kernels/<kernel-full-name>/vmlinux \
+    --vmlinux artifacts/rocky9/x86_64/kernels/<kernel-full-name>/vmlinux \
     --mod-dir ~/lustre-release
 ```
 
@@ -226,9 +227,9 @@ ltvm target validate <target>          Lustre/kernel compat check (read-only)
                                 --force-compat overrides refusal
 
 # Package / distribute
-ltvm target package <target>           Bundle into tarball (+ --kernel)
 ltvm target fetch <target>             Download latest release tarball
-ltvm target publish <target>           Upload tarball to GitHub release
+ltvm target publish <target>           Bundle + upload to GitHub release
+                                       (--no-upload builds tarballs locally only)
 
 # VM lifecycle
 ltvm create <name>              Create / idempotent-create
@@ -251,5 +252,5 @@ ltvm cluster create|deploy|exec|status|destroy <cluster> ...
 
 Global flags: `--json`, `--verbose`, `--arch <a>`.
 `--kernel <name-or-path>` on commands that operate on a
-specific kernel.  `--force-compat` on build / package /
+specific kernel.  `--force-compat` on build / publish /
 deploy to override the compat gate.

@@ -101,9 +101,9 @@ run_case() {
 # Resolver must be a silent no-op: exits before any log on the
 # "nothing to resolve" path.
 run_case "0pt-softroce" "softroce" "rxe0" \
-	'options lnet networks="tcp0(eth0),o2ib0(rxe0)"'
+	'options lnet networks="tcp0(eth0),o2ib0(eth1)"'
 check "0pt: conf unchanged" \
-	'options lnet networks="tcp0(eth0),o2ib0(rxe0)"' \
+	'options lnet networks="tcp0(eth0),o2ib0(eth1)"' \
 	"$RESULT"
 
 # --- Case: 0 passthrough, no FC_NICS at all ------------------------
@@ -121,12 +121,13 @@ check "1pt+0sr: placeholder resolved" \
 	"$RESULT"
 
 # --- Case: 1 passthrough + 1 softroce (mixed) ----------------------
-# rxe0 is softroce, already named correctly in conf; resolver must
-# skip it and match mlx5_0 to the lone passthrough placeholder.
+# Softroce slot carries the eth netdev (ko2iblnd finds rxe via
+# rdma_cm); resolver must skip rxe0 in the ibdev list and match
+# mlx5_0 to the lone passthrough placeholder.
 run_case "1pt-1sr" "softroce,passthrough" "mlx5_0 rxe0" \
-	'options lnet networks="tcp0(eth0),o2ib0(rxe0),o2ib1(@ib-of-eth2))"'
+	'options lnet networks="tcp0(eth0),o2ib0(eth1),o2ib1(@ib-of-eth2))"'
 check "1pt+1sr: only passthrough resolved" \
-	'options lnet networks="tcp0(eth0),o2ib0(rxe0),o2ib1(mlx5_0)"' \
+	'options lnet networks="tcp0(eth0),o2ib0(eth1),o2ib1(mlx5_0)"' \
 	"$RESULT"
 
 # --- Case: 2 passthrough -------------------------------------------

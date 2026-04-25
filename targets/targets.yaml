@@ -14,7 +14,7 @@ targets:
         CONFIG_XEN_PVH: y
       default: 6.12-rhel10.0
     lustre:
-      mode: server_ldiskfs
+      mode: client
     os_name: rocky
     os_version: '10.1'
     srpm_url: https://dl.rockylinux.org/pub/rocky/10/BaseOS/source/tree/Packages/k
@@ -34,7 +34,7 @@ targets:
         CONFIG_XEN_PVH: y
       default: 4.18-rhel8.10
     lustre:
-      mode: server_ldiskfs
+      mode: client
     os_name: rocky
     os_version: '8.9'
     srpm_url: https://dl.rockylinux.org/pub/rocky/8/BaseOS/source/tree/Packages/k

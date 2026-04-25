@@ -1855,13 +1855,38 @@ def run_setup(
             sudoers_drop.chmod(0o440)
             log.info("sudo secure_path extended via %s", sudoers_drop)
 
-    # Install bash tab completion
-    comp_src = REPO_ROOT / "ltvm_pkg" / "ltvm-completion.bash"
+    # Install bash tab completion via argcomplete.
+    # We bake the output of `register-python-argcomplete ltvm` straight
+    # into /etc/bash_completion.d/ltvm so the completion file is
+    # self-contained -- no PATH lookup for register-python-argcomplete at
+    # every shell startup, and it keeps working even if the venv moves.
     comp_dir = Path("/etc/bash_completion.d")
-    if comp_src.exists() and comp_dir.is_dir():
-        comp_dest = comp_dir / "ltvm"
-        shutil.copy2(comp_src, comp_dest)
-        log.info("Tab completion installed to %s", comp_dest)
+    register_bin = REPO_ROOT / ".venv" / "bin" / "register-python-argcomplete"
+    if comp_dir.is_dir():
+        if register_bin.exists():
+            try:
+                result = subprocess.run(
+                    [str(register_bin), "ltvm"],
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                comp_dest = comp_dir / "ltvm"
+                comp_dest.write_text(result.stdout)
+                comp_dest.chmod(0o644)
+                log.info("Tab completion installed to %s", comp_dest)
+            except subprocess.CalledProcessError as e:
+                log.warning(
+                    "Failed to generate tab completion (%s): %s",
+                    e.returncode,
+                    (e.stderr or "").strip(),
+                )
+        else:
+            log.warning(
+                "argcomplete not found at %s; run `uv sync` and re-run "
+                "`ltvm install` to get tab completion",
+                register_bin,
+            )
 
     if all_steps:
         log.info("")

@@ -101,7 +101,9 @@ class TestValidateNicSpec:
     def test_softroce_passes(self) -> None:
         """softroce is implemented: fc_nics=softroce reaches the guest,
         rc.local runs setup-nic-softroce.sh, setup-lnet-config.sh emits
-        the matching o2ib0(rxe0) line into /etc/modprobe.d/lnet.conf."""
+        the matching o2ib0(ethI) line into /etc/modprobe.d/lnet.conf
+        (LNet takes the backing netdev; ko2iblnd finds rxe via
+        rdma_cm)."""
         assert vm_commands.validate_nic_spec("softroce") == "softroce"
 
     def test_passthrough_accepts_valid_bdf(self) -> None:

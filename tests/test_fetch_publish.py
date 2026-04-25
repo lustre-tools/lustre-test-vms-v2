@@ -1,4 +1,4 @@
-"""Tests for cmd_fetch / cmd_publish / cmd_package and their helpers.
+"""Tests for cmd_fetch / cmd_publish and their helpers.
 
 These commands form the maintainer publish + consumer fetch pipeline
 and weren't well-covered behaviorally before this file existed.  The
@@ -29,7 +29,6 @@ from ltvm_pkg.cli import (
     _gh_release_upload,
     _release_status,
     cmd_fetch,
-    cmd_package,
     cmd_publish,
 )
 
@@ -44,7 +43,7 @@ def _tc(tmp_targets: Path) -> Any:
 
     with (
         patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-        patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+        patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
         patch.object(
             cfg,
             "TARGETS_YAML",
@@ -149,7 +148,9 @@ class TestFindReleaseUrl:
             ),
         ]
         with patch("ltvm_pkg.cli._gh_api", return_value=releases):
-            with pytest.raises(RuntimeError, match="No bootable release"):
+            with pytest.raises(
+                RuntimeError, match="No published bootable image"
+            ):
                 _find_release_url("rocky9", arch="x86_64", mode="bootable")
 
     def test_filter_string_filters_tag(self) -> None:
@@ -185,7 +186,7 @@ class TestFindReleaseUrl:
                     variant="mofed",
                 )
         msg = str(exc.value)
-        assert "ecosystem release" in msg
+        assert "No published artifacts" in msg
         assert "el9_5" in msg
         assert "mofed" in msg
         assert "ltvm target fetch --list" in msg
@@ -222,7 +223,7 @@ class TestReleaseStatus:
     def test_no_releases_yields_dashes(self, tmp_targets: Path) -> None:
         import ltvm_pkg.target_config as cfg
 
-        with patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"):
+        with patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"):
             local, remote = _release_status("rocky9", "x86_64", [])
         assert local == "-"
         assert remote == "-"
@@ -232,21 +233,21 @@ class TestReleaseStatus:
     ) -> None:
         import ltvm_pkg.target_config as cfg
 
-        with patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"):
+        with patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"):
             local, remote = _release_status("rocky9", "x86_64", None)
         assert remote == "?"
 
     def test_local_tag_is_trimmed(self, tmp_targets: Path) -> None:
         import ltvm_pkg.target_config as cfg
 
-        out = tmp_targets / "output"
+        out = tmp_targets / "artifacts"
         tag_dir = out / "rocky9" / "x86_64"
         tag_dir.mkdir(parents=True, exist_ok=True)
         (tag_dir / ".ltvm-release-tag").write_text(
             "rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre\n"
         )
 
-        with patch.object(cfg, "OUTPUT_DIR", out):
+        with patch.object(cfg, "ARTIFACTS_DIR", out):
             local, remote = _release_status("rocky9", "x86_64", [])
         assert local == "5.14.0-611.13.1.el9_7_lustre"
 
@@ -254,14 +255,14 @@ class TestReleaseStatus:
         """A locally-cached mofed tag must not satisfy a base query."""
         import ltvm_pkg.target_config as cfg
 
-        out = tmp_targets / "output"
+        out = tmp_targets / "artifacts"
         tag_dir = out / "rocky9" / "x86_64"
         tag_dir.mkdir(parents=True, exist_ok=True)
         (tag_dir / ".ltvm-release-tag").write_text(
             "rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre-mofed\n"
         )
 
-        with patch.object(cfg, "OUTPUT_DIR", out):
+        with patch.object(cfg, "ARTIFACTS_DIR", out):
             local, _ = _release_status(
                 "rocky9", "x86_64", [], variant="base"
             )
@@ -272,14 +273,14 @@ class TestReleaseStatus:
     ) -> None:
         import ltvm_pkg.target_config as cfg
 
-        out = tmp_targets / "output"
+        out = tmp_targets / "artifacts"
         tag_dir = out / "rocky9" / "x86_64"
         tag_dir.mkdir(parents=True, exist_ok=True)
         (tag_dir / ".ltvm-release-tag").write_text(
             "rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre\n"
         )
 
-        with patch.object(cfg, "OUTPUT_DIR", out):
+        with patch.object(cfg, "ARTIFACTS_DIR", out):
             local, _ = _release_status(
                 "rocky9", "x86_64", [], variant="mofed"
             )
@@ -299,7 +300,7 @@ class TestReleaseStatus:
                 ],
             },
         ]
-        with patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"):
+        with patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"):
             _, remote = _release_status(
                 "rocky9", "x86_64", releases, variant="mofed"
             )
@@ -319,7 +320,7 @@ class TestReleaseStatus:
                 ],
             },
         ]
-        with patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"):
+        with patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"):
             _, remote = _release_status(
                 "rocky9", "x86_64", releases, kernel_signature="el9_5"
             )
@@ -434,18 +435,22 @@ class TestGhReleaseUpload:
 
 
 # ---------------------------------------------------------------------------
-# cmd_package -- success + error paths
+# cmd_publish --no-upload -- local-package-only paths (formerly cmd_package)
 # ---------------------------------------------------------------------------
 
 
-class TestCmdPackage:
-    def test_no_lustre_skips_snapshot(
+class TestCmdPublishNoUpload:
+    """``publish --no-upload`` short-circuits after package_target --
+    the local-package flow (formerly ``target package``).
+    """
+
+    def test_no_lustre_passes_include_lustre_false(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_targets: Path,
         tmp_path: Path,
     ) -> None:
-        """--no-lustre must not call snapshot_lustre or _resolve_lustre_tree."""
+        """--no-lustre forces include_lustre=False into package_target."""
         tc = _tc(tmp_targets)
         assets = {
             "container": tmp_path / "c.tar.zst",
@@ -458,92 +463,60 @@ class TestCmdPackage:
 
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch.object(cli_mod, "snapshot_lustre") as snap,
             patch.object(
                 cli_mod, "package_target", return_value=assets
             ) as pt,
-            patch.object(cli_mod, "_resolve_lustre_tree") as rl,
+            patch.object(cli_mod, "_gh_release_upload") as upl,
         ):
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
+                no_upload=True,
                 output=None,
             )
-            rc = cmd_package(args)
+            rc = cmd_publish(args)
 
         assert rc == EXIT_OK
-        assert not snap.called
-        assert not rl.called
         assert pt.called
+        _, kwargs = pt.call_args
+        assert kwargs.get("include_lustre") is False
+        # --no-upload: must NOT hit GitHub.
+        assert not upl.called
 
-    def test_unresolvable_lustre_tree_returns_error(
-        self,
-        capsys: pytest.CaptureFixture[str],
-        tmp_targets: Path,
-    ) -> None:
-        tc = _tc(tmp_targets)
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch.object(
-                cli_mod,
-                "_resolve_lustre_tree",
-                return_value=(None, "Not a directory: /nope"),
-            ),
-            patch.object(cli_mod, "package_target") as pt,
-        ):
-            args = _ns(
-                target="rocky9",
-                no_lustre=False,
-                lustre_tree="/nope",
-                output=None,
-            )
-            rc = cmd_package(args)
-
-        assert rc == EXIT_ERROR
-        err = capsys.readouterr().err
-        assert "Not a directory" in err
-        # Hint must mention --no-lustre as the opt-out.
-        assert "--no-lustre" in err
-        assert not pt.called
-
-    def test_snapshot_failure_surfaces(
+    def test_default_passes_include_lustre_true(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_targets: Path,
         tmp_path: Path,
     ) -> None:
+        """Without --no-lustre, include_lustre=True -- no tree touched."""
         tc = _tc(tmp_targets)
-        lt = tmp_path / "lustre"
-        lt.mkdir()
+        assets = {"manifest": tmp_path / "m.json"}
+        assets["manifest"].write_text("{}")
+
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
             patch.object(
-                cli_mod,
-                "_resolve_lustre_tree",
-                return_value=(lt, None),
-            ),
-            patch.object(cli_mod, "_gate_lustre_validation"),
-            patch.object(
-                cli_mod,
-                "snapshot_lustre",
-                side_effect=RuntimeError("boom"),
-            ),
-            patch.object(cli_mod, "package_target") as pt,
+                cli_mod, "package_target", return_value=assets
+            ) as pt,
+            patch.object(cli_mod, "_resolve_lustre_tree") as rl,
+            patch.object(cli_mod, "snapshot_lustre") as snap,
         ):
             args = _ns(
                 target="rocky9",
                 no_lustre=False,
-                lustre_tree=str(lt),
+                no_upload=True,
                 output=None,
             )
-            rc = cmd_package(args)
+            rc = cmd_publish(args)
 
-        assert rc == EXIT_ERROR
-        err = capsys.readouterr().err
-        assert "Lustre snapshot failed" in err
-        assert "boom" in err
-        assert not pt.called
+        assert rc == EXIT_OK
+        assert pt.called
+        _, kwargs = pt.call_args
+        assert kwargs.get("include_lustre") is True
+        # Publish must never snapshot from / resolve the Lustre tree.
+        assert not snap.called
+        assert not rl.called
 
     def test_package_target_failure_surfaces(
         self,
@@ -562,10 +535,10 @@ class TestCmdPackage:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
+                no_upload=True,
                 output=None,
             )
-            rc = cmd_package(args)
+            rc = cmd_publish(args)
 
         assert rc == EXIT_ERROR
         err = capsys.readouterr().err
@@ -590,10 +563,10 @@ class TestCmdPackage:
                 target="rocky9",
                 variant="mofed",
                 no_lustre=True,
-                lustre_tree=None,
+                no_upload=True,
                 output=None,
             )
-            rc = cmd_package(args)
+            rc = cmd_publish(args)
 
         assert rc == EXIT_OK
         out = capsys.readouterr().out
@@ -762,7 +735,7 @@ class TestCmdFetch:
             rc = cmd_fetch(args)
         assert rc == EXIT_ERROR
         err = capsys.readouterr().err
-        assert "No ecosystem release" in err
+        assert "No published artifacts" in err
 
     def test_explicit_url_skips_lookup_and_fetches(
         self,
@@ -771,13 +744,13 @@ class TestCmdFetch:
     ) -> None:
         import ltvm_pkg.target_config as cfg
 
-        target_dir = tmp_targets / "output" / "rocky9" / "x86_64"
+        target_dir = tmp_targets / "artifacts" / "rocky9" / "x86_64"
         target_dir.mkdir(parents=True, exist_ok=True)
         url = "https://x/releases/download/rocky9-x86_64-foo/manifest.json"
 
         with (
             patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(cli_mod, "fetch_target", return_value=target_dir) as ft,
             patch.object(cli_mod, "_gh_api") as ga,
         ):
@@ -812,7 +785,7 @@ class TestCmdFetch:
         """Same release tag on disk: no fetch, no error, success."""
         import ltvm_pkg.target_config as cfg
 
-        out = tmp_targets / "output"
+        out = tmp_targets / "artifacts"
         target_dir = out / "rocky9" / "x86_64"
         target_dir.mkdir(parents=True, exist_ok=True)
         (target_dir / ".ltvm-release-tag").write_text("rocky9-x86_64-cached\n")
@@ -820,7 +793,7 @@ class TestCmdFetch:
 
         with (
             patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
-            patch.object(cfg, "OUTPUT_DIR", out),
+            patch.object(cfg, "ARTIFACTS_DIR", out),
             patch.object(cli_mod, "fetch_target") as ft,
         ):
             args = _ns(
@@ -849,7 +822,7 @@ class TestCmdFetch:
         """--replace + same tag refuses unless --force overrides."""
         import ltvm_pkg.target_config as cfg
 
-        out = tmp_targets / "output"
+        out = tmp_targets / "artifacts"
         target_dir = out / "rocky9" / "x86_64"
         target_dir.mkdir(parents=True, exist_ok=True)
         (target_dir / ".ltvm-release-tag").write_text("rocky9-x86_64-same\n")
@@ -857,7 +830,7 @@ class TestCmdFetch:
 
         with (
             patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
-            patch.object(cfg, "OUTPUT_DIR", out),
+            patch.object(cfg, "ARTIFACTS_DIR", out),
             patch.object(cli_mod, "fetch_target") as ft,
         ):
             args = _ns(
@@ -887,7 +860,7 @@ class TestCmdFetch:
     ) -> None:
         import ltvm_pkg.target_config as cfg
 
-        out = tmp_targets / "output"
+        out = tmp_targets / "artifacts"
         target_dir = out / "rocky9" / "x86_64"
         target_dir.mkdir(parents=True, exist_ok=True)
         (target_dir / ".ltvm-release-tag").write_text("rocky9-x86_64-same\n")
@@ -905,7 +878,7 @@ class TestCmdFetch:
 
         with (
             patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
-            patch.object(cfg, "OUTPUT_DIR", out),
+            patch.object(cfg, "ARTIFACTS_DIR", out),
             patch.object(
                 cli_mod, "fetch_target", side_effect=_fake_fetch
             ) as ft,
@@ -928,6 +901,108 @@ class TestCmdFetch:
         assert ft.called
         assert not leftover.exists()
 
+    def test_divergent_tag_refuses_without_replace(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+    ) -> None:
+        """Local tag differs from remote release: refuse by default so a
+        fresh fetch doesn't silently mix two releases' files."""
+        import ltvm_pkg.target_config as cfg
+
+        out = tmp_targets / "artifacts"
+        target_dir = out / "rocky9" / "x86_64"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / ".ltvm-release-tag").write_text(
+            "rocky9-x86_64-5.14.0-500.el9_5\n"
+        )
+        url = (
+            "https://x/releases/download/"
+            "rocky9-x86_64-5.14.0-600.el9_7/manifest.json"
+        )
+
+        with (
+            patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
+            patch.object(cfg, "ARTIFACTS_DIR", out),
+            patch.object(cli_mod, "fetch_target") as ft,
+            patch.object(
+                cli_mod,
+                "_gh_api",
+                return_value={"published_at": "2025-02-10T00:00:00Z"},
+            ),
+        ):
+            args = _ns(
+                target="rocky9",
+                url=url,
+                filter=None,
+                arch=None,
+                kernel=None,
+                variant="base",
+                list=False,
+                replace=False,
+                force=False,
+                image=False,
+            )
+            rc = cmd_fetch(args)
+
+        assert rc == EXIT_ERROR
+        assert not ft.called
+        err = capsys.readouterr().err
+        assert "5.14.0-500.el9_5" in err
+        assert "5.14.0-600.el9_7" in err
+        assert "--replace" in err
+        # The refusal message must include the remote publish date so
+        # the user can judge newness before deciding to upgrade.
+        assert "2025-02-10" in err
+
+    def test_divergent_tag_proceeds_with_replace(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+    ) -> None:
+        """--replace explicitly consents to overwriting a local copy."""
+        import ltvm_pkg.target_config as cfg
+
+        out = tmp_targets / "artifacts"
+        target_dir = out / "rocky9" / "x86_64"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        (target_dir / ".ltvm-release-tag").write_text(
+            "rocky9-x86_64-old\n"
+        )
+        (target_dir / "stale.txt").write_text("old")
+        url = "https://x/releases/download/rocky9-x86_64-new/manifest.json"
+
+        def _fake_fetch(target, url, base, **kw):  # type: ignore[no-untyped-def]
+            (Path(base) / target / kw["arch"]).mkdir(
+                parents=True, exist_ok=True
+            )
+            return Path(base) / target / kw["arch"]
+
+        with (
+            patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
+            patch.object(cfg, "ARTIFACTS_DIR", out),
+            patch.object(
+                cli_mod, "fetch_target", side_effect=_fake_fetch
+            ) as ft,
+        ):
+            args = _ns(
+                target="rocky9",
+                url=url,
+                filter=None,
+                arch=None,
+                kernel=None,
+                variant="base",
+                list=False,
+                replace=True,
+                force=False,
+                image=False,
+            )
+            rc = cmd_fetch(args)
+
+        assert rc == EXIT_OK
+        assert ft.called
+        assert not (target_dir / "stale.txt").exists()
+
     def test_fetch_target_failure_returns_error(
         self,
         capsys: pytest.CaptureFixture[str],
@@ -938,7 +1013,7 @@ class TestCmdFetch:
         url = "https://x/releases/download/rocky9-x86_64-foo/manifest.json"
         with (
             patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(
                 cli_mod,
                 "fetch_target",
@@ -990,7 +1065,7 @@ class TestCmdFetch:
 
         with (
             patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(
                 cli_mod,
                 "fetch_target",
@@ -1027,7 +1102,7 @@ class TestCmdFetch:
 
         with (
             patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch(
                 "ltvm_pkg.release_package.fetch_bootable",
                 return_value=Path("/fake/disk.qcow2"),
@@ -1067,7 +1142,7 @@ class TestCmdFetch:
 
         with (
             patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch(
                 "ltvm_pkg.release_package.fetch_bootable",
                 return_value=Path("/fake/disk.qcow2"),
@@ -1101,7 +1176,7 @@ class TestCmdFetch:
 
         with (
             patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch(
                 "ltvm_pkg.release_package.fetch_bootable",
                 side_effect=RuntimeError("disk corrupt"),
@@ -1248,7 +1323,7 @@ def _tc_factory(tmp_targets: Path):
     def _make(name: str, **kw: Any) -> Any:
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(
                 cfg,
                 "TARGETS_YAML",
@@ -1285,11 +1360,10 @@ class TestCmdPublish:
 
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(
                 cli_mod, "package_target", return_value=assets
             ) as pt,
-            patch.object(cli_mod, "snapshot_lustre") as snap,
             patch.object(
                 cli_mod,
                 "_gh_release_upload",
@@ -1299,7 +1373,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=False,
@@ -1308,14 +1381,13 @@ class TestCmdPublish:
 
         assert rc == EXIT_OK
         assert pt.called
-        assert not snap.called
         assert up.called
         out = capsys.readouterr().out
         # Tag derived from manifest name.
         assert "Tag: rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre" in out
         # Recorded the tag locally for fetch idempotency.
         tag_file = (
-            tmp_targets / "output" / "rocky9" / "x86_64"
+            tmp_targets / "artifacts" / "rocky9" / "x86_64"
             / ".ltvm-release-tag"
         )
         assert tag_file.exists()
@@ -1323,35 +1395,6 @@ class TestCmdPublish:
             tag_file.read_text().strip()
             == "rocky9-x86_64-5.14.0-611.13.1.el9_7_lustre"
         )
-
-    def test_unresolvable_lustre_tree_returns_error(
-        self,
-        capsys: pytest.CaptureFixture[str],
-        tmp_targets: Path,
-    ) -> None:
-        tc = _tc(tmp_targets)
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch.object(
-                cli_mod,
-                "_resolve_lustre_tree",
-                return_value=(None, "Not a directory: /x"),
-            ),
-            patch.object(cli_mod, "package_target") as pt,
-        ):
-            args = _ns(
-                target="rocky9",
-                no_lustre=False,
-                lustre_tree="/x",
-                output=None,
-                tag=None,
-                image=False,
-            )
-            rc = cmd_publish(args)
-        assert rc == EXIT_ERROR
-        err = capsys.readouterr().err
-        assert "kernel-only publish" in err
-        assert not pt.called
 
     def test_package_failure_blocks_upload(
         self,
@@ -1371,7 +1414,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=False,
@@ -1407,7 +1449,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=False,
@@ -1443,7 +1484,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag="my-explicit-tag",
                 image=False,
@@ -1483,7 +1523,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=False,  # ignored in image mode
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=True,
@@ -1515,7 +1554,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=True,
@@ -1550,7 +1588,6 @@ class TestCmdPublish:
             args = _ns(
                 target="rocky9",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=True,
@@ -1570,7 +1607,6 @@ class TestCmdPublish:
             args = _ns(
                 target="not_a_real_target",
                 no_lustre=True,
-                lustre_tree=None,
                 output=None,
                 tag=None,
                 image=False,

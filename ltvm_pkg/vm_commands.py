@@ -525,7 +525,9 @@ def _print_create_report(vm: VMInfo, args: argparse.Namespace) -> None:
         )
 
 
-def _resolve_os_and_kernel(args: argparse.Namespace) -> tuple:
+def _resolve_os_and_kernel(
+    args: argparse.Namespace, extra_nic_types: list[str] | None = None
+) -> tuple:
     """Resolve the OS target + kernel + image for create, and read
     the kernel version from meta.json.  Mutates args.mem to the
     target's default if the user didn't pass --mem.  Prints the
@@ -562,13 +564,16 @@ def _resolve_os_and_kernel(args: argparse.Namespace) -> tuple:
             if (args.mdt_disks or args.ost_disks)
             else "no data disks"
         )
+        nic_desc = (
+            f" nics={','.join(extra_nic_types)}" if extra_nic_types else ""
+        )
         image_meta = load_meta_safe(Path(os_arts.image).parent / "meta.json")
         lver = (image_meta or {}).get("lustre_version")
         lustre_desc = f" lustre={lver}" if lver else " (no lustre baked in)"
         print(
             f"using default target: {os_target} "
             f"(kernel: {kver_short};{lustre_desc}; "
-            f"vcpus={args.vcpus} mem={args.mem}MB {disk_desc})"
+            f"vcpus={args.vcpus} mem={args.mem}MB {disk_desc}{nic_desc})"
         )
 
     # Read kernel version from meta.json next to the kernel binary
@@ -810,7 +815,9 @@ def cmd_create(args: argparse.Namespace) -> None:
     tap = tap_for_name(name)
     mac = mac_for_name(name)
 
-    os_arts, image, kernel, kver, os_target, variant = _resolve_os_and_kernel(args)
+    os_arts, image, kernel, kver, os_target, variant = _resolve_os_and_kernel(
+        args, extra_nic_types
+    )
     base_name = Path(image).name
     os_id = os_target
 
@@ -1354,7 +1361,7 @@ def cmd_crash_collect(args: argparse.Namespace) -> int:
 
     print(f"vmcore: {local_vmcore}")
 
-    # Resolve vmlinux: prefer the freshly-built vmlinux from output/, then
+    # Resolve vmlinux: prefer the freshly-built vmlinux from artifacts/, then
     # look next to vm.kernel (which usually points to vmlinuz).  We always
     # prefer vmlinux over vmlinuz because drgn needs full debug symbols.
     if not vm.os_id:

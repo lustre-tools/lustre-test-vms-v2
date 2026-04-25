@@ -286,7 +286,7 @@ class TestCmdStatus:
         # Build a real TargetConfig against tmp_targets so it won't raise
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(
                 cfg,
                 "TARGETS_YAML",
@@ -327,7 +327,7 @@ class TestCmdStatusJson:
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(
                 cfg,
                 "TARGETS_YAML",
@@ -363,14 +363,14 @@ class TestCmdStatusJson:
         """build-status enumerates one image entry per built kernel dir."""
         import ltvm_pkg.target_config as cfg
 
-        # Pre-populate two built kernel dirs under output/rocky9/x86_64/kernels/
-        kernels = tmp_targets / "output" / "rocky9" / "x86_64" / "kernels"
+        # Pre-populate two built kernel dirs under artifacts/rocky9/x86_64/kernels/
+        kernels = tmp_targets / "artifacts" / "rocky9" / "x86_64" / "kernels"
         (kernels / "5.14-rhel9.7-5.14.0-611.13.1").mkdir(parents=True)
         (kernels / "5.14-rhel9.5-5.14.0-503.26.1").mkdir(parents=True)
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(
                 cfg,
                 "TARGETS_YAML",
@@ -467,7 +467,7 @@ class TestCmdValidate:
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(
                 cfg,
                 "TARGETS_YAML",
@@ -697,7 +697,7 @@ class TestValidationGating:
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(
                 cfg,
                 "TARGETS_YAML",
@@ -813,11 +813,13 @@ class TestValidationGating:
             patch.object(
                 cli_mod, "build_kernel", return_value={"ok": True}
             ) as bk,
+            patch.object(cli_mod, "build_lustre", return_value={"ok": True}),
+            patch.object(cli_mod, "snapshot_lustre"),
             patch.object(cli_mod, "build_image"),
         ):
             rc = _run_main(
                 [
-                    "build", "all", "--skip-lustre",
+                    "build", "all", 
                     "rocky9",
                     "--lustre-tree",
                     str(lustre_tree),
@@ -847,7 +849,7 @@ class TestValidationGating:
             with pytest.raises(SystemExit) as exc:
                 _run_main(
                     [
-                        "build", "all", "--skip-lustre",
+                        "build", "all", 
                         "rocky9",
                         "--lustre-tree",
                         str(lustre_tree),
@@ -875,11 +877,13 @@ class TestValidationGating:
             ),
             patch.object(cli_mod, "_do_build_container"),
             patch.object(cli_mod, "build_kernel", return_value={}),
+            patch.object(cli_mod, "build_lustre", return_value={}),
+            patch.object(cli_mod, "snapshot_lustre"),
             patch.object(cli_mod, "build_image"),
         ):
             rc = _run_main(
                 [
-                    "build", "all", "--skip-lustre",
+                    "build", "all", 
                     "rocky9",
                     "--lustre-tree",
                     str(lustre_tree),
@@ -906,11 +910,13 @@ class TestValidationGating:
             ),
             patch.object(cli_mod, "_do_build_container"),
             patch.object(cli_mod, "build_kernel", return_value={}),
+            patch.object(cli_mod, "build_lustre", return_value={}),
+            patch.object(cli_mod, "snapshot_lustre"),
             patch.object(cli_mod, "build_image"),
         ):
             rc = _run_main(
                 [
-                    "build", "all", "--skip-lustre",
+                    "build", "all", 
                     "rocky9",
                     "--lustre-tree",
                     str(lustre_tree),
@@ -939,7 +945,7 @@ class TestValidationGating:
             with pytest.raises(SystemExit) as exc:
                 _run_main(
                     [
-                        "build", "all", "--skip-lustre",
+                        "build", "all", 
                         "rocky9",
                         "--lustre-tree",
                         str(lustre_tree),
@@ -1083,47 +1089,15 @@ class TestValidationGating:
         assert rc == EXIT_OK
         assert bl.called
 
-    def test_package_refuse_aborts(
+    def test_publish_no_upload_ok_proceeds(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_targets: Path,
-        lustre_tree: Path,
-    ) -> None:
-        from ltvm_pkg import cli as cli_mod
-
-        tc = self._tc(tmp_targets)
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch.object(
-                cli_mod,
-                "validate_target",
-                return_value=self._vr("refuse", "nope"),
-            ),
-            patch.object(cli_mod, "snapshot_lustre") as snap,
-            patch.object(cli_mod, "package_target") as pt,
-        ):
-            with pytest.raises(SystemExit) as exc:
-                _run_main(
-                    [
-                        "target",
-                        "package",
-                        "rocky9",
-                        "--lustre-tree",
-                        str(lustre_tree),
-                    ],
-                    capsys,
-                )
-        assert exc.value.code == EXIT_ERROR
-        assert not snap.called
-        assert not pt.called
-
-    def test_package_ok_proceeds(
-        self,
-        capsys: pytest.CaptureFixture[str],
-        tmp_targets: Path,
-        lustre_tree: Path,
         tmp_path: Path,
     ) -> None:
+        """--no-upload runs package but skips GitHub upload.  Publish no
+        longer validates or snapshots the Lustre tree -- that's build-all's
+        job."""
         from ltvm_pkg import cli as cli_mod
 
         tc = self._tc(tmp_targets)
@@ -1139,23 +1113,27 @@ class TestValidationGating:
                 cli_mod, "validate_target", return_value=self._vr("ok")
             ),
             patch.object(cli_mod, "snapshot_lustre") as snap,
+            patch.object(cli_mod, "_resolve_lustre_tree") as rl,
             patch.object(
                 cli_mod, "package_target", return_value=assets
             ) as pt,
+            patch.object(cli_mod, "_gh_release_upload") as upl,
         ):
             rc = _run_main(
                 [
                     "target",
-                    "package",
+                    "publish",
                     "rocky9",
-                    "--lustre-tree",
-                    str(lustre_tree),
+                    "--no-upload",
                 ],
                 capsys,
             )
         assert rc == EXIT_OK
-        assert snap.called
         assert pt.called
+        # Publish does not touch the Lustre tree.
+        assert not snap.called
+        assert not rl.called
+        assert not upl.called
 
     def test_deploy_refuse_aborts(
         self,
@@ -1403,7 +1381,7 @@ class TestKernelArgPropagation:
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(
                 cfg,
                 "TARGETS_YAML",
@@ -1562,15 +1540,17 @@ class TestKernelArgPropagation:
             patch.object(
                 cli_mod, "build_kernel", return_value={"ok": True}
             ),
+            patch.object(cli_mod, "build_lustre", return_value={"ok": True}),
+            patch.object(cli_mod, "snapshot_lustre"),
             patch.object(cli_mod, "build_image") as mock_bi,
         ):
             rc = _run_main(
                 [
-                    "build", "all", "--skip-lustre",
+                    "build", "all", 
                     "rocky9",
                     "--kernel",
                     "5.14-rhel9.5",
-                    "--skip-lustre",
+                    
                     "--lustre-tree",
                     str(lustre_tree),
                 ],
@@ -1582,14 +1562,15 @@ class TestKernelArgPropagation:
         _, kwargs = mock_bi.call_args
         assert kwargs.get("kernel") == "5.14-rhel9.5"
 
-    def test_build_all_lustre_build_runs_before_image(
+    def test_build_all_runs_kernel_lustre_snapshot_image_in_order(
         self,
         capsys: pytest.CaptureFixture[str],
         tmp_targets: Path,
         lustre_tree: Path,
     ) -> None:
-        """Default build-all order: kernel → lustre → image, so the
-        image-bake step picks up the freshly staged Lustre."""
+        """build all must run kernel -> lustre -> snapshot -> image so
+        the staging is both on disk for the image bake AND copied into
+        the artifacts dir for later tree-free publish."""
         from ltvm_pkg import cli as cli_mod
         from ltvm_pkg.lustre_compat import ValidationResult
 
@@ -1618,6 +1599,11 @@ class TestKernelArgPropagation:
             ),
             patch.object(
                 cli_mod,
+                "snapshot_lustre",
+                side_effect=lambda *a, **kw: calls.append("snapshot"),
+            ),
+            patch.object(
+                cli_mod,
                 "build_image",
                 side_effect=lambda *a, **kw: calls.append("image"),
             ) as mock_bi,
@@ -1633,7 +1619,7 @@ class TestKernelArgPropagation:
             )
 
         assert rc == EXIT_OK
-        assert calls == ["kernel", "lustre", "image"]
+        assert calls == ["kernel", "lustre", "snapshot", "image"]
         _, img_kwargs = mock_bi.call_args
         assert img_kwargs.get("with_lustre") == str(lustre_tree)
 
@@ -1724,11 +1710,11 @@ class TestCmdClean:
     def test_clean_wipes_target_arch_dir(
         self, capsys: pytest.CaptureFixture[str], tmp_targets: Path
     ) -> None:
-        """`ltvm target clean rocky9` removes output/rocky9/x86_64/ but not other arches."""
+        """`ltvm target clean rocky9` removes artifacts/rocky9/x86_64/ but not other arches."""
         import ltvm_pkg.cli as cli_mod
         import ltvm_pkg.target_config as cfg
 
-        out = tmp_targets / "output"
+        out = tmp_targets / "artifacts"
         (out / "rocky9" / "x86_64" / "kernels" / "foo").mkdir(parents=True)
         (out / "rocky9" / "x86_64" / "kernels" / "foo" / "vmlinux").write_bytes(
             b"x" * 1024
@@ -1738,7 +1724,7 @@ class TestCmdClean:
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", out),
+            patch.object(cfg, "ARTIFACTS_DIR", out),
             patch.object(cli_mod, "TargetConfig", cfg.TargetConfig),
             patch.object(
                 cfg,
@@ -1765,7 +1751,7 @@ class TestCmdClean:
         import ltvm_pkg.cli as cli_mod
         import ltvm_pkg.target_config as cfg
 
-        out = tmp_targets / "output"
+        out = tmp_targets / "artifacts"
         (out / "rocky9" / "x86_64").mkdir(parents=True, exist_ok=True)
         (out / "rocky9" / "x86_64" / "a").write_text("a")
         (out / "rocky9" / "aarch64").mkdir(parents=True)
@@ -1773,7 +1759,7 @@ class TestCmdClean:
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", out),
+            patch.object(cfg, "ARTIFACTS_DIR", out),
             patch.object(cli_mod, "TargetConfig", cfg.TargetConfig),
             patch.object(
                 cfg,
@@ -1798,11 +1784,11 @@ class TestCmdClean:
         import ltvm_pkg.cli as cli_mod
         import ltvm_pkg.target_config as cfg
 
-        out = tmp_targets / "output"
+        out = tmp_targets / "artifacts"
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", out),
+            patch.object(cfg, "ARTIFACTS_DIR", out),
             patch.object(cli_mod, "TargetConfig", cfg.TargetConfig),
             patch.object(
                 cfg,
@@ -1876,7 +1862,7 @@ class TestFetchKernelFlag:
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(cli_mod, "TargetConfig", cfg.TargetConfig),
             patch.object(
                 cfg,
@@ -1913,7 +1899,7 @@ class TestCmdTargetsPerKernelRows:
 
         with (
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(cli_mod, "TargetConfig", cfg.TargetConfig),
             patch.object(
                 cfg,
