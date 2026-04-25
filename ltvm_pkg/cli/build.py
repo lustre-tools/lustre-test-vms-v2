@@ -487,18 +487,32 @@ def cmd_build_image(args: argparse.Namespace) -> int:
             )
             build_tree = tc.kernel_output_dir(kernel=resolved_kernel) / "build-tree"
             if not candidate.exists():
+                hint_lines = [
+                    f"checked: {candidate}",
+                ]
+                if not args.lustre_tree:
+                    hint_lines.append(
+                        "(no --lustre-tree given; defaulted to cwd"
+                        f" {lustre_tree})"
+                    )
+                hint_lines += [
+                    "",
+                    "build Lustre first (point at your Lustre source tree):",
+                    f"  ltvm build lustre {args.target} --kernel "
+                    f"{resolved_kernel} --lustre-tree /path/to/lustre-release",
+                    "then re-run with the same --lustre-tree:",
+                    f"  ltvm build image {args.target} --kernel "
+                    f"{resolved_kernel} --lustre-tree /path/to/lustre-release",
+                    "",
+                    "or skip Lustre and bake a kernel-only image:",
+                    f"  ltvm build image {args.target} --kernel "
+                    f"{resolved_kernel} --no-lustre",
+                ]
                 return _error(
                     f"Lustre not built for {args.target} kernel "
-                    f"{resolved_kernel} -- no staging at {candidate}",
+                    f"{resolved_kernel}",
                     use_json,
-                    hint=(
-                        f"build Lustre first:\n"
-                        f"  ltvm build lustre {args.target} --kernel "
-                        f"{resolved_kernel} --lustre-tree <path>\n"
-                        f"or disable Lustre for a kernel-only image:\n"
-                        f"  ltvm build image {args.target} --kernel "
-                        f"{resolved_kernel} --no-lustre"
-                    ),
+                    hint="\n".join(hint_lines),
                 )
             _cli_attr("_gate_lustre_validation")(
                 tc,

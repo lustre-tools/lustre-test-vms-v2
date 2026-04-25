@@ -234,9 +234,18 @@ def _apply_update() -> bool:
     installer = repo / "ltvm"
     if not installer.exists():
         return False
-    print(f"  Running {installer} install (will sudo)...")
+    # macOS install runs as the invoking user (Homebrew refuses root)
+    # and sudos selectively for the operations that need it; Linux
+    # install needs root throughout.
+    import platform
+    if platform.system() == "Darwin":
+        print(f"  Running {installer} install...")
+        cmd = [str(installer), "install"]
+    else:
+        print(f"  Running {installer} install (will sudo)...")
+        cmd = ["sudo", str(installer), "install"]
     try:
-        subprocess.run(["sudo", str(installer), "install"], check=True)
+        subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError:
         print("  `ltvm install` failed; update incomplete.", file=sys.stderr)
         return False
