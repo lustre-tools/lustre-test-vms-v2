@@ -935,7 +935,7 @@ class TestCmdFetch:
                 target="rocky9",
                 url=url,
                 filter=None,
-                arch=None,
+                arch="x86_64",
                 kernel=None,
                 variant="base",
                 list=False,
@@ -989,7 +989,7 @@ class TestCmdFetch:
                 target="rocky9",
                 url=url,
                 filter=None,
-                arch=None,
+                arch="x86_64",
                 kernel=None,
                 variant="base",
                 list=False,
@@ -1220,7 +1220,7 @@ class TestCmdFetch:
 
         with (
             patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "output"),
             patch(
                 "ltvm_pkg.cli.util.platform.machine",
                 return_value=reported_machine,
@@ -1264,7 +1264,7 @@ class TestCmdFetch:
 
         with (
             patch.object(cli_mod, "TargetConfig", _tc_factory(tmp_targets)),
-            patch.object(cfg, "OUTPUT_DIR", tmp_targets / "output"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "output"),
             patch("ltvm_pkg.cli.util.platform.machine", return_value="aarch64"),
             patch.object(
                 cli_mod,

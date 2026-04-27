@@ -77,7 +77,7 @@ class TestCidfileInjection:
         # between --cidfile and the original tail
         assert cmd[-3:] == ["--rm", "busybox", "true"]
         assert "--ulimit" in cmd
-        assert cmd[cmd.index("--ulimit") + 1] == "nofile=65536:65536"
+        assert cmd[cmd.index("--ulimit") + 1] == "nofile=524288:524288"
 
     def test_non_run_subcommand_passthrough(self) -> None:
         captured: list[list[str]] = []

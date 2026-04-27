@@ -470,7 +470,7 @@ class TestCmdDeployPerKernelStaging:
             run_mock.return_value = MagicMock(returncode=0, stdout="")
             args = ap.Namespace(
                 vm="co1-eh9",
-                build=str(build_path),
+                lustre_tree=str(build_path),
                 mount=False,
                 target=None,
                 kernel=None,
@@ -516,7 +516,7 @@ class TestCmdDeployPerKernelStaging:
         ):
             args = ap.Namespace(
                 vm="co1-eh9-legacy",
-                build=str(build_path),
+                lustre_tree=str(build_path),
                 mount=False,
                 target=None,
                 kernel=None,
@@ -545,7 +545,7 @@ def _setup_lustre_tree(build_path: Path) -> None:
 
 def _deploy_args(
     vm: str = "co-test",
-    build: str | None = None,
+    lustre_tree: str | None = None,
     *,
     mount: bool = False,
     target: str | None = None,
@@ -558,7 +558,7 @@ def _deploy_args(
 
     return ap.Namespace(
         vm=vm,
-        build=build,
+        lustre_tree=lustre_tree,
         mount=mount,
         target=target,
         kernel=kernel,
@@ -587,7 +587,7 @@ class TestCmdDeployErrorPaths:
         """A missing VM exits with EXIT_ERROR, never touches build."""
         from ltvm_pkg import cli as cli_mod
 
-        args = _deploy_args(vm="ghost", build=None)
+        args = _deploy_args(vm="ghost", lustre_tree=None)
         with patch("ltvm_pkg.cli.TargetConfig") as tc_mock:
             rc = cli_mod.cmd_deploy(args)
         assert rc == 1
@@ -604,7 +604,7 @@ class TestCmdDeployErrorPaths:
         vm.os_id = ""  # no recorded OS
         vm.save()
 
-        args = _deploy_args(vm="co1-no-target", build=None)
+        args = _deploy_args(vm="co1-no-target", lustre_tree=None)
         rc = cli_mod.cmd_deploy(args)
         assert rc == 1
 
@@ -618,7 +618,7 @@ class TestCmdDeployErrorPaths:
         vm.os_id = "bogusos"
         vm.save()
 
-        args = _deploy_args(vm="co1-unknown", build=str(tmp_path))
+        args = _deploy_args(vm="co1-unknown", lustre_tree=str(tmp_path))
         with patch.object(
             cli_mod, "TargetConfig", side_effect=ValueError("nope")
         ):
@@ -636,7 +636,7 @@ class TestCmdDeployErrorPaths:
         vm.save()
 
         args = _deploy_args(
-            vm="co1-nodir", build=str(tmp_path / "does-not-exist")
+            vm="co1-nodir", lustre_tree=str(tmp_path / "does-not-exist")
         )
         with patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()):
             rc = cli_mod.cmd_deploy(args)
@@ -655,7 +655,7 @@ class TestCmdDeployErrorPaths:
         vm.os_id = "rocky9"
         vm.save()
 
-        args = _deploy_args(vm="co1-bad", build=str(bad))
+        args = _deploy_args(vm="co1-bad", lustre_tree=str(bad))
         with patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()):
             rc = cli_mod.cmd_deploy(args)
         assert rc == 1
@@ -674,7 +674,7 @@ class TestCmdDeployErrorPaths:
         vm.save()
 
         args = _deploy_args(
-            vm="co1-uspace", build=str(build_path), userspace_only=True
+            vm="co1-uspace", lustre_tree=str(build_path), userspace_only=True
         )
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
@@ -704,7 +704,7 @@ class TestCmdDeployErrorPaths:
         vm.os_id = "rocky9"
         vm.save()
 
-        args = _deploy_args(vm="co1-rterr", build=str(build_path))
+        args = _deploy_args(vm="co1-rterr", lustre_tree=str(build_path))
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
             patch(
@@ -747,7 +747,7 @@ class TestCmdDeployUserspaceOnly:
 
         args = _deploy_args(
             vm="co1-uspace-ok",
-            build=str(build_path),
+            lustre_tree=str(build_path),
             userspace_only=True,
         )
         with (
@@ -807,7 +807,7 @@ class TestCmdDeployBundledSnapshot:
             rsync_calls.append(cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        args = _deploy_args(vm="co1-bundled", build=None)
+        args = _deploy_args(vm="co1-bundled", lustre_tree=None)
         # Run from snapshot dir so cwd-fallback wouldn't trigger; but
         # since the snapshot marker exists, snapshot path wins regardless.
         import os as _os
@@ -859,7 +859,7 @@ class TestCmdDeployBundledSnapshot:
         def fake_run(cmd, *args, **kwargs):
             return MagicMock(returncode=23, stdout="", stderr="rsync: nope")
 
-        args = _deploy_args(vm="co1-rsync-fail", build=None)
+        args = _deploy_args(vm="co1-rsync-fail", lustre_tree=None)
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
             patch("ltvm_pkg.cli.deploy_to_vm") as deploy_mock,
@@ -898,7 +898,7 @@ class TestCmdDeployBundledSnapshot:
                 return_value=MagicMock(returncode=0, stdout="", stderr=""),
             ),
         ):
-            args = _deploy_args(vm="co1-snap-ok", build=None)
+            args = _deploy_args(vm="co1-snap-ok", lustre_tree=None)
             rc = cli_mod.cmd_deploy(args)
 
         # Should succeed (rc=0), not bail with "not a Lustre source tree".
@@ -938,7 +938,7 @@ class TestCmdDeployVariantPropagation:
         def fake_deploy_to_vm(vm_arg, staging_arg, **kwargs):
             captured["staging"] = Path(staging_arg)
 
-        args = _deploy_args(vm="co1-mofed", build=str(build_path))
+        args = _deploy_args(vm="co1-mofed", lustre_tree=str(build_path))
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()) as tc_mock,
             patch(
@@ -996,7 +996,7 @@ class TestCmdDeployKernelMismatch:
         def fake_deploy_to_vm(vm_arg, staging_arg, **kwargs):
             captured["staging"] = Path(staging_arg)
 
-        args = _deploy_args(vm="co1-altkern", build=str(build_path))
+        args = _deploy_args(vm="co1-altkern", lustre_tree=str(build_path))
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
             patch(
@@ -1037,7 +1037,7 @@ class TestCmdDeployKernelMismatch:
             # Build returns 1 so we abort cleanly after capturing the cmd.
             return MagicMock(returncode=1, stdout="", stderr="")
 
-        args = _deploy_args(vm="co1-fwd", build=str(build_path))
+        args = _deploy_args(vm="co1-fwd", lustre_tree=str(build_path))
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
             patch.object(cli_mod, "_gate_lustre_validation"),
@@ -1085,7 +1085,7 @@ class TestCmdDeployForceCompat:
             gate_calls.append({"force": force})
 
         args = _deploy_args(
-            vm="co1-fc", build=str(build_path), force_compat=True
+            vm="co1-fc", lustre_tree=str(build_path), force_compat=True
         )
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
@@ -1124,7 +1124,7 @@ class TestCmdDeployForceCompat:
         )
 
         args = _deploy_args(
-            vm="co1-fc-hard", build=str(build_path), force_compat=True
+            vm="co1-fc-hard", lustre_tree=str(build_path), force_compat=True
         )
         # _gate_lustre_validation raises SystemExit on "error" even with
         # force.  cmd_deploy is dispatched directly (not through _vm_call)
@@ -1167,7 +1167,7 @@ class TestCmdDeployMountAndKver:
         vm.save()
 
         args = _deploy_args(
-            vm="co1-mount", build=str(build_path), mount=True
+            vm="co1-mount", lustre_tree=str(build_path), mount=True
         )
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
@@ -1203,7 +1203,7 @@ class TestCmdDeployMountAndKver:
         vm.save()
 
         args = _deploy_args(
-            vm="co1-mount-fail", build=str(build_path), mount=True
+            vm="co1-mount-fail", lustre_tree=str(build_path), mount=True
         )
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
@@ -1240,7 +1240,7 @@ class TestCmdDeployMountAndKver:
         vm.os_id = "rocky9"
         vm.save()
 
-        args = _deploy_args(vm="co1-kver", build=str(build_path))
+        args = _deploy_args(vm="co1-kver", lustre_tree=str(build_path))
         update_calls: list = []
         from ltvm_pkg.vm_state import VMInfo as _VMI
 
@@ -1285,7 +1285,7 @@ class TestCmdDeployMountAndKver:
         vm.os_id = "rocky9"
         vm.save()
 
-        args = _deploy_args(vm="co1-perm", build=str(build_path))
+        args = _deploy_args(vm="co1-perm", lustre_tree=str(build_path))
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
             patch("ltvm_pkg.cli.deploy_to_vm"),

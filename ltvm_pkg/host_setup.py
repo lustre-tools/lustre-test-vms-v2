@@ -746,6 +746,13 @@ def install_socket_vmnet_launchd_macos(force: bool = False) -> None:
             tmp_path = tf.name
         try:
             _sudo_run(["mkdir", "-p", "/var/log/socket_vmnet"])
+            # The socket_vmnet brew package doesn't create its var/run dir,
+            # but the daemon binds its Unix socket there -- without this
+            # mkdir the plist boots, fails ENOENT on bind(), and respawns
+            # forever ("ERROR| socket_bindlisten: No such file or directory").
+            _sudo_run(
+                ["mkdir", "-p", str(socket_vmnet_socket_path().parent)]
+            )
             _sudo_run(
                 [
                     "install",

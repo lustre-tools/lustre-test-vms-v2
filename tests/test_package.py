@@ -332,7 +332,14 @@ class TestSnapshotLustreVariant:
         modules = staging / "lib" / "modules" / "5.14.0-611.test" / "extra"
         modules.mkdir(parents=True)
         ko = modules / "lustre.ko"
-        ko.write_bytes(b"fake-ko")
+        # snapshot_lustre reads `vermagic` from this .ko (via the
+        # in-Python ELF .modinfo parser in ltvm_pkg.paths).  The
+        # parser scans for a NUL-prefixed `<field>=value\0` byte
+        # sequence anywhere in the file -- crafting just that bit
+        # lets the test stay independent of a real kbuild artifact.
+        ko.write_bytes(
+            b"fake-ko\x00vermagic=5.14.0-611.test SMP mod_unload\x00"
+        )
 
         tree.mkdir(exist_ok=True)
         env = {**os.environ, "GIT_AUTHOR_NAME": "t",
