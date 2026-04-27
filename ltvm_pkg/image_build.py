@@ -842,11 +842,16 @@ def _export_to_ext4(
         log.info("Extracting rootfs tarball...")
         # tar --exclude=dev/* skips device nodes we can't mknod as user;
         # we recreate the pseudo-fs mountpoints dev/{pts,shm,mqueue}.
-        # `find ! -readable chmod u+r` heals unreadable files left by
-        # container post-install scripts so mke2fs -d can ingest them.
-        # A single fakeroot session spans tar-x and mke2fs -d so the
-        # uid/gid LD_PRELOAD state is consistent across both reads
-        # (mke2fs statting the tree) and writes (tar setting 0:0).
+        # `chmod -R u+rX` heals unreadable files left by container
+        # post-install scripts (gshadow lands as 0000) so mke2fs -d can
+        # ingest them.  Earlier we used `find ! -readable -exec chmod
+        # u+r` but BSD find on macOS doesn't have -readable, so the
+        # find call errored out and the chmod never ran -- mke2fs then
+        # tripped on gshadow.  `chmod -R u+rX` is portable: u+r adds
+        # user-read on every entry; the capital X adds user-execute
+        # only on directories (and on files that already have any
+        # exec bit), so we don't accidentally mark plain data files
+        # executable.
         extract_script = (
             f"set -e; "
             f"tar -C {shlex.quote(str(rootfs))} -xpf "
@@ -854,8 +859,7 @@ def _export_to_ext4(
             f"mkdir -p {shlex.quote(str(rootfs))}/dev/pts "
             f"{shlex.quote(str(rootfs))}/dev/shm "
             f"{shlex.quote(str(rootfs))}/dev/mqueue; "
-            f"find {shlex.quote(str(rootfs))} ! -readable "
-            f"-exec chmod u+r {{}} + 2>/dev/null || true; "
+            f"chmod -R u+rX {shlex.quote(str(rootfs))}; "
             # -O ^metadata_csum,^dir_index works around two distinct
             # e2fsprogs 1.46.5 bugs in `mke2fs -d`:
             #   * "Directory block checksum does not match" on htree

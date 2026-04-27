@@ -998,12 +998,13 @@ def install_image_tools_macos(force: bool = False) -> None:
     """Install host tools needed by `ltvm build image` on macOS.
 
     image_build assembles the ext4 rootfs on the host with `mke2fs -d`
-    + `fakeroot`, neither of which ship in macOS.  Brew has both.
-    e2fsprogs is keg-only (mke2fs collides with macOS's BSD mke2fs in
-    /sbin), so we symlink the brew binary into /usr/local/bin/mke2fs
-    where shutil.which() will find it without polluting the rest of
-    e2fsprogs onto PATH.  fakeroot installs at /opt/homebrew/bin which
-    is already on PATH for typical Mac shells.
+    plus the rest of e2fsprogs (`e2fsck`, `tune2fs`, `resize2fs`) and
+    `fakeroot`.  None ship in macOS.  Brew has all of them.
+    e2fsprogs is keg-only (its sbin/ collides with macOS's BSD
+    counterparts in /sbin), so we symlink each binary we use into
+    /usr/local/bin/ where shutil.which() will find it without
+    polluting all of e2fsprogs onto PATH.  fakeroot installs at
+    /opt/homebrew/bin which is already on PATH for typical Mac shells.
     """
     brew = shutil.which("brew")
     if not brew:
@@ -1029,20 +1030,29 @@ def install_image_tools_macos(force: bool = False) -> None:
         r = _run_quiet([brew, "--prefix", "e2fsprogs"], check=True)
         e2fs_prefix = Path(r.stdout.strip())
 
-    src = e2fs_prefix / "sbin" / "mke2fs"
-    link = Path("/usr/local/bin/mke2fs")
-    need_link = (
-        force
-        or not link.is_symlink()
-        or link.resolve() != src.resolve()
-    )
-    if need_link:
-        _sudo_run(["mkdir", "-p", "/usr/local/bin"], quiet=True)
+    bin_dir = Path("/usr/local/bin")
+    primed_dir = False
+    # Tools image_build invokes by bare name -- needs to be findable
+    # via shutil.which / PATH.  e2fsck, tune2fs, resize2fs are used in
+    # the post-mke2fs check + reshrink + feature re-enable steps.
+    for tool in ("mke2fs", "e2fsck", "tune2fs", "resize2fs"):
+        src = e2fs_prefix / "sbin" / tool
+        if not src.exists():
+            continue
+        link = bin_dir / tool
+        need_link = (
+            force
+            or not link.is_symlink()
+            or link.resolve() != src.resolve()
+        )
+        if not need_link:
+            continue
+        if not primed_dir:
+            _sudo_run(["mkdir", "-p", str(bin_dir)], quiet=True)
+            primed_dir = True
         _sudo_run(["rm", "-f", str(link)], quiet=True)
         _sudo_run(["ln", "-s", str(src), str(link)], quiet=True)
-        log.info("mke2fs symlinked at %s -> %s", link, src)
-    else:
-        log.info("mke2fs already at %s", link)
+        log.info("%s symlinked at %s -> %s", tool, link, src)
 
 
 def install_qemu(host: HostInfo, force: bool = False) -> None:
