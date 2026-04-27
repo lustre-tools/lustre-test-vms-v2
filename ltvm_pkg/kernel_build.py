@@ -114,6 +114,79 @@ def parse_lustre_target(
     }
 
 
+def _resolve_available_srpm(
+    target_info: dict[str, str],
+    srpm_url: str,
+    lustre_target: str,
+) -> dict[str, str]:
+    """Auto-fall-back to the latest published kernel SRPM if the
+    declared one is missing.
+
+    Lustre's per-target ``.target.in`` files often pin the exact
+    kernel build RHEL/Lustre tested against, but Rocky publishes new
+    ``.elN_M`` point releases on its own cadence and removes older
+    ones from ``/pub`` once a newer one ships.  The result is
+    ``ltvm build kernel rocky9`` failing with a 404 on a clean
+    workstation: Lustre's target.in says
+    ``kernel-5.14.0-611.42.1.el9_7.src.rpm`` but Rocky only carries
+    ``kernel-5.14.0-611.47.1.el9_7.src.rpm`` today.
+
+    For server kernels the LNet/Lustre patches are series-stable
+    across point releases (we re-apply them with a small fuzz inside
+    the build), so substituting Rocky's latest ``.elN_M`` SRPM is
+    almost always correct.  Probe the parent index, and if the
+    declared SRPM is missing but a sibling matches the same
+    ``.elN_M`` suffix, swap in the latest one and let the user know.
+
+    Cheap to do unconditionally: one HTTP HEAD on the declared URL,
+    plus one GET on the parent index when that 404s.  No network
+    egress at all when the declared SRPM is present.
+    """
+    declared_srpm = target_info["srpm"]
+    declared_url = f"{srpm_url}/{declared_srpm}"
+    is_404 = _url_returns_404(declared_url)
+    if is_404 is False:
+        # Reachable (200) or non-404 status: trust the declared SRPM.
+        return target_info
+    if is_404 is None:
+        # Network error / offline: leave it; download_srpm's normal
+        # error handling will print a useful message if we really
+        # can't reach Rocky.
+        return target_info
+    # Declared URL is 404.  Try the vault fallback before giving up
+    # on the original.
+    for url in _srpm_fallback_urls(srpm_url, declared_srpm):
+        if _url_returns_404(url) is False:
+            return target_info
+    # Probe for a sibling SRPM with the same .elN_M suffix.
+    latest = _probe_latest_rocky_srpm(srpm_url, declared_srpm)
+    if not latest:
+        # Try the vault parent too -- same series might live there.
+        for url in _srpm_fallback_urls(srpm_url, declared_srpm):
+            parent = url.rsplit("/", 1)[0]
+            latest = _probe_latest_rocky_srpm(parent, declared_srpm)
+            if latest:
+                break
+    if not latest or latest == declared_srpm:
+        return target_info
+    # Convert "kernel-<lnxmaj>-<lnxrel>.src.rpm" -> override format
+    # "<lnxmaj>-<lnxrel>".
+    m = re.match(r"^kernel-([\d.]+)-(.*)\.src\.rpm$", latest)
+    if not m:
+        return target_info
+    new_version = f"{m.group(1)}-{m.group(2)}"
+    log.warning(
+        "Lustre target.in pins kernel SRPM %s but Rocky has only "
+        "published %s.  Falling back to the latest published SRPM; "
+        "Lustre patches will be re-applied with fuzz.  Pin a "
+        "specific srpm_version in targets.yaml if you need strict "
+        "matching.",
+        declared_srpm,
+        latest,
+    )
+    return apply_srpm_override(target_info, new_version, lustre_target)
+
+
 def apply_srpm_override(
     target_info: dict[str, str],
     srpm_version: str | None,
@@ -913,6 +986,12 @@ def _build_kernel_srpm(
     target_info = apply_srpm_override(
         target_info, overrides.get("srpm_version"), lustre_target
     )
+    if target_config.srpm_url and not overrides.get("srpm_version"):
+        # Static srpm_version (when present) wins over the auto-probe
+        # so a user can pin to a specific known-good version.
+        target_info = _resolve_available_srpm(
+            target_info, target_config.srpm_url, lustre_target
+        )
     log.info("Kernel SRPM: %s", target_info["srpm"])
 
     lustre_files = resolve_lustre_files(
