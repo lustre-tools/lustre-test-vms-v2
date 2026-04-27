@@ -445,18 +445,14 @@ def snapshot_lustre(
                 f"kernel meta.json missing kernel_version: {meta_file}"
             )
         sample = ko_files[0]
-        r = subprocess.run(
-            ["modinfo", "-F", "vermagic", str(sample)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
+        from .paths import read_modinfo_field
+        vermagic = read_modinfo_field(sample, "vermagic")
+        if not vermagic:
             raise RuntimeError(
-                f"modinfo failed to read vermagic from {sample} "
-                f"(rc={r.returncode}): {r.stderr.strip()}"
+                f"could not read vermagic from {sample}; the file "
+                f"may not be a valid kernel module"
             )
-        parts = r.stdout.split()
+        parts = vermagic.split()
         actual_kver = parts[0] if parts else ""
         if actual_kver != expected_kver:
             raise ValueError(

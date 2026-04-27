@@ -43,6 +43,46 @@ def load_meta_safe(meta_file: Path) -> dict[str, Any] | None:
         return None
 
 
+def read_modinfo_field(ko_path: Path, field: str) -> str | None:
+    """Read a single .modinfo field from a Linux .ko ELF in pure Python.
+
+    Equivalent to ``modinfo -F <field> <ko>`` but doesn't depend on
+    the kmod userspace, which is Linux-only and not available on
+    macOS hosts that build images via podman machine.
+
+    .ko files are ELF relocatable objects with a ``.modinfo`` section
+    containing null-separated ``key=value`` entries.  The bytes pattern
+    is regular enough that we can scan the whole file rather than
+    walk ELF headers; the cost is reading the (~1MB) module twice in
+    edge cases, which is fine for a metadata lookup that runs at most
+    a handful of times per build.
+
+    Returns ``None`` if the field isn't present or the file can't be
+    read.  Raises nothing; callers can fall back to a default.
+    """
+    try:
+        data = ko_path.read_bytes()
+    except OSError:
+        return None
+    needle = f"{field}=".encode()
+    # Each .modinfo entry is preceded by a NUL except (occasionally)
+    # the very first one when the section starts immediately with
+    # the entry.  Try the NUL-prefixed form first, then the bare form.
+    for prefix in (b"\x00" + needle, needle):
+        idx = data.find(prefix)
+        if idx < 0:
+            continue
+        start = idx + len(prefix)
+        end = data.find(b"\x00", start)
+        if end < 0:
+            return None
+        try:
+            return data[start:end].decode("utf-8")
+        except UnicodeDecodeError:
+            return data[start:end].decode("utf-8", errors="replace")
+    return None
+
+
 def find_ltvm_root() -> Path:
     """Resolve the ltvm repo root.
 

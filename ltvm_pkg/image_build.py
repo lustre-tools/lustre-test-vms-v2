@@ -732,16 +732,14 @@ def build_image(
         # those first and write garbage to meta.  Walk a priority
         # list of canonical module names and use the first that yields
         # a sensible version string.
+        from .paths import read_modinfo_field
+
         candidates = ("lustre.ko", "libcfs.ko", "obdclass.ko", "ptlrpc.ko")
         for cand in candidates:
             ko = next(lustre_staging.rglob(cand), None)
             if ko is None:
                 continue
-            r = subprocess.run(
-                ["modinfo", "-F", "version", str(ko)],
-                capture_output=True, text=True,
-            )
-            v = r.stdout.strip().splitlines()[0] if r.returncode == 0 and r.stdout.strip() else ""
+            v = (read_modinfo_field(ko, "version") or "").strip()
             # Guard against the legacy "in-kernel" stub even if a future
             # refactor lets it leak back in under a preferred name.
             if v and "in-kernel" not in v:
