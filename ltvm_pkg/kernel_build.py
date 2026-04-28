@@ -29,6 +29,30 @@ if TYPE_CHECKING:
 
 log = logging.getLogger(__name__)
 
+
+def _kernel_build_jobs() -> int:
+    """Pick a make -j value sized to the available container memory.
+
+    LTVM_KERNEL_JOBS overrides everything when set.  Otherwise on
+    macOS we cap at 4: podman machine defaults to 2 GB RAM and 4
+    vCPUs, and a kernel C compile peaks around 250 MB per job, so 8
+    parallel gcc invocations OOM-kill the build with exit 137.  Linux
+    builds on the bare host get to use all cores.
+    """
+    env = os.environ.get("LTVM_KERNEL_JOBS")
+    if env:
+        try:
+            n = int(env)
+            if n > 0:
+                return n
+        except ValueError:
+            pass
+    cores = os.cpu_count() or 4
+    import sys as _sys
+    if _sys.platform == "darwin":
+        return min(cores, 4)
+    return cores
+
 INNER_SCRIPT = Path(__file__).parent / "kernel-build-inner.sh"
 INNER_SCRIPT_DEB = Path(__file__).parent / "kernel-build-inner-deb.sh"
 
@@ -917,7 +941,7 @@ def _build_kernel_deb(
         )
 
         # Run build in container
-        jobs = os.cpu_count() or 4
+        jobs = _kernel_build_jobs()
         container_cmd = [
             "podman",
             "run",
@@ -1086,7 +1110,7 @@ def _build_kernel_srpm(
         )
 
         # Run build in container
-        jobs = os.cpu_count() or 4
+        jobs = _kernel_build_jobs()
         container_cmd = [
             "podman",
             "run",
