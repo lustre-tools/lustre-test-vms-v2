@@ -6,6 +6,7 @@ import fcntl
 import json
 import os
 import re
+import sys
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -316,6 +317,12 @@ def _read_subnet() -> str:
     setup) sees the same value as the host bridge config.  Without this
     file, --subnet would only configure the host side and VMs would
     silently get IPs from the wrong range.
+
+    On macOS the default has to track the socket_vmnet gateway
+    (LTVM_VMNET_GATEWAY, 192.168.105.1 by default) -- otherwise
+    alloc_ip hands out 192.168.100.x IPs while the guest DHCPs onto
+    the 192.168.105.x vmnet, and wait_for_ssh hangs talking to a
+    nonexistent address.
     """
     env = os.environ.get("LTVM_SUBNET")
     if env:
@@ -325,6 +332,9 @@ def _read_subnet() -> str:
         v = f.read_text().strip()
         if v:
             return v
+    if sys.platform == "darwin":
+        gw = os.environ.get("LTVM_VMNET_GATEWAY", "192.168.105.1")
+        return gw.rsplit(".", 1)[0]
     return "192.168.100"
 
 

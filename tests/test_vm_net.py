@@ -126,17 +126,29 @@ class TestMacForName:
 
 
 @pytest.fixture
-def tmp_vmdir(tmp_path: Path) -> Path:
+def tmp_vmdir(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
     """Redirect VM_DIR, SOCKETS, and the lock path into tmp_path.
 
     alloc_ip looks up existing VMs via VMInfo.all_names()/load(), which
     read from SOCKETS.  The lock file is stored relative to VM_DIR.
+
+    Pin ``LTVM_SUBNET`` so the tests assert against a known subnet
+    regardless of host -- on macOS the default is the socket_vmnet
+    gateway (192.168.105) instead of the Linux bridge default
+    (192.168.100), and the tests below pre-baked the latter.
     """
     sockets = tmp_path / "sockets"
     sockets.mkdir()
     lock_path = tmp_path / ".ip-alloc.lock"
     hosts_lock = tmp_path / ".hosts.lock"
+    # SUBNET is a module-level constant frozen at import time, so
+    # LTVM_SUBNET in env is too late.  Patch the resolved values
+    # directly on both modules that re-exported the import.
     with (
+        patch("ltvm_pkg.vm_state.SUBNET", "192.168.100"),
+        patch("ltvm_pkg.vm_net.SUBNET", "192.168.100"),
         patch("ltvm_pkg.vm_state.VM_DIR", tmp_path),
         patch("ltvm_pkg.vm_state.SOCKETS", sockets),
         patch("ltvm_pkg.vm_net._IP_LOCK_PATH", lock_path),

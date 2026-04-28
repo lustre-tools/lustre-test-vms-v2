@@ -229,8 +229,16 @@ def _sudo_run(
 def _sudo_prime(reason: str) -> None:
     """Prompt for sudo credentials up front so later _sudo_run calls
     don't interrupt with a surprise password prompt mid-install.
+
+    Skips the prompt entirely when ``sudo -n true`` succeeds, which
+    covers both an unexpired sudo timestamp and ``NOPASSWD`` rules --
+    in those cases ``sudo -v`` would still try to authenticate and
+    fail in non-tty contexts (subshells, hooks, CI), aborting install
+    even though every later ``sudo`` would have worked.
     """
     if os.geteuid() == 0:
+        return
+    if _run_quiet(["sudo", "-n", "true"], check=False).returncode == 0:
         return
     log.info("%s -- prompting for sudo credentials now.", reason)
     _run(["sudo", "-v"])
@@ -647,6 +655,31 @@ def socket_vmnet_socket_path() -> Path:
     if prefix is not None:
         return prefix / "var" / "run" / "socket_vmnet"
     return Path("/var/run/socket_vmnet")
+
+
+def install_sshpass_macos(force: bool = False) -> None:
+    """Install sshpass on macOS via Homebrew.
+
+    sshpass is invoked by deploy/wait_for_ssh/run_ssh to talk to
+    freshly-booted VMs that only have password auth (root/initial0)
+    until ssh-key provisioning lands.  Without it, ``ltvm create``
+    fails right after boot with ``[Errno 2] No such file or directory:
+    'sshpass'`` and rolls back the whole VM.
+    """
+    if shutil.which("sshpass") and not force:
+        return
+    brew = shutil.which("brew")
+    if not brew:
+        raise RuntimeError(
+            "Homebrew not found. Install it from https://brew.sh, "
+            "then run: brew install sshpass"
+        )
+    log.info("Installing sshpass via Homebrew...")
+    _run([brew, "install", "sshpass"])
+    if not shutil.which("sshpass"):
+        raise RuntimeError(
+            "brew install sshpass succeeded but sshpass not on PATH"
+        )
 
 
 def install_socket_vmnet_macos(force: bool = False) -> None:
@@ -1842,6 +1875,7 @@ def _run_setup_macos(
     if "network" in active:
         install_socket_vmnet_macos(force=force)
         install_socket_vmnet_launchd_macos(force=force)
+        install_sshpass_macos(force=force)
 
     if "podman" in active:
         install_podman_macos(force=force)
