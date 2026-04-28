@@ -591,11 +591,29 @@ def package_target(
             + (f" --variant {variant}" if variant != DEFAULT_VARIANT else "")
         )
 
-    image_ext4 = next(paths["image_dir"].glob("*.ext4"), None)
+    # Prefer the canonical base.ext4 -- mke2fs writes a temp
+    # ltvm-image-XXXXXXXX.ext4 first and renames it once the build is
+    # complete, but interrupted builds leave 0-byte (or stale, full-
+    # size but non-renamed) temp files alongside the real base.ext4.
+    # A naive glob("*.ext4") then picks one of those at random, and
+    # the published release ships a broken image asset.
+    base_ext4 = paths["image_dir"] / "base.ext4"
+    image_ext4 = (
+        base_ext4
+        if base_ext4.exists() and base_ext4.stat().st_size > 0
+        else next(
+            (
+                p
+                for p in paths["image_dir"].glob("*.ext4")
+                if p.stat().st_size > 0
+            ),
+            None,
+        )
+    )
     if image_ext4 is None:
         raise ValueError(
-            f"no *.ext4 in {paths['image_dir']} -- did `ltvm build image` "
-            f"finish successfully?"
+            f"no non-empty *.ext4 in {paths['image_dir']} -- did "
+            f"`ltvm build image` finish successfully?"
         )
 
     # Read version for naming.
