@@ -277,13 +277,33 @@ def _unzstd_file(src: Path, dst: Path) -> None:
 def _resolve_kernel(output_dir: Path, kernel: str | None) -> tuple[str, Path]:
     """Resolve kernel name and directory under ``output_dir/kernels``.
 
-    Exact match first; otherwise auto-detect by picking the lex-largest
-    subdirectory that contains a ``vmlinux``.
+    Disk dirs are named ``<short>-<fullkernel>`` (e.g.
+    ``5.14-rhel9.5-5.14.0-503.40.1.el9_5``); ``targets.yaml`` and most
+    user-facing args use just the short prefix (``5.14-rhel9.5``).
+    Accept either: exact match wins, then a prefix match against the
+    short name (lex-largest among matches, so the highest .elN_M
+    sibling gets picked when multiple coexist), then auto-detection
+    if no kernel was specified at all.
     """
     kernels_dir = output_dir / "kernels"
 
     if kernel is not None:
-        return kernel, kernels_dir / kernel
+        exact = kernels_dir / kernel
+        if exact.is_dir():
+            return kernel, exact
+        if kernels_dir.is_dir():
+            prefix = f"{kernel}-"
+            siblings = sorted(
+                d
+                for d in kernels_dir.iterdir()
+                if d.is_dir() and d.name.startswith(prefix)
+            )
+            if siblings:
+                chosen = siblings[-1]
+                return chosen.name, chosen
+        # No match -- return the exact path so the downstream "missing
+        # artifacts" error names what the caller asked for.
+        return kernel, exact
 
     if not kernels_dir.is_dir():
         raise ValueError(

@@ -888,11 +888,60 @@ def cmd_publish(args: argparse.Namespace) -> int:
 
     # --- Ecosystem publish: package, then upload every asset (unless
     # --no-upload, which short-circuits after packaging). ---
-    # Lustre staging is expected to already live under the target's
-    # artifacts dir (seeded by ``ltvm build all``).  Publish does not
-    # re-visit the Lustre tree; ``--no-lustre`` forces a kernel-only
-    # package even when staging is present on disk.
+    # Lustre staging lands in two places: the per-tree
+    # ``<lustre_tree>/.ltvm-staging/`` written by ``ltvm build lustre``,
+    # and a snapshot under ``kernels/<kver>/lustre-artifacts/`` that
+    # ``ltvm build all`` puts in place for the packager.  publish reads
+    # the snapshot, not the per-tree staging -- so a publish run after
+    # ``build kernel`` + ``build lustre`` + ``build image`` (without
+    # ``build all``) silently produced a Lustre-less release.
+    #
+    # Resolve that here: if the snapshot is missing, take ``--lustre-tree``
+    # and run ``snapshot_lustre`` on the fly.  Without ``--lustre-tree``
+    # and without an existing snapshot, fail loud (or honor ``--no-lustre``)
+    # -- "silently shipped without Lustre" is too costly to be the default.
     no_lustre = getattr(args, "no_lustre", False)
+    if not no_lustre:
+        # Resolve full kernel name the same way package_target will.
+        from ltvm_pkg.release_package import _resolve_kernel
+        kernel_name, kernel_dir = _resolve_kernel(tc.output_dir, kernel)
+        snap_root = kernel_dir / "lustre-artifacts"
+        snap_dir = (
+            snap_root if variant == "base" else snap_root / variant
+        )
+        if not (snap_dir / ".ltvm-snapshot.json").exists():
+            lustre_tree = getattr(args, "lustre_tree", None)
+            if lustre_tree:
+                if not use_json:
+                    print(
+                        f"Snapshotting Lustre staging from {lustre_tree} "
+                        f"into artifacts..."
+                    )
+                try:
+                    _cli_attr("snapshot_lustre")(
+                        lustre_tree,
+                        tc.output_dir,
+                        target=args.target,
+                        kernel=kernel_name,
+                        arch=tc.arch,
+                        variant=variant,
+                    )
+                except Exception as e:
+                    return _error(f"Lustre snapshot failed: {e}", use_json)
+            else:
+                return _error(
+                    "Lustre snapshot missing under "
+                    f"{snap_dir}.\n"
+                    "  publish needs Lustre staged into the artifacts "
+                    "dir.  Either:\n"
+                    "    --lustre-tree <path>   "
+                    "(snapshot from a Lustre source tree on the fly)\n"
+                    "    ltvm build all <target> --lustre-tree <path>   "
+                    "(then re-run publish)\n"
+                    "    --no-lustre            "
+                    "(ship a kernel-only release on purpose)",
+                    use_json,
+                )
 
     if not use_json:
         v_hint = "" if variant == "base" else f" variant={variant}"

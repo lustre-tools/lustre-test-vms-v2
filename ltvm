@@ -741,6 +741,16 @@ def build_parser() -> argparse.ArgumentParser:
         "disk.  Kernel-only publish.",
     )
     tpbp.add_argument(
+        "--lustre-tree",
+        default=None,
+        help="Path to the Lustre source tree.  When given, publish "
+        "snapshots its .ltvm-staging/ into the artifacts dir before "
+        "packaging so the Lustre asset gets included automatically. "
+        "Without this, publish requires a prior `ltvm build all` (or "
+        "an explicit `--no-lustre`) -- silently dropping Lustre is a "
+        "footgun for releases.",
+    )
+    tpbp.add_argument(
         "--output",
         default=None,
         help="Staging dir for packaged assets (default: artifacts/)",
