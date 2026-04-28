@@ -249,8 +249,19 @@ def _stage_subtree(
         # src's contents, not src itself.  podman's `ADD <tar> <dest>/`
         # extracts paths verbatim into dest, so a tar of `./foo` would
         # land at `<dest>/foo` -- we want `<dest>/<contents>`.
+        #
+        # COPYFILE_DISABLE=1 stops BSD tar from emitting AppleDouble
+        # sidecars (./_foo) for every file that has macOS xattrs.
+        # APFS auto-attaches com.apple.provenance to every file, so
+        # without this every .ko in the archive gets a phantom ._.ko
+        # next to it; on the Linux side those land as real files and
+        # depmod chokes ("Exec format error"), and modules fail to
+        # load with "Unknown symbol" because depmod can't build the
+        # dependency graph.
+        env = {**os.environ, "COPYFILE_DISABLE": "1"}
         subprocess.run(
             ["tar", "-C", str(src), "-czf", str(archive), "."],
+            env=env,
             check=True,
         )
         return f"ADD {archive.name} {target_path}"
@@ -654,10 +665,14 @@ def build_image(
                 if _is_macos_build_host():
                     archive = inject_dir / "modules.tar.gz"
                     # See _stage_subtree: tar from inside the dir so
-                    # ADD lands the contents directly at the target.
+                    # ADD lands the contents directly at the target,
+                    # and COPYFILE_DISABLE=1 keeps BSD tar from
+                    # emitting AppleDouble ._* sidecars.
+                    env = {**os.environ, "COPYFILE_DISABLE": "1"}
                     subprocess.run(
                         ["tar", "-C", str(mod_dest), "-czf",
                          str(archive), "."],
+                        env=env,
                         check=True,
                     )
                     shutil.rmtree(mod_dest)
@@ -900,43 +915,91 @@ def _export_to_ext4(
         # only on directories (and on files that already have any
         # exec bit), so we don't accidentally mark plain data files
         # executable.
-        extract_script = (
-            f"set -e; "
-            f"tar -C {shlex.quote(str(rootfs))} -xpf "
-            f"{shlex.quote(str(tarball))} --exclude=dev/*; "
-            f"mkdir -p {shlex.quote(str(rootfs))}/dev/pts "
-            f"{shlex.quote(str(rootfs))}/dev/shm "
-            f"{shlex.quote(str(rootfs))}/dev/mqueue; "
-            f"chmod -R u+rX {shlex.quote(str(rootfs))}; "
+        size_mb = _compute_image_size_mb_from_tar(tarball)
+        extract_script_in_container = (
+            "set -e; "
+            "ROOTFS=/work/rootfs; "
+            "mkdir -p $ROOTFS; "
+            "tar -C $ROOTFS -xpf /work/rootfs.tar --exclude=dev/*; "
+            "mkdir -p $ROOTFS/dev/pts $ROOTFS/dev/shm $ROOTFS/dev/mqueue; "
+            "chmod -R u+rX $ROOTFS; "
             # -O ^metadata_csum,^dir_index works around two distinct
-            # e2fsprogs 1.46.5 bugs in `mke2fs -d`:
-            #   * "Directory block checksum does not match" on htree
-            #   * "EXT2 directory corrupted" when populating large
-            #     directories (e.g. /lib/modules/.../kernel/ with
-            #     thousands of .ko files)
-            # Both are fixed in 1.47.  We re-enable the features with
-            # tune2fs + e2fsck -D afterwards so the final image has
-            # htree and checksums like a normal ext4 fs.
-            f"mke2fs -t ext4 -b 4096 -L rootfs -E root_owner=0:0 "
-            f"-O ^metadata_csum,^dir_index "
-            f"-d {shlex.quote(str(rootfs))} "
-            f"{shlex.quote(tmpfile)} {_compute_image_size_mb_from_tar(tarball)}M"
+            # e2fsprogs 1.46.5 bugs in `mke2fs -d`; we re-enable both
+            # via tune2fs + e2fsck -D after the populate so the final
+            # image has htree and checksums like a normal ext4 fs.
+            "mke2fs -t ext4 -b 4096 -L rootfs -E root_owner=0:0 "
+            "-O ^metadata_csum,^dir_index "
+            f"-d $ROOTFS /work/out.ext4 {size_mb}M; "
+            "rm -rf $ROOTFS"
         )
-        # macOS SIP clears DYLD_INSERT_LIBRARIES on /bin/bash, so
-        # `fakeroot /bin/bash -c <script>` runs the script *outside*
-        # fakeroot's interposition -- mke2fs -d then writes the host
-        # uid (501:20) into every inode and the resulting image fails
-        # sshd's "/usr/share/empty.sshd must be owned by root" check
-        # at first boot.  A brew-installed bash isn't SIP-protected,
-        # so we use it when available; ltvm install pulls it in on
-        # macOS.  Linux is unaffected; /bin/bash there is fine.
-        bash_bin = "/opt/homebrew/bin/bash"
-        if not Path(bash_bin).exists():
-            bash_bin = shutil.which("bash") or "bash"
-        _run(
-            ["fakeroot", bash_bin, "-c", extract_script],
-            capture_output=False,
-        )
+        if _is_macos_build_host():
+            # fakeroot's DYLD interposition does not survive
+            # `bash -c <script>` on macOS Sonoma -- SIP strips DYLD_*
+            # vars when re-exec'ing through any system-protected
+            # binary, and brew bash forks lose them too.  The result is
+            # mke2fs -d sees the actual host uid/gid (501:20) and
+            # writes them into every inode, which trips sshd's
+            # "/usr/share/empty.sshd must be owned by root" check at
+            # first boot.  Run the whole extract+mke2fs flow inside a
+            # Linux container instead, where the process runs as real
+            # uid 0 and mke2fs -d records uid 0 directly -- no
+            # fakeroot needed.
+            #
+            # We can't use a host-volume mount: podman machine on macOS
+            # serves them via virtiofs, which delegates permission
+            # checks back to the host UID, so container-root can't
+            # write into 0000-mode dirs that tar extracts (Rocky's
+            # /usr/tmp, /var/run etc. have such perms).  Instead we
+            # stream the tarball in via stdin and the resulting ext4
+            # back out via stdout, keeping all the rootfs work inside
+            # the container's native overlay storage.  The worker is
+            # the same image we just built (it ships e2fsprogs since
+            # we're building a server target), so no extra image pull.
+            in_container_script = (
+                "set -e; "
+                "cat > /tmp/rootfs.tar; "
+                "ROOTFS=/tmp/rootfs; "
+                "mkdir -p $ROOTFS; "
+                "tar -C $ROOTFS -xpf /tmp/rootfs.tar --exclude=dev/*; "
+                "mkdir -p $ROOTFS/dev/pts $ROOTFS/dev/shm "
+                "$ROOTFS/dev/mqueue; "
+                "chmod -R u+rX $ROOTFS; "
+                "mke2fs -t ext4 -b 4096 -L rootfs -E root_owner=0:0 "
+                "-O ^metadata_csum,^dir_index "
+                f"-d $ROOTFS /tmp/out.ext4 {size_mb}M >&2; "
+                "cat /tmp/out.ext4"
+            )
+            with open(str(tarball), "rb") as fin, \
+                    open(tmpfile, "wb") as fout:
+                subprocess.run(
+                    [
+                        "podman", "run", "--rm", "-i",
+                        container_tag,
+                        "bash", "-c", in_container_script,
+                    ],
+                    stdin=fin,
+                    stdout=fout,
+                    check=True,
+                )
+        else:
+            # Linux host: run with fakeroot directly.
+            host_extract_script = (
+                f"set -e; "
+                f"tar -C {shlex.quote(str(rootfs))} -xpf "
+                f"{shlex.quote(str(tarball))} --exclude=dev/*; "
+                f"mkdir -p {shlex.quote(str(rootfs))}/dev/pts "
+                f"{shlex.quote(str(rootfs))}/dev/shm "
+                f"{shlex.quote(str(rootfs))}/dev/mqueue; "
+                f"chmod -R u+rX {shlex.quote(str(rootfs))}; "
+                f"mke2fs -t ext4 -b 4096 -L rootfs -E root_owner=0:0 "
+                f"-O ^metadata_csum,^dir_index "
+                f"-d {shlex.quote(str(rootfs))} "
+                f"{shlex.quote(tmpfile)} {size_mb}M"
+            )
+            _run(
+                ["fakeroot", "bash", "-c", host_extract_script],
+                capture_output=False,
+            )
 
         subprocess.run(
             ["podman", "rm", "-f", container_id], capture_output=True
