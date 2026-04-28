@@ -221,24 +221,35 @@ def _tar_zstd(
 def _untar_zstd(tarball: Path, dest: Path) -> None:
     """Extract a .tar.zst into ``dest``.  ``dest`` must already exist.
 
-    tar auto-detects zstd via the ``--zstd`` flag; on ancient tar (<1.31)
-    we'd need ``--use-compress-program=zstd`` too.  All our supported
-    targets ship tar 1.34+.
+    Pipes ``zstd -dc`` into ``tar -x`` rather than using GNU tar's
+    ``--zstd``: BSD tar on macOS doesn't recognize ``--zstd`` (or
+    ``--overwrite`` / ``--no-same-owner``).  The pipe form works on
+    every host that has a tar at all.
+
+    Fetcher always overwrites because that's the point of refetching;
+    extraction runs as the invoking user (no SUDO_USER mapping
+    needed) so on-disk ownership is whatever tar's default does --
+    fine for an artifact tree only ltvm reads back.
     """
     _check_zstd()
-    subprocess.run(
-        [
-            "tar",
-            "--zstd",
-            "-xf",
-            str(tarball),
-            "-C",
-            str(dest),
-            "--overwrite",
-            "--no-same-owner",
-        ],
-        check=True,
-    )
+    with subprocess.Popen(
+        ["zstd", "-dc", str(tarball)],
+        stdout=subprocess.PIPE,
+    ) as p:
+        try:
+            subprocess.run(
+                ["tar", "-xf", "-", "-C", str(dest)],
+                stdin=p.stdout,
+                check=True,
+            )
+        finally:
+            if p.stdout is not None:
+                p.stdout.close()
+            p.wait()
+        if p.returncode != 0:
+            raise subprocess.CalledProcessError(
+                p.returncode, ["zstd", "-dc", str(tarball)]
+            )
 
 
 def _zstd_file(src: Path, dst: Path) -> None:
