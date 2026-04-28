@@ -249,8 +249,21 @@ def alloc_ip(
 
 
 def reload_dns() -> None:
-    """SIGHUP dnsmasq to re-read /etc/hosts."""
-    pid_path = Path("/run/dnsmasq.pid")
+    """SIGHUP dnsmasq to re-read /etc/hosts.
+
+    Linux runs dnsmasq on the qemu-bridge interface; macOS runs its
+    own dnsmasq under launchd bound to the socket_vmnet gateway IP
+    so guests can resolve each other by name (their resolv.conf
+    points at fc_gw, where nothing else is listening).  Both daemons
+    pick up new /etc/hosts entries on SIGHUP -- only the pidfile
+    location differs.
+    """
+    from .host_setup import is_macos, DNSMASQ_PID_PATH
+    pid_path: Path
+    if is_macos():
+        pid_path = DNSMASQ_PID_PATH
+    else:
+        pid_path = Path("/run/dnsmasq.pid")
     pid: int | None = None
     pid_err: str | None = None
     if pid_path.exists():

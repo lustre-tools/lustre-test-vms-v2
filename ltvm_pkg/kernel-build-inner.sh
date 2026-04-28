@@ -48,6 +48,24 @@ if [[ "$CROSSING" == "1" ]]; then
 	echo "    Cross-compiling: ${HOST_ARCH} -> ${TARGET_ARCH}"
 fi
 
+# Self-heal the ccache volume.  Rootless podman maps "root" inside
+# the container to the host user's uid; if a previous build wrote
+# to /ccache under a different uid namespace (e.g. because the
+# storage backend was migrated, or a pre-rootless-mode build ran
+# with a different mapping), the new container's root may see
+# /ccache itself but not its entries -- mkdir /ccache/tmp then
+# fails with "Permission denied" and every gcc invocation through
+# the ccache wrapper aborts the build.  Probe by trying to write a
+# canary; if it fails, blow away the whole tree and start over.
+if [[ -d /ccache ]]; then
+	if ! { mkdir -p /ccache/tmp && touch /ccache/.ltvm-canary; } 2>/dev/null; then
+		echo "    Resetting unreachable ccache (uid-namespace drift)"
+		find /ccache -mindepth 1 -delete 2>/dev/null || true
+		mkdir -p /ccache/tmp
+	fi
+	rm -f /ccache/.ltvm-canary
+fi
+
 cross_ensure_toolchain
 
 echo "    GCC: $(gcc --version | head -1)"

@@ -124,6 +124,13 @@ SOCKET_VMNET_PLIST_PATH = Path(
     f"/Library/LaunchDaemons/{SOCKET_VMNET_PLIST_LABEL}.plist"
 )
 
+DNSMASQ_PLIST_LABEL = "io.github.ltvm.dnsmasq"
+DNSMASQ_PLIST_PATH = Path(
+    f"/Library/LaunchDaemons/{DNSMASQ_PLIST_LABEL}.plist"
+)
+DNSMASQ_CONF_PATH = Path("/usr/local/etc/ltvm-dnsmasq.conf")
+DNSMASQ_PID_PATH = Path("/var/run/ltvm-dnsmasq.pid")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # ltvm_pkg/ holds scripts, host-config templates, etc.
 PKG_DIR = Path(__file__).resolve().parent
@@ -816,6 +823,142 @@ def install_socket_vmnet_launchd_macos(force: bool = False) -> None:
         log.info("Loaded %s", SOCKET_VMNET_PLIST_LABEL)
     else:
         log.info("%s already loaded", SOCKET_VMNET_PLIST_LABEL)
+
+
+def _dnsmasq_daemon_loaded() -> bool:
+    r = _run_quiet(
+        ["launchctl", "print", f"system/{DNSMASQ_PLIST_LABEL}"],
+        check=False,
+    )
+    return r.returncode == 0
+
+
+def _brew_dnsmasq_bin() -> Path | None:
+    brew = shutil.which("brew")
+    if not brew:
+        return None
+    r = _run_quiet([brew, "--prefix", "dnsmasq"], check=False)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    bin_path = Path(r.stdout.strip()) / "sbin" / "dnsmasq"
+    return bin_path if bin_path.exists() else None
+
+
+def install_dnsmasq_macos(force: bool = False) -> None:
+    """Install dnsmasq + a launchd job that binds it to the
+    socket_vmnet gateway IP, so guests can resolve each other by name.
+
+    Without this, VM ``resolv.conf`` points at fc_gw (192.168.105.1)
+    where nothing answers DNS on macOS, and ``ssh co1-mds`` from one
+    VM to another silently fails to resolve.  Linux uses the
+    qemu-bridge dnsmasq for the same job.
+    """
+    bin_path = _brew_dnsmasq_bin()
+    if bin_path is None or force:
+        brew = shutil.which("brew")
+        if not brew:
+            raise RuntimeError(
+                "Homebrew not found. Install it from https://brew.sh, "
+                "then run: brew install dnsmasq"
+            )
+        log.info("Installing dnsmasq via Homebrew...")
+        _run([brew, "install", "dnsmasq"])
+        bin_path = _brew_dnsmasq_bin()
+        if bin_path is None:
+            raise RuntimeError(
+                "brew install dnsmasq succeeded but dnsmasq binary "
+                "not found in the expected Homebrew prefix."
+            )
+
+    desired_conf = (
+        (HOST_CONFIG_DIR / "ltvm-dnsmasq-macos.conf")
+        .read_text()
+        .replace("@VMNET_GATEWAY@", DEFAULT_VMNET_GATEWAY)
+    )
+    desired_plist = (
+        (HOST_CONFIG_DIR / f"{DNSMASQ_PLIST_LABEL}.plist")
+        .read_text()
+        .replace("@DNSMASQ_BIN@", str(bin_path))
+        .replace("@DNSMASQ_CONF@", str(DNSMASQ_CONF_PATH))
+        .replace("@DNSMASQ_PID@", str(DNSMASQ_PID_PATH))
+    )
+
+    needs_reload = False
+
+    # Conf file: write under sudo with root:wheel 0644.
+    cur_conf = (
+        DNSMASQ_CONF_PATH.read_text()
+        if DNSMASQ_CONF_PATH.exists()
+        else ""
+    )
+    if cur_conf != desired_conf or force:
+        _sudo_prime(
+            f"Installing {DNSMASQ_CONF_PATH} requires root"
+        )
+        _sudo_run(
+            ["mkdir", "-p", str(DNSMASQ_CONF_PATH.parent)]
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".conf", delete=False
+        ) as tf:
+            tf.write(desired_conf)
+            tmp_conf = tf.name
+        try:
+            _sudo_run(
+                ["install", "-m", "0644", "-o", "root", "-g",
+                 "wheel", tmp_conf, str(DNSMASQ_CONF_PATH)]
+            )
+        finally:
+            Path(tmp_conf).unlink(missing_ok=True)
+        log.info("Installed %s", DNSMASQ_CONF_PATH)
+        needs_reload = True
+
+    # Plist: same pattern as socket_vmnet.  bootout-then-bootstrap
+    # when the plist contents change so launchd picks up the new
+    # ProgramArguments.
+    cur_plist = (
+        DNSMASQ_PLIST_PATH.read_text()
+        if DNSMASQ_PLIST_PATH.exists()
+        else ""
+    )
+    if cur_plist != desired_plist or force:
+        _sudo_prime(
+            f"Installing {DNSMASQ_PLIST_PATH} requires root"
+        )
+        _sudo_run(["mkdir", "-p", "/var/log/ltvm-dnsmasq"])
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".plist", delete=False
+        ) as tf:
+            tf.write(desired_plist)
+            tmp_plist = tf.name
+        try:
+            _sudo_run(
+                ["install", "-m", "0644", "-o", "root", "-g",
+                 "wheel", tmp_plist, str(DNSMASQ_PLIST_PATH)]
+            )
+        finally:
+            Path(tmp_plist).unlink(missing_ok=True)
+        if _dnsmasq_daemon_loaded():
+            _sudo_run(
+                ["launchctl", "bootout",
+                 f"system/{DNSMASQ_PLIST_LABEL}"],
+                check=False,
+            )
+        log.info("Installed %s", DNSMASQ_PLIST_PATH)
+        needs_reload = True
+
+    if not _dnsmasq_daemon_loaded():
+        _sudo_prime("Loading the ltvm-dnsmasq launchd job requires root")
+        _sudo_run(
+            ["launchctl", "bootstrap", "system",
+             str(DNSMASQ_PLIST_PATH)]
+        )
+        log.info("Loaded %s", DNSMASQ_PLIST_LABEL)
+    elif needs_reload:
+        _sudo_run(
+            ["launchctl", "kickstart", "-k",
+             f"system/{DNSMASQ_PLIST_LABEL}"]
+        )
 
 
 def ensure_socket_vmnet_running() -> None:
@@ -1886,6 +2029,7 @@ def _run_setup_macos(
         install_socket_vmnet_macos(force=force)
         install_socket_vmnet_launchd_macos(force=force)
         install_sshpass_macos(force=force)
+        install_dnsmasq_macos(force=force)
 
     if "podman" in active:
         install_podman_macos(force=force)
@@ -1900,8 +2044,9 @@ def _run_setup_macos(
         log.info("")
         log.info("Install complete.")
         log.info("")
-        log.info("Note: network bridge (fcbr0) and dnsmasq are not configured")
-        log.info("on macOS -- VMs use vmnet-shared or user networking instead.")
+        log.info("Note: VMs use socket_vmnet (vmnet-shared) for networking;")
+        log.info("a small dnsmasq is bound to %s for VM<->VM name resolution.",
+                 DEFAULT_VMNET_GATEWAY)
         log.info("")
         log.info("Next:")
         log.info("  ltvm target fetch rocky9")
