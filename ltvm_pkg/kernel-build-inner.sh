@@ -189,23 +189,6 @@ else
 	cat /input/staging/config.fragment >> .config
 fi
 
-# Cross-compile-only: disable BTF.  pahole 1.30 from EL9 produces an
-# empty .BTF section when reading DWARF from a cross-compiled vmlinux,
-# and the next BTFIDS step then fails the whole build with
-# "libbpf: failed to find '.BTF' ELF section in vmlinux".  The .BTF
-# section is only consumed by BPF-CO-RE introspection at runtime; not
-# having it doesn't affect Lustre or any of the standard kernel-mode
-# tests we run, so the cleanest fix is to skip it entirely on cross
-# builds.  Native builds keep BTF.
-if [[ "$CROSSING" == "1" ]]; then
-	echo "--- Disabling BTF for cross-compile (pahole + cross DWARF mix)"
-	for opt in CONFIG_DEBUG_INFO_BTF CONFIG_DEBUG_INFO_BTF_MODULES; do
-		if grep -q "^${opt}=" .config; then
-			sed -i "s|^${opt}=.*|# ${opt} is not set|" .config
-		fi
-	done
-fi
-
 # Force-apply config fragment values using sed.
 # merge_config.sh handles most cases but olddefconfig
 # can revert =y back to =m due to dependency resolution.
