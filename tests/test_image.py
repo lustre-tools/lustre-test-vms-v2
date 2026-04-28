@@ -408,9 +408,15 @@ class TestLustreInjectLines:
         inject = tmp_path / "inject"
         inject.mkdir()
 
-        lines = image._lustre_inject_lines(
-            staging, inject, "5.14.0-foo", "rhel"
-        )
+        # Pin to the Linux build path: COPY <dir>/ <target>.  The macOS
+        # branch (ADD <tar.gz> <target>) is exercised separately so a
+        # single test stays readable.
+        with patch.object(
+            image, "_is_macos_build_host", return_value=False
+        ):
+            lines = image._lustre_inject_lines(
+                staging, inject, "5.14.0-foo", "rhel"
+            )
         text = "\n".join(lines)
         assert "COPY lustre-extra/ /lib/modules/5.14.0-foo/extra/" in text
         assert "COPY lustre-userland-usr/ /usr/" in text
@@ -428,12 +434,39 @@ class TestLustreInjectLines:
         inject = tmp_path / "inject"
         inject.mkdir()
 
-        lines = image._lustre_inject_lines(
-            staging, inject, "6.1.0-deb", "debian"
-        )
+        with patch.object(
+            image, "_is_macos_build_host", return_value=False
+        ):
+            lines = image._lustre_inject_lines(
+                staging, inject, "6.1.0-deb", "debian"
+            )
         text = "\n".join(lines)
         assert "COPY lustre-extra/ /lib/modules/6.1.0-deb/extra/" in text
         assert "depmod -a 6.1.0-deb" in text
+
+    def test_macos_emits_tar_add_lines(self, tmp_path: Path) -> None:
+        """On macOS the inject helper bundles each subtree into a
+        tar.gz and emits ``ADD <name>.tar.gz <path>`` so podman build
+        does a single listxattr probe instead of one-per-file (the
+        APFS com.apple.provenance + virtiofs ENOMEM trap)."""
+        import ltvm_pkg.image_build as image
+
+        staging = self._make_staging(tmp_path, "5.14.0-foo")
+        inject = tmp_path / "inject"
+        inject.mkdir()
+
+        with patch.object(
+            image, "_is_macos_build_host", return_value=True
+        ):
+            lines = image._lustre_inject_lines(
+                staging, inject, "5.14.0-foo", "rhel"
+            )
+        text = "\n".join(lines)
+        assert "ADD lustre-extra.tar.gz /lib/modules/5.14.0-foo/extra/" in text
+        assert "ADD lustre-userland-usr.tar.gz /usr/" in text
+        # The corresponding archives actually got produced.
+        assert (inject / "lustre-extra.tar.gz").is_file()
+        assert (inject / "lustre-userland-usr.tar.gz").is_file()
 
     def test_no_shell_interpolation_in_copy_sources(
         self, tmp_path: Path

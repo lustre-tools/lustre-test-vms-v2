@@ -198,125 +198,147 @@ def cmd_targets(args: argparse.Namespace) -> int:
     except Exception:
         all_releases = None
 
+    # Pick which arches to render per target.  By default show the
+    # host arch (so the user sees "is THIS built for the machine I'm
+    # sitting at"), AND every other arch that already has artifacts
+    # on disk (so a multi-arch build dir shows both).  --arch is an
+    # explicit override that pins to a single arch.
+    from ltvm_pkg.cli.util import host_arch
+    from ltvm_pkg.target_config import ARTIFACTS_DIR
+    explicit_arch = getattr(args, "arch", None)
+    host_a = host_arch()
+
+    def _archs_for(target_name: str) -> list[str]:
+        if explicit_arch:
+            return [explicit_arch]
+        archs: set[str] = {host_a}
+        target_root = ARTIFACTS_DIR / target_name
+        if target_root.is_dir():
+            for entry in target_root.iterdir():
+                if entry.is_dir() and (entry / "kernels").is_dir():
+                    archs.add(entry.name)
+        return sorted(archs)
+
     TargetConfig = _cli_attr("TargetConfig")
     rows: list[dict[str, Any]] = []
     for name in names:
-        try:
-            tc = TargetConfig(name)
-        except ValueError as e:
-            rows.append({"name": name, "error": f"error: {e}"})
-            continue
-        declared = tc.declared_kernels()
-        declared_variants = ["base", *tc.declared_variants()]
-        for kname in declared:
-            signature = _cli_attr("_kernel_release_signature")(kname)
-            # Emit one header-style row per kernel with blank Variants;
-            # each variant then gets its own row below so "base" reads
-            # explicitly alongside any declared variants (instead of
-            # being the implicit interpretation of the kernel row).
-            rows.append(
-                {
-                    "name": name,
-                    "arch": tc.arch,
-                    "status": tc.status,
-                    "kernel": kname,
-                    "variant": None,  # header row
-                    "is_default": kname == tc.default_kernel,
-                    "server": tc.lustre_mode != LustreMode.CLIENT,
-                    "default_kernel": tc.default_kernel,
-                    "lustre_mode": tc.lustre_mode.value,
-                    "available": "",
-                    "built": False,
-                    "local_release": "-",
-                    "remote_release": "-",
-                }
-            )
-            for variant in declared_variants:
-                # Honor variant kernel-pin: a pinned variant only
-                # surfaces under its single declared kernel (see
-                # lustre_test_vms_v2-stp).
-                if (
-                    variant != "base"
-                    and kname not in tc.applicable_kernels(variant)
-                ):
-                    continue
-                local, remote = _release_status(
-                    name, tc.arch, all_releases,
-                    kernel_signature=signature, variant=variant,
-                )
-                # "Built" here = a variant-specific image meta exists on
-                # disk.  The kernel meta is variant-independent, so
-                # checking image.meta is a better proxy for "this
-                # variant is actually ready to run on this kernel".
-                if variant == "base":
-                    built = tc.meta_path("kernel", kname).exists()
-                else:
-                    img_meta = (
-                        tc.image_output_dir(kname, variant=variant)
-                        / "meta.json"
-                    )
-                    built = img_meta.exists()
-
-                # A built image can still be Lustre-less (happens when
-                # someone ran `ltvm build image --no-lustre` during
-                # iteration, or when the target is client-only and
-                # Lustre wasn't baked).  `ltvm create` picks the base
-                # image verbatim, so a Lustre-less image produces a VM
-                # that can't mount anything -- the precise failure mode
-                # the user hit with `pafvm`.  Record the miss so the
-                # renderer can flag it.
-                lustre_missing = False
-                if built:
-                    img_meta_path = (
-                        tc.image_output_dir(kname, variant=variant)
-                        / "meta.json"
-                    )
-                    try:
-                        meta_doc = _cli_attr("load_meta_safe")(img_meta_path)
-                    except Exception:
-                        meta_doc = None
-                    if meta_doc is not None:
-                        # Only the image meta carries these fields; kernel
-                        # meta does not.  Treat None/empty as "missing".
-                        lv = meta_doc.get("lustre_version")
-                        wl = meta_doc.get("with_lustre")
-                        lustre_missing = not (lv or wl)
-
-                if built:
-                    avail = "ready"
-                elif remote not in ("-", "?"):
-                    avail = "fetch"
-                else:
-                    avail = "build"
-                behind = (
-                    local not in ("-", "?")
-                    and remote not in ("-", "?")
-                    and local != remote
-                )
-                if behind:
-                    avail = f"{avail}!"
+        for arch in _archs_for(name):
+            try:
+                tc = TargetConfig(name, arch=arch)
+            except ValueError as e:
+                rows.append({"name": name, "error": f"error: {e}"})
+                continue
+            declared = tc.declared_kernels()
+            declared_variants = ["base", *tc.declared_variants()]
+            for kname in declared:
+                signature = _cli_attr("_kernel_release_signature")(kname)
+                # Emit one header-style row per kernel with blank Variants;
+                # each variant then gets its own row below so "base" reads
+                # explicitly alongside any declared variants (instead of
+                # being the implicit interpretation of the kernel row).
                 rows.append(
                     {
                         "name": name,
                         "arch": tc.arch,
                         "status": tc.status,
                         "kernel": kname,
-                        "variant": variant,
-                        # Default is a per-kernel property; attach it to
-                        # the kernel's header row only so JSON consumers
-                        # can match `is_default==True` to "exactly one
-                        # default kernel".
-                        "is_default": False,
+                        "variant": None,  # header row
+                        "is_default": kname == tc.default_kernel,
                         "server": tc.lustre_mode != LustreMode.CLIENT,
                         "default_kernel": tc.default_kernel,
                         "lustre_mode": tc.lustre_mode.value,
-                        "available": avail,
-                        "built": built,
-                        "local_release": local,
-                        "remote_release": remote,
-                        "lustre_missing": lustre_missing,
+                        "available": "",
+                        "built": False,
+                        "local_release": "-",
+                        "remote_release": "-",
                     }
                 )
+                for variant in declared_variants:
+                    # Honor variant kernel-pin: a pinned variant only
+                    # surfaces under its single declared kernel (see
+                    # lustre_test_vms_v2-stp).
+                    if (
+                        variant != "base"
+                        and kname not in tc.applicable_kernels(variant)
+                    ):
+                        continue
+                    local, remote = _release_status(
+                        name, tc.arch, all_releases,
+                        kernel_signature=signature, variant=variant,
+                    )
+                    # "Built" here = a variant-specific image meta exists on
+                    # disk.  The kernel meta is variant-independent, so
+                    # checking image.meta is a better proxy for "this
+                    # variant is actually ready to run on this kernel".
+                    if variant == "base":
+                        built = tc.meta_path("kernel", kname).exists()
+                    else:
+                        img_meta = (
+                            tc.image_output_dir(kname, variant=variant)
+                            / "meta.json"
+                        )
+                        built = img_meta.exists()
+
+                    # A built image can still be Lustre-less (happens when
+                    # someone ran `ltvm build image --no-lustre` during
+                    # iteration, or when the target is client-only and
+                    # Lustre wasn't baked).  `ltvm create` picks the base
+                    # image verbatim, so a Lustre-less image produces a VM
+                    # that can't mount anything -- the precise failure mode
+                    # the user hit with `pafvm`.  Record the miss so the
+                    # renderer can flag it.
+                    lustre_missing = False
+                    if built:
+                        img_meta_path = (
+                            tc.image_output_dir(kname, variant=variant)
+                            / "meta.json"
+                        )
+                        try:
+                            meta_doc = _cli_attr("load_meta_safe")(img_meta_path)
+                        except Exception:
+                            meta_doc = None
+                        if meta_doc is not None:
+                            # Only the image meta carries these fields; kernel
+                            # meta does not.  Treat None/empty as "missing".
+                            lv = meta_doc.get("lustre_version")
+                            wl = meta_doc.get("with_lustre")
+                            lustre_missing = not (lv or wl)
+
+                    if built:
+                        avail = "ready"
+                    elif remote not in ("-", "?"):
+                        avail = "fetch"
+                    else:
+                        avail = "build"
+                    behind = (
+                        local not in ("-", "?")
+                        and remote not in ("-", "?")
+                        and local != remote
+                    )
+                    if behind:
+                        avail = f"{avail}!"
+                    rows.append(
+                        {
+                            "name": name,
+                            "arch": tc.arch,
+                            "status": tc.status,
+                            "kernel": kname,
+                            "variant": variant,
+                            # Default is a per-kernel property; attach it to
+                            # the kernel's header row only so JSON consumers
+                            # can match `is_default==True` to "exactly one
+                            # default kernel".
+                            "is_default": False,
+                            "server": tc.lustre_mode != LustreMode.CLIENT,
+                            "default_kernel": tc.default_kernel,
+                            "lustre_mode": tc.lustre_mode.value,
+                            "available": avail,
+                            "built": built,
+                            "local_release": local,
+                            "remote_release": remote,
+                            "lustre_missing": lustre_missing,
+                        }
+                    )
 
     # Preserve the pre-filter GH-unreachable signal so a `list remote`
     # with no hits on unreachable network doesn't look indistinguishable

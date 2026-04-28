@@ -214,6 +214,51 @@ def _lustre_staging_hash_input(staging: Path) -> bytes:
     )
 
 
+def _is_macos_build_host() -> bool:
+    import sys as _sys
+    return _sys.platform == "darwin"
+
+
+def _stage_subtree(
+    src: Path,
+    inject_dir: Path,
+    name: str,
+    target_path: str,
+) -> str:
+    """Copy *src* into the build context and return one Dockerfile line
+    that places it at *target_path* inside the image.
+
+    On Linux: directory copy + ``COPY <name>/ <target_path>``.
+    On macOS: tar.gz the tree once and emit ``ADD <name>.tar.gz <target_path>``
+    so podman's copier only ``listxattr``s the single archive.
+
+    Why the macOS detour:
+    podman build's COPY ingests every file in the build context and
+    calls ``listxattr`` on each.  On the macOS->podman-machine
+    virtiofs path that returns ENOMEM ("cannot allocate memory") on
+    some Lustre .ko modules and aborts the build.  And we can't strip
+    the offending xattr -- ``com.apple.provenance`` is system-protected
+    on APFS and cannot be deleted, even by root.  Bundling into a tar
+    sidesteps the per-file scan: the archive itself gets one listxattr
+    call and its contents are extracted by ADD inside the build
+    container, never crossing virtiofs as individual files.
+    """
+    if _is_macos_build_host():
+        archive = inject_dir / f"{name}.tar.gz"
+        # tar from inside src so the archive's paths are relative to
+        # src's contents, not src itself.  podman's `ADD <tar> <dest>/`
+        # extracts paths verbatim into dest, so a tar of `./foo` would
+        # land at `<dest>/foo` -- we want `<dest>/<contents>`.
+        subprocess.run(
+            ["tar", "-C", str(src), "-czf", str(archive), "."],
+            check=True,
+        )
+        return f"ADD {archive.name} {target_path}"
+    dest = inject_dir / name
+    shutil.copytree(src, dest, symlinks=False)
+    return f"COPY {name}/ {target_path}"
+
+
 def _lustre_inject_lines(
     staging: Path,
     inject_dir: Path,
@@ -241,21 +286,14 @@ def _lustre_inject_lines(
         staging / "lib" / "modules" / kver / "extra"
     )
     if modules_src.is_dir():
-        dest = inject_dir / "lustre-extra"
-        # copy_function=shutil.copy intentionally drops metadata
-        # (xattrs, ACLs).  podman build COPY scans listxattr on each
-        # file as it ingests the build context; on the macOS->podman
-        # machine virtiofs path, listxattr can return ENOMEM ("cannot
-        # allocate memory") on otherwise-fine .ko files and aborts the
-        # build.  We don't need any of the source-tree metadata for
-        # the in-image install -- contents and perms are enough.
-        shutil.copytree(
-            modules_src,
-            dest,
-            symlinks=False,
-            copy_function=shutil.copy,
+        lines.append(
+            _stage_subtree(
+                modules_src,
+                inject_dir,
+                "lustre-extra",
+                f"/lib/modules/{kver}/extra/",
+            )
         )
-        lines.append(f"COPY lustre-extra/ /lib/modules/{kver}/extra/")
 
     # Userland subtrees.  /usr/ is the usual catch-all (sbin, bin,
     # lib64, share all live under it) so we stage it as one subtree
@@ -272,17 +310,13 @@ def _lustre_inject_lines(
     for rel in ("usr", "etc", "sbin"):
         src = staging / rel
         if src.is_dir():
-            dest = inject_dir / f"lustre-userland-{rel}"
-            # See lustre-extra branch above: drop xattrs to avoid
-            # podman machine virtiofs listxattr ENOMEM.
-            shutil.copytree(
-                src,
-                dest,
-                symlinks=False,
-                copy_function=shutil.copy,
-            )
             lines.append(
-                f"COPY lustre-userland-{rel}/ /{rel}/"
+                _stage_subtree(
+                    src,
+                    inject_dir,
+                    f"lustre-userland-{rel}",
+                    f"/{rel}/",
+                )
             )
 
     # A second depmod after Lustre modules land.  Without this,
@@ -605,7 +639,11 @@ def build_image(
             lines = [f"FROM {tag}"]
             if has_modules:
                 log.info("Including kernel modules")
-                # Copy modules into inject context, clean symlinks
+                # Copy modules into inject context, clean symlinks.
+                # On macOS we then re-archive into modules.tar.gz to
+                # dodge the podman virtiofs listxattr ENOMEM bug (see
+                # _stage_subtree).  We can't share _stage_subtree here
+                # because we need the build/source symlink filter.
                 mod_dest = inject_dir / "modules"
                 shutil.copytree(
                     str(modules_dir / "lib" / "modules"),
@@ -613,6 +651,16 @@ def build_image(
                     symlinks=False,
                     ignore=shutil.ignore_patterns("build", "source"),
                 )
+                if _is_macos_build_host():
+                    archive = inject_dir / "modules.tar.gz"
+                    # See _stage_subtree: tar from inside the dir so
+                    # ADD lands the contents directly at the target.
+                    subprocess.run(
+                        ["tar", "-C", str(mod_dest), "-czf",
+                         str(archive), "."],
+                        check=True,
+                    )
+                    shutil.rmtree(mod_dest)
 
             kdump_lines = _kdump_inject_lines(
                 kdir, inject_dir, kver, target_config.os_family
@@ -638,9 +686,11 @@ def build_image(
             # every subsequent build_image).  Maintainers who need
             # baked-in Lustre should snapshot it via `ltvm package`,
             # which puts it in lustre-artifacts/ for the fetcher to use.
-            if (inject_dir / "modules").is_dir() and any(
-                (inject_dir / "modules").iterdir()
-            ):
+            mod_archive = inject_dir / "modules.tar.gz"
+            mod_dir = inject_dir / "modules"
+            if mod_archive.exists():
+                lines.append("ADD modules.tar.gz /lib/modules/")
+            elif mod_dir.is_dir() and any(mod_dir.iterdir()):
                 lines.append("COPY modules/ /lib/modules/")
             # MOFED kmod RPMs (when present) install BEFORE depmod so
             # the resulting modules.dep includes mlnx-ofa_kernel kmods.
@@ -872,7 +922,21 @@ def _export_to_ext4(
             f"-d {shlex.quote(str(rootfs))} "
             f"{shlex.quote(tmpfile)} {_compute_image_size_mb_from_tar(tarball)}M"
         )
-        _run(["fakeroot", "bash", "-c", extract_script], capture_output=False)
+        # macOS SIP clears DYLD_INSERT_LIBRARIES on /bin/bash, so
+        # `fakeroot /bin/bash -c <script>` runs the script *outside*
+        # fakeroot's interposition -- mke2fs -d then writes the host
+        # uid (501:20) into every inode and the resulting image fails
+        # sshd's "/usr/share/empty.sshd must be owned by root" check
+        # at first boot.  A brew-installed bash isn't SIP-protected,
+        # so we use it when available; ltvm install pulls it in on
+        # macOS.  Linux is unaffected; /bin/bash there is fine.
+        bash_bin = "/opt/homebrew/bin/bash"
+        if not Path(bash_bin).exists():
+            bash_bin = shutil.which("bash") or "bash"
+        _run(
+            ["fakeroot", bash_bin, "-c", extract_script],
+            capture_output=False,
+        )
 
         subprocess.run(
             ["podman", "rm", "-f", container_id], capture_output=True

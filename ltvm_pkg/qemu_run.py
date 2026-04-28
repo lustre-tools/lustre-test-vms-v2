@@ -230,6 +230,7 @@ def launch_qemu(vm: VMInfo) -> None:
     boot_args = (
         f"console={console} reboot=k panic=1 crashkernel={crashkernel} "
         f"net.ifnames=0 biosdevname=0 "
+        f"systemd.journald.forward_to_console=1 systemd.log_target=console "
         f"root=/dev/vda rw fc_ip={vm.ip} fc_gw={GATEWAY} "
         f"fc_name={vm.name}"
         f"{fc_nics_fragment}"

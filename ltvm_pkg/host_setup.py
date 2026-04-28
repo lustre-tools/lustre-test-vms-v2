@@ -1058,6 +1058,16 @@ def install_image_tools_macos(force: bool = False) -> None:
         log.info("Installing fakeroot via Homebrew...")
         _run([brew, "install", "fakeroot"])
 
+    # `fakeroot /bin/bash -c <script>` runs without DYLD_INSERT_LIBRARIES
+    # because SIP strips it from system bash, defeating the fakeroot
+    # uid spoof and producing ext4 images whose inodes carry the host
+    # uid (resulting in "must be owned by root" failures from sshd
+    # and friends at first boot).  A brew bash isn't SIP-protected,
+    # so we install it and image_build uses it explicitly.
+    if not Path("/opt/homebrew/bin/bash").exists() or force:
+        log.info("Installing bash via Homebrew (needed for fakeroot)...")
+        _run([brew, "install", "bash"])
+
     e2fs_prefix: Path | None = None
     r = _run_quiet([brew, "--prefix", "e2fsprogs"], check=False)
     if r.returncode == 0 and r.stdout.strip():
