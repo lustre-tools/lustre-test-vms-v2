@@ -630,8 +630,15 @@ fi""")
             # block the build over chown.
             pass
 
-    # Use a persistent ccache volume so incremental container
-    # builds benefit from cached compilations across runs
+    # Use a persistent ccache directory so incremental container
+    # builds benefit from cached compilations across runs.  Used to
+    # be a podman named volume; switched to a host bind-mount because
+    # rootless podman on macOS (podman machine 5.x) creates volumes
+    # with a uid mapping that leaves /ccache itself unreadable to
+    # container-root.  Sharing the same naming convention as the
+    # kernel-build ccache so a target's runs accumulate in one tree.
+    ccache_dir = lustre_tree.parent / ".ltvm-ccache" / container_tag.removeprefix("ltvm-build-")
+    ccache_dir.mkdir(parents=True, exist_ok=True)
     cmd = [
         "podman",
         "run",
@@ -652,7 +659,7 @@ fi""")
         "-v",
         f"{host_staging}:/staging",
         "-v",
-        f"ltvm-ccache-{container_tag.removeprefix('ltvm-build-')}:/ccache",
+        f"{ccache_dir}:/ccache",
         container_tag,
         "-c",
         script,

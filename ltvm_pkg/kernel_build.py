@@ -668,18 +668,27 @@ def diagnose_srpm_not_found(
 
 
 def _ccache_volume(target_config: TargetConfig) -> str:
-    """Return the ccache volume name, arch-qualified for non-default arch.
+    """Return the ccache mount source, arch-qualified.
 
-    The kernel build mounts the volume so a same-target/different-arch
-    cross build (e.g. rocky9 x86_64 then rocky9 aarch64) doesn't share
-    object files with the native build.  lustre_build derives the
-    volume name from the (already arch-qualified) container tag, so
-    keep this consistent with that convention.
+    Was a named podman volume, now a host bind-mount path under the
+    target's output_dir.  Rationale: rootless podman on macOS
+    (podman machine 5.x) creates fresh volumes whose root dir is
+    inaccessible to container-root, and there's no obvious knob to
+    fix that -- mkdir /ccache/tmp fails with "Permission denied"
+    immediately and every gcc invocation through the ccache wrapper
+    aborts the build.  Bind-mounting an ordinary host directory side-
+    steps the volume-uid-namespace dance: the host fs perms already
+    match the user's uid, and rootless podman maps that to root in
+    the container so writes Just Work.
+
+    Same arch isolation as before -- a same-target/different-arch
+    cross build doesn't share object files with the native build.
     """
     arch = target_config.arch
-    if arch and arch != "x86_64":
-        return f"ltvm-ccache-{target_config.name}-{arch}"
-    return f"ltvm-ccache-{target_config.name}"
+    suffix = "" if not arch or arch == "x86_64" else f"-{arch}"
+    cache_dir = target_config.output_dir / f"ccache{suffix}"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    return str(cache_dir)
 
 
 def _ensure_container_image(target_config: TargetConfig) -> str:
