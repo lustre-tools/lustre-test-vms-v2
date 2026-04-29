@@ -326,22 +326,20 @@ def launch_qemu(vm: VMInfo) -> None:
     rng_driver = "virtio-rng-pci"
 
     # KVM allows -cpu host; TCG (cross-arch emulation) needs a real model.
+    # LTVM_QEMU_ACCEL=tcg forces TCG even when KVM is available -- needed
+    # for nested aarch64 KVM (Apple Silicon -> UTM Linux -> rocky9 guest)
+    # where vPMU/arch_timer virtualization causes RCU stalls and freezes
+    # boot.  TCG is slower but reliable.
+    accel_override = os.environ.get("LTVM_QEMU_ACCEL", "").lower()
+    force_tcg = accel_override == "tcg"
     host_arch = _platform.machine()
-    if (arch == "x86_64" and host_arch in ("x86_64", "amd64")) or (
-        arch == "aarch64" and host_arch in ("aarch64", "arm64")
-    ):
+    kvm_compatible = (
+        arch == "x86_64" and host_arch in ("x86_64", "amd64")
+    ) or (arch == "aarch64" and host_arch in ("aarch64", "arm64"))
+    if kvm_compatible and not force_tcg:
         cpu_model = "host"
-        # Under nested aarch64 KVM (Apple Silicon -> UTM Linux ->
-        # rocky9 guest), PMU virtualization causes the guest's
-        # arch_timer interrupt rate to collapse (~1 Hz instead of
-        # 100 Hz), starving the rcu_preempt kthread and freezing
-        # boot just after systemd's banner.  Disabling PMU emulation
-        # restores the timer.  Cost is no perf-counter access in the
-        # guest -- not relevant for these test VMs.
-        if arch == "aarch64":
-            cpu_model = "host,pmu=off"
     elif arch == "aarch64":
-        cpu_model = "cortex-a57"
+        cpu_model = "cortex-a72"
     else:
         cpu_model = "qemu64"
 
@@ -351,6 +349,8 @@ def launch_qemu(vm: VMInfo) -> None:
         vm.name,
         "-machine",
         machine,
+        "-accel",
+        "tcg" if force_tcg else "kvm:tcg",
         "-cpu",
         cpu_model,
         "-smp",
