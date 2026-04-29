@@ -331,6 +331,15 @@ def launch_qemu(vm: VMInfo) -> None:
         arch == "aarch64" and host_arch in ("aarch64", "arm64")
     ):
         cpu_model = "host"
+        # Under nested aarch64 KVM (Apple Silicon -> UTM Linux ->
+        # rocky9 guest), PMU virtualization causes the guest's
+        # arch_timer interrupt rate to collapse (~1 Hz instead of
+        # 100 Hz), starving the rcu_preempt kthread and freezing
+        # boot just after systemd's banner.  Disabling PMU emulation
+        # restores the timer.  Cost is no perf-counter access in the
+        # guest -- not relevant for these test VMs.
+        if arch == "aarch64":
+            cpu_model = "host,pmu=off"
     elif arch == "aarch64":
         cpu_model = "cortex-a57"
     else:
