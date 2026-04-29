@@ -316,6 +316,13 @@ def launch_qemu(vm: VMInfo) -> None:
     arch = vm.arch
     qemu_bin = qemu_binary_for_arch(arch)
     machine = qemu_machine_for_arch(arch)
+    # If LTVM_QEMU_ACCEL=tcg is set, swap the machine's accel= clause to
+    # tcg.  qemu_machine_for_arch bakes accel into -machine; passing a
+    # separate -accel would error ("incompatible with -machine accel=").
+    if os.environ.get("LTVM_QEMU_ACCEL", "").lower() == "tcg":
+        import re as _re
+
+        machine = _re.sub(r"accel=[^,]+", "accel=tcg", machine)
 
     # q35 (x86) and virt (aarch64) both have a PCI bus, so virtio
     # devices attach as virtio-*-pci.  Previously x86 used microvm and
@@ -349,8 +356,6 @@ def launch_qemu(vm: VMInfo) -> None:
         vm.name,
         "-machine",
         machine,
-        "-accel",
-        "tcg" if force_tcg else "kvm:tcg",
         "-cpu",
         cpu_model,
         "-smp",
