@@ -101,7 +101,12 @@ def qemu_machine_for_arch(arch: str = "x86_64") -> str:
         return f"q35,{accel}"
     if arch == "aarch64":
         accel = f"accel={native_accel}" if host_is_arm64 else "accel=tcg"
-        return f"virt,{accel},gic-version=max"
+        # gic-version: default "max" picks the highest the host KVM
+        # advertises (v3 or v4).  In nested aarch64 KVM (Apple Silicon
+        # -> UTM Linux) the v3 emulation can stall guest userspace
+        # right after init.  LTVM_GIC_VERSION=2|3|4|max overrides.
+        gic = os.environ.get("LTVM_GIC_VERSION", "max")
+        return f"virt,{accel},gic-version={gic}"
     return "virt,accel=tcg"
 
 
