@@ -234,9 +234,16 @@ def launch_qemu(vm: VMInfo) -> None:
     # before sshd starts.  Disable SELinux at the cmdline -- aligns
     # with the no-policy image design and is harmless on x86_64
     # variants that already disable it via /etc/selinux/config.
+    #
+    # nohz=off: under nested aarch64 KVM (e.g. UTM Ubuntu host), the
+    # arch_timer can fail to wake CPU0 from idle, producing
+    # "rcu_preempt kthread timer wakeup didn't happen" stalls and
+    # freezing boot right after systemd prints its banner.  Forcing
+    # the periodic tick costs negligible idle wakeups in test VMs but
+    # avoids the RCU stall.  No-op on healthy setups.
     boot_args = (
         f"console={console} reboot=k panic=1 crashkernel={crashkernel} "
-        f"net.ifnames=0 biosdevname=0 selinux=0 "
+        f"net.ifnames=0 biosdevname=0 selinux=0 nohz=off "
         f"systemd.journald.forward_to_console=1 systemd.log_target=console "
         f"root=/dev/vda rw fc_ip={vm.ip} fc_gw={GATEWAY} "
         f"fc_name={vm.name}"
