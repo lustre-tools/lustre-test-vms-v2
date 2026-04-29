@@ -34,8 +34,8 @@ ltvm llmount co1-single
 **Day-to-day iteration (change Lustre, redeploy into a running VM):**
 
 ```bash
-ltvm build lustre rocky9 ~/lustre-release        # incremental, fast
-ltvm deploy-lustre co1-single --build ~/lustre-release --mount
+ltvm build lustre rocky9 --lustre-tree ~/lustre-release   # incremental, fast
+ltvm deploy-lustre co1-single --lustre-tree ~/lustre-release --mount
 ```
 
 ## Target OS support
@@ -73,7 +73,7 @@ ltvm build all <target>         Container + kernel + Lustre + image
 ltvm build container <target>   Rebuild the build container
 ltvm build kernel <target>      Kernel (+ --kernel, --lustre-tree)
 ltvm build image <target>       Per-kernel VM image (+ --kernel)
-ltvm build lustre <t> <tree>    Lustre against target kernel (+ --kernel)
+ltvm build lustre <target>      Lustre against target kernel (+ --lustre-tree, --kernel)
 ltvm build mofed-kmods <t>      Per-kernel MOFED kernel modules
 ltvm build shell <target>       Interactive shell in build container
 ltvm build status               Staleness table (one row per built kernel)
