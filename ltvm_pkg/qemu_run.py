@@ -227,9 +227,16 @@ def launch_qemu(vm: VMInfo) -> None:
         # so rc.local can count positions.
         if vm.nic_ips:
             fc_nic_ips_fragment = f" fc_nic_ips={','.join(vm.nic_ips)}"
+    # selinux=0: the rocky9 base image installs no policy and runs
+    # unconfined by design, but the kernel default is enabled so
+    # systemd tries to load /etc/selinux/targeted/policy/policy.33,
+    # fails (file not present on aarch64 images), and stalls boot
+    # before sshd starts.  Disable SELinux at the cmdline -- aligns
+    # with the no-policy image design and is harmless on x86_64
+    # variants that already disable it via /etc/selinux/config.
     boot_args = (
         f"console={console} reboot=k panic=1 crashkernel={crashkernel} "
-        f"net.ifnames=0 biosdevname=0 "
+        f"net.ifnames=0 biosdevname=0 selinux=0 "
         f"systemd.journald.forward_to_console=1 systemd.log_target=console "
         f"root=/dev/vda rw fc_ip={vm.ip} fc_gw={GATEWAY} "
         f"fc_name={vm.name}"
