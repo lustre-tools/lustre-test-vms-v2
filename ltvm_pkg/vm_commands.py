@@ -156,6 +156,12 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
     if not vm.kernel:
         return
 
+    # Under TCG (LTVM_QEMU_ACCEL=tcg, used for nested aarch64 where KVM
+    # times out the guest's arch_timer), every SSH-driven operation on
+    # the guest runs ~5-10x slower.  Scale our per-command timeouts so
+    # the dracut regen + kdump restart don't trip on the slow path.
+    slow = 6 if os.environ.get("LTVM_QEMU_ACCEL", "").lower() == "tcg" else 1
+
     if not vm.kver:
         raise RuntimeError(
             f"VM {vm.name!r} has no kver recorded; recreate the VM"
@@ -180,7 +186,7 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
     probe = run_ssh(
         vm.ip,
         f"test -f /boot/vmlinuz-{kver} && test -f {initrd_path}",
-        timeout=10,
+        timeout=10 * slow,
     )
     if probe.returncode != 0:
         # Image predates baked-in kdump artifacts (or they got wiped).
@@ -212,8 +218,8 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
             regen_cmd = f"update-initramfs -c -k {kver}"
         else:
             regen_cmd = f"dracut --kver {kver} --force {initrd_path}"
-        run_ssh(vm.ip, regen_cmd, timeout=120)
-    run_ssh(vm.ip, reload_cmd, timeout=30)
+        run_ssh(vm.ip, regen_cmd, timeout=120 * slow)
+    run_ssh(vm.ip, reload_cmd, timeout=30 * slow)
 
 
 def _ago(epoch: int) -> str:
