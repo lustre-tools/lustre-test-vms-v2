@@ -117,6 +117,30 @@ def _atomic_write(path: Path, content: str) -> None:
         raise
 
 
+def _chown_to_real_user(path: Path) -> None:
+    """Chown *path* to ``SUDO_USER`` when running under sudo.
+
+    Every write into ``~/.ssh/`` from ltvm goes through tempfile +
+    rename as root, so without this the user's own dotfiles end up
+    root-owned and unreadable to their normal-shell ssh -- which then
+    falls through to password auth and "Permission denied".  Callers
+    in register/unregister and any future writer should run this
+    after each atomic write.
+    """
+    sudo_user = os.environ.get("SUDO_USER")
+    if not sudo_user or sudo_user == "root":
+        return
+    import pwd as _pwd
+    try:
+        pw = _pwd.getpwnam(sudo_user)
+    except KeyError:
+        return
+    try:
+        os.chown(path, pw.pw_uid, pw.pw_gid)
+    except OSError:
+        pass
+
+
 def tap_for_name(name: str) -> str:
     suffix = name
     if len(suffix) > 11:
@@ -367,13 +391,7 @@ def _register_ssh_name_locked(name: str, ip: str) -> None:
     cfg_text = "\n".join(stripped_lines) + ("\n" if stripped_lines else "")
     _atomic_write(ssh_cfg, cfg_text + block)
     ssh_cfg.chmod(0o600)
-    import pwd
-
-    try:
-        pw = pwd.getpwnam(real_user)
-        os.chown(ssh_cfg, pw.pw_uid, pw.pw_gid)
-    except KeyError:
-        pass
+    _chown_to_real_user(ssh_cfg)
 
 
 def unregister_ssh_name(name: str) -> None:
@@ -385,10 +403,25 @@ def unregister_ssh_name(name: str) -> None:
 def _unregister_ssh_name_locked(name: str) -> None:
     marker = f"{MARKER}:{name}"
 
+    # Capture the IP from /etc/hosts BEFORE we strip the entry, so we
+    # can also nuke the matching ~/.ssh/known_hosts records.  Without
+    # that, the next `ltvm create <samename>` boots a VM with a fresh
+    # SSH host key and the user's ssh hits "WARNING: REMOTE HOST
+    # IDENTIFICATION HAS CHANGED" instead of just connecting.
+    hosts = HOSTS_FILE
+    ip: str | None = None
+    if hosts.exists():
+        for line in hosts.read_text().splitlines():
+            stripped = line.rstrip("\r\n")
+            if stripped.endswith(marker):
+                parts = stripped.split()
+                if parts:
+                    ip = parts[0]
+                break
+
     # /etc/hosts (atomic write to avoid races with parallel destroys).
     # Anchor the marker match to end-of-line: see the prefix-collision
     # comment in _register_ssh_name_locked above.
-    hosts = HOSTS_FILE
     if hosts.exists():
         lines = [
             line
@@ -398,26 +431,49 @@ def _unregister_ssh_name_locked(name: str) -> None:
         _atomic_write(hosts, "".join(lines))
         reload_dns()
 
-    # ~/.ssh/config -- remove block
+    # ~/.ssh/config -- remove block.  Same root-owns-the-file footgun
+    # as register, so we chown back to the real user after writing.
     _, ssh_dir = _real_user_ssh_dir()
     ssh_cfg = ssh_dir / "config"
-    if not ssh_cfg.exists():
-        return
-    lines = ssh_cfg.read_text().splitlines()
-    out: list[str] = []
-    skip = False
-    for line in lines:
-        if f"Host {name} {marker}" in line:
-            skip = True
-            if out and out[-1] == "":
-                out.pop()
-            continue
-        if skip:
-            if line.startswith("\t") or line == "":
+    if ssh_cfg.exists():
+        lines = ssh_cfg.read_text().splitlines()
+        out: list[str] = []
+        skip = False
+        for line in lines:
+            if f"Host {name} {marker}" in line:
+                skip = True
+                if out and out[-1] == "":
+                    out.pop()
                 continue
-            skip = False
-        out.append(line)
-    _atomic_write(ssh_cfg, "\n".join(out) + "\n")
+            if skip:
+                if line.startswith("\t") or line == "":
+                    continue
+                skip = False
+            out.append(line)
+        _atomic_write(ssh_cfg, "\n".join(out) + "\n")
+        _chown_to_real_user(ssh_cfg)
+
+    # ~/.ssh/known_hosts -- drop entries by name AND by ip so a
+    # recreate doesn't trip the "host key changed" guard.  ssh-keygen
+    # handles the file format (hashed-host entries, comments, etc.)
+    # and is a no-op if the file doesn't exist.
+    known = ssh_dir / "known_hosts"
+    if known.exists():
+        for target in (name, ip):
+            if not target:
+                continue
+            try:
+                subprocess.run(
+                    ["ssh-keygen", "-q", "-R", target, "-f", str(known)],
+                    check=False,
+                    capture_output=True,
+                )
+            except OSError:
+                pass
+        _chown_to_real_user(known)
+        backup = known.with_name(known.name + ".old")
+        if backup.exists():
+            _chown_to_real_user(backup)
 
 
 def deploy_ssh_key(ip: str) -> None:
