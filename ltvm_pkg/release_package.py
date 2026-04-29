@@ -218,6 +218,28 @@ def _tar_zstd(
     subprocess.run(cmd, check=True)
 
 
+def _is_gnu_tar() -> bool:
+    """Return True if ``tar`` on PATH is GNU tar.
+
+    macOS / BSD tar uses libarchive, which embeds PAX extended headers
+    like ``LIBARCHIVE.xattr.com.apple.provenance`` on every file.  GNU
+    tar warns about each one when extracting, flooding the output.
+    Detect GNU tar so we can pass ``--warning=no-unknown-keyword`` to
+    silence those warnings -- the flag is GNU-specific and BSD tar
+    rejects it.
+    """
+    try:
+        r = subprocess.run(
+            ["tar", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "GNU tar" in r.stdout
+
+
 def _untar_zstd(tarball: Path, dest: Path) -> None:
     """Extract a .tar.zst into ``dest``.  ``dest`` must already exist.
 
@@ -232,13 +254,18 @@ def _untar_zstd(tarball: Path, dest: Path) -> None:
     fine for an artifact tree only ltvm reads back.
     """
     _check_zstd()
+    tar_cmd = ["tar", "-xf", "-", "-C", str(dest)]
+    if _is_gnu_tar():
+        # Suppress per-file warnings about LIBARCHIVE.xattr.* PAX
+        # headers from macOS-built tarballs.
+        tar_cmd.insert(1, "--warning=no-unknown-keyword")
     with subprocess.Popen(
         ["zstd", "-dc", str(tarball)],
         stdout=subprocess.PIPE,
     ) as p:
         try:
             subprocess.run(
-                ["tar", "-xf", "-", "-C", str(dest)],
+                tar_cmd,
                 stdin=p.stdout,
                 check=True,
             )
