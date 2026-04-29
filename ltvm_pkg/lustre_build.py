@@ -381,6 +381,19 @@ def _build_in_container(
     print(f"  Kernel:    {build_tree}")
     print(f"  Version:   {kver}")
 
+    # Check for cross-target kernel mismatch BEFORE asking
+    # _needs_reconfigure.  _needs_reconfigure only inspects THIS
+    # target's stamp: if it matches the current kernel, it says "skip
+    # reconfigure" -- but config.h in the (shared) Lustre source tree
+    # may have been written by a different target's build against a
+    # different kernel, so its autoconf-driven HAVE_* macros are wrong
+    # for us.  _kernel_changed sweeps every target's stamp, so use it
+    # as the canonical cross-target safety net.
+    if not force and _kernel_changed(
+        lustre_tree, build_tree, target=target, arch=arch
+    ):
+        force = True
+
     need_reconf = _needs_reconfigure(
         lustre_tree,
         build_tree,
@@ -389,17 +402,6 @@ def _build_in_container(
         enable_server=enable_server,
         arch=arch,
     )
-
-    # Kernel change invalidates autoconf header-probe cache: old probes
-    # for e.g. struct mnt_idmap produce wrong answers against the new
-    # headers.  Treat it like --force so the tree starts clean.
-    kernel_changed = (
-        not force
-        and need_reconf
-        and _kernel_changed(lustre_tree, build_tree, target=target, arch=arch)
-    )
-    if kernel_changed:
-        force = True
 
     # Detect cross-compilation.  Symmetric in both directions so an
     # aarch64 host can cross-build x86_64 Lustre and vice versa.
