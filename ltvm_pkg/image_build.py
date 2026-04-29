@@ -214,6 +214,62 @@ def _lustre_staging_hash_input(staging: Path) -> bytes:
     )
 
 
+def _is_macos_build_host() -> bool:
+    import sys as _sys
+    return _sys.platform == "darwin"
+
+
+def _stage_subtree(
+    src: Path,
+    inject_dir: Path,
+    name: str,
+    target_path: str,
+) -> str:
+    """Copy *src* into the build context and return one Dockerfile line
+    that places it at *target_path* inside the image.
+
+    On Linux: directory copy + ``COPY <name>/ <target_path>``.
+    On macOS: tar.gz the tree once and emit ``ADD <name>.tar.gz <target_path>``
+    so podman's copier only ``listxattr``s the single archive.
+
+    Why the macOS detour:
+    podman build's COPY ingests every file in the build context and
+    calls ``listxattr`` on each.  On the macOS->podman-machine
+    virtiofs path that returns ENOMEM ("cannot allocate memory") on
+    some Lustre .ko modules and aborts the build.  And we can't strip
+    the offending xattr -- ``com.apple.provenance`` is system-protected
+    on APFS and cannot be deleted, even by root.  Bundling into a tar
+    sidesteps the per-file scan: the archive itself gets one listxattr
+    call and its contents are extracted by ADD inside the build
+    container, never crossing virtiofs as individual files.
+    """
+    if _is_macos_build_host():
+        archive = inject_dir / f"{name}.tar.gz"
+        # tar from inside src so the archive's paths are relative to
+        # src's contents, not src itself.  podman's `ADD <tar> <dest>/`
+        # extracts paths verbatim into dest, so a tar of `./foo` would
+        # land at `<dest>/foo` -- we want `<dest>/<contents>`.
+        #
+        # COPYFILE_DISABLE=1 stops BSD tar from emitting AppleDouble
+        # sidecars (./_foo) for every file that has macOS xattrs.
+        # APFS auto-attaches com.apple.provenance to every file, so
+        # without this every .ko in the archive gets a phantom ._.ko
+        # next to it; on the Linux side those land as real files and
+        # depmod chokes ("Exec format error"), and modules fail to
+        # load with "Unknown symbol" because depmod can't build the
+        # dependency graph.
+        env = {**os.environ, "COPYFILE_DISABLE": "1"}
+        subprocess.run(
+            ["tar", "-C", str(src), "-czf", str(archive), "."],
+            env=env,
+            check=True,
+        )
+        return f"ADD {archive.name} {target_path}"
+    dest = inject_dir / name
+    shutil.copytree(src, dest, symlinks=False)
+    return f"COPY {name}/ {target_path}"
+
+
 def _lustre_inject_lines(
     staging: Path,
     inject_dir: Path,
@@ -241,9 +297,14 @@ def _lustre_inject_lines(
         staging / "lib" / "modules" / kver / "extra"
     )
     if modules_src.is_dir():
-        dest = inject_dir / "lustre-extra"
-        shutil.copytree(modules_src, dest, symlinks=False)
-        lines.append(f"COPY lustre-extra/ /lib/modules/{kver}/extra/")
+        lines.append(
+            _stage_subtree(
+                modules_src,
+                inject_dir,
+                "lustre-extra",
+                f"/lib/modules/{kver}/extra/",
+            )
+        )
 
     # Userland subtrees.  /usr/ is the usual catch-all (sbin, bin,
     # lib64, share all live under it) so we stage it as one subtree
@@ -260,10 +321,13 @@ def _lustre_inject_lines(
     for rel in ("usr", "etc", "sbin"):
         src = staging / rel
         if src.is_dir():
-            dest = inject_dir / f"lustre-userland-{rel}"
-            shutil.copytree(src, dest, symlinks=False)
             lines.append(
-                f"COPY lustre-userland-{rel}/ /{rel}/"
+                _stage_subtree(
+                    src,
+                    inject_dir,
+                    f"lustre-userland-{rel}",
+                    f"/{rel}/",
+                )
             )
 
     # A second depmod after Lustre modules land.  Without this,
@@ -586,7 +650,11 @@ def build_image(
             lines = [f"FROM {tag}"]
             if has_modules:
                 log.info("Including kernel modules")
-                # Copy modules into inject context, clean symlinks
+                # Copy modules into inject context, clean symlinks.
+                # On macOS we then re-archive into modules.tar.gz to
+                # dodge the podman virtiofs listxattr ENOMEM bug (see
+                # _stage_subtree).  We can't share _stage_subtree here
+                # because we need the build/source symlink filter.
                 mod_dest = inject_dir / "modules"
                 shutil.copytree(
                     str(modules_dir / "lib" / "modules"),
@@ -594,6 +662,20 @@ def build_image(
                     symlinks=False,
                     ignore=shutil.ignore_patterns("build", "source"),
                 )
+                if _is_macos_build_host():
+                    archive = inject_dir / "modules.tar.gz"
+                    # See _stage_subtree: tar from inside the dir so
+                    # ADD lands the contents directly at the target,
+                    # and COPYFILE_DISABLE=1 keeps BSD tar from
+                    # emitting AppleDouble ._* sidecars.
+                    env = {**os.environ, "COPYFILE_DISABLE": "1"}
+                    subprocess.run(
+                        ["tar", "-C", str(mod_dest), "-czf",
+                         str(archive), "."],
+                        env=env,
+                        check=True,
+                    )
+                    shutil.rmtree(mod_dest)
 
             kdump_lines = _kdump_inject_lines(
                 kdir, inject_dir, kver, target_config.os_family
@@ -619,9 +701,11 @@ def build_image(
             # every subsequent build_image).  Maintainers who need
             # baked-in Lustre should snapshot it via `ltvm package`,
             # which puts it in lustre-artifacts/ for the fetcher to use.
-            if (inject_dir / "modules").is_dir() and any(
-                (inject_dir / "modules").iterdir()
-            ):
+            mod_archive = inject_dir / "modules.tar.gz"
+            mod_dir = inject_dir / "modules"
+            if mod_archive.exists():
+                lines.append("ADD modules.tar.gz /lib/modules/")
+            elif mod_dir.is_dir() and any(mod_dir.iterdir()):
                 lines.append("COPY modules/ /lib/modules/")
             # MOFED kmod RPMs (when present) install BEFORE depmod so
             # the resulting modules.dep includes mlnx-ofa_kernel kmods.
@@ -713,16 +797,14 @@ def build_image(
         # those first and write garbage to meta.  Walk a priority
         # list of canonical module names and use the first that yields
         # a sensible version string.
+        from .paths import read_modinfo_field
+
         candidates = ("lustre.ko", "libcfs.ko", "obdclass.ko", "ptlrpc.ko")
         for cand in candidates:
             ko = next(lustre_staging.rglob(cand), None)
             if ko is None:
                 continue
-            r = subprocess.run(
-                ["modinfo", "-F", "version", str(ko)],
-                capture_output=True, text=True,
-            )
-            v = r.stdout.strip().splitlines()[0] if r.returncode == 0 and r.stdout.strip() else ""
+            v = (read_modinfo_field(ko, "version") or "").strip()
             # Guard against the legacy "in-kernel" stub even if a future
             # refactor lets it leak back in under a preferred name.
             if v and "in-kernel" not in v:
@@ -823,35 +905,101 @@ def _export_to_ext4(
         log.info("Extracting rootfs tarball...")
         # tar --exclude=dev/* skips device nodes we can't mknod as user;
         # we recreate the pseudo-fs mountpoints dev/{pts,shm,mqueue}.
-        # `find ! -readable chmod u+r` heals unreadable files left by
-        # container post-install scripts so mke2fs -d can ingest them.
-        # A single fakeroot session spans tar-x and mke2fs -d so the
-        # uid/gid LD_PRELOAD state is consistent across both reads
-        # (mke2fs statting the tree) and writes (tar setting 0:0).
-        extract_script = (
-            f"set -e; "
-            f"tar -C {shlex.quote(str(rootfs))} -xpf "
-            f"{shlex.quote(str(tarball))} --exclude=dev/*; "
-            f"mkdir -p {shlex.quote(str(rootfs))}/dev/pts "
-            f"{shlex.quote(str(rootfs))}/dev/shm "
-            f"{shlex.quote(str(rootfs))}/dev/mqueue; "
-            f"find {shlex.quote(str(rootfs))} ! -readable "
-            f"-exec chmod u+r {{}} + 2>/dev/null || true; "
+        # `chmod -R u+rX` heals unreadable files left by container
+        # post-install scripts (gshadow lands as 0000) so mke2fs -d can
+        # ingest them.  Earlier we used `find ! -readable -exec chmod
+        # u+r` but BSD find on macOS doesn't have -readable, so the
+        # find call errored out and the chmod never ran -- mke2fs then
+        # tripped on gshadow.  `chmod -R u+rX` is portable: u+r adds
+        # user-read on every entry; the capital X adds user-execute
+        # only on directories (and on files that already have any
+        # exec bit), so we don't accidentally mark plain data files
+        # executable.
+        size_mb = _compute_image_size_mb_from_tar(tarball)
+        extract_script_in_container = (
+            "set -e; "
+            "ROOTFS=/work/rootfs; "
+            "mkdir -p $ROOTFS; "
+            "tar -C $ROOTFS -xpf /work/rootfs.tar --exclude=dev/*; "
+            "mkdir -p $ROOTFS/dev/pts $ROOTFS/dev/shm $ROOTFS/dev/mqueue; "
+            "chmod -R u+rX $ROOTFS; "
             # -O ^metadata_csum,^dir_index works around two distinct
-            # e2fsprogs 1.46.5 bugs in `mke2fs -d`:
-            #   * "Directory block checksum does not match" on htree
-            #   * "EXT2 directory corrupted" when populating large
-            #     directories (e.g. /lib/modules/.../kernel/ with
-            #     thousands of .ko files)
-            # Both are fixed in 1.47.  We re-enable the features with
-            # tune2fs + e2fsck -D afterwards so the final image has
-            # htree and checksums like a normal ext4 fs.
-            f"mke2fs -t ext4 -b 4096 -L rootfs -E root_owner=0:0 "
-            f"-O ^metadata_csum,^dir_index "
-            f"-d {shlex.quote(str(rootfs))} "
-            f"{shlex.quote(tmpfile)} {_compute_image_size_mb_from_tar(tarball)}M"
+            # e2fsprogs 1.46.5 bugs in `mke2fs -d`; we re-enable both
+            # via tune2fs + e2fsck -D after the populate so the final
+            # image has htree and checksums like a normal ext4 fs.
+            "mke2fs -t ext4 -b 4096 -L rootfs -E root_owner=0:0 "
+            "-O ^metadata_csum,^dir_index "
+            f"-d $ROOTFS /work/out.ext4 {size_mb}M; "
+            "rm -rf $ROOTFS"
         )
-        _run(["fakeroot", "bash", "-c", extract_script], capture_output=False)
+        if _is_macos_build_host():
+            # fakeroot's DYLD interposition does not survive
+            # `bash -c <script>` on macOS Sonoma -- SIP strips DYLD_*
+            # vars when re-exec'ing through any system-protected
+            # binary, and brew bash forks lose them too.  The result is
+            # mke2fs -d sees the actual host uid/gid (501:20) and
+            # writes them into every inode, which trips sshd's
+            # "/usr/share/empty.sshd must be owned by root" check at
+            # first boot.  Run the whole extract+mke2fs flow inside a
+            # Linux container instead, where the process runs as real
+            # uid 0 and mke2fs -d records uid 0 directly -- no
+            # fakeroot needed.
+            #
+            # We can't use a host-volume mount: podman machine on macOS
+            # serves them via virtiofs, which delegates permission
+            # checks back to the host UID, so container-root can't
+            # write into 0000-mode dirs that tar extracts (Rocky's
+            # /usr/tmp, /var/run etc. have such perms).  Instead we
+            # stream the tarball in via stdin and the resulting ext4
+            # back out via stdout, keeping all the rootfs work inside
+            # the container's native overlay storage.  The worker is
+            # the same image we just built (it ships e2fsprogs since
+            # we're building a server target), so no extra image pull.
+            in_container_script = (
+                "set -e; "
+                "cat > /tmp/rootfs.tar; "
+                "ROOTFS=/tmp/rootfs; "
+                "mkdir -p $ROOTFS; "
+                "tar -C $ROOTFS -xpf /tmp/rootfs.tar --exclude=dev/*; "
+                "mkdir -p $ROOTFS/dev/pts $ROOTFS/dev/shm "
+                "$ROOTFS/dev/mqueue; "
+                "chmod -R u+rX $ROOTFS; "
+                "mke2fs -t ext4 -b 4096 -L rootfs -E root_owner=0:0 "
+                "-O ^metadata_csum,^dir_index "
+                f"-d $ROOTFS /tmp/out.ext4 {size_mb}M >&2; "
+                "cat /tmp/out.ext4"
+            )
+            with open(str(tarball), "rb") as fin, \
+                    open(tmpfile, "wb") as fout:
+                subprocess.run(
+                    [
+                        "podman", "run", "--rm", "-i",
+                        container_tag,
+                        "bash", "-c", in_container_script,
+                    ],
+                    stdin=fin,
+                    stdout=fout,
+                    check=True,
+                )
+        else:
+            # Linux host: run with fakeroot directly.
+            host_extract_script = (
+                f"set -e; "
+                f"tar -C {shlex.quote(str(rootfs))} -xpf "
+                f"{shlex.quote(str(tarball))} --exclude=dev/*; "
+                f"mkdir -p {shlex.quote(str(rootfs))}/dev/pts "
+                f"{shlex.quote(str(rootfs))}/dev/shm "
+                f"{shlex.quote(str(rootfs))}/dev/mqueue; "
+                f"chmod -R u+rX {shlex.quote(str(rootfs))}; "
+                f"mke2fs -t ext4 -b 4096 -L rootfs -E root_owner=0:0 "
+                f"-O ^metadata_csum,^dir_index "
+                f"-d {shlex.quote(str(rootfs))} "
+                f"{shlex.quote(tmpfile)} {size_mb}M"
+            )
+            _run(
+                ["fakeroot", "bash", "-c", host_extract_script],
+                capture_output=False,
+            )
 
         subprocess.run(
             ["podman", "rm", "-f", container_id], capture_output=True

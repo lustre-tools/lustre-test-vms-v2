@@ -33,6 +33,15 @@ from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+from ltvm_pkg.cli.util import host_arch as _host_arch_real
+
+# Tests prepopulate artifact dirs and assert what the CLI reads back.
+# The CLI defaults arch to host_arch() when --arch isn't passed, so
+# the prepopulation has to land at the *real* host arch -- otherwise
+# x86 hosts would read aarch64 dirs and vice versa.  Capture once at
+# import time so test paths and the CLI lookup agree.
+_HOST_ARCH = _host_arch_real()
+
 import pytest
 import yaml
 
@@ -135,7 +144,8 @@ def experimental_targets(tmp_targets: Path) -> Path:
 
 def _patch_cfg_paths(tmp_targets: Path) -> Any:
     """Return a context manager that retargets target_config's module
-    constants at the fixture's tmp dir."""
+    constants at the fixture's tmp dir.
+    """
     import ltvm_pkg.target_config as cfg
     from contextlib import ExitStack
 
@@ -309,6 +319,7 @@ def _seed_image_meta(
     target: str,
     kernel: str,
     *,
+    arch: str = _HOST_ARCH,
     variant: str | None = None,
     with_lustre: object = None,
     lustre_version: object = None,
@@ -317,6 +328,11 @@ def _seed_image_meta(
 
     Mirrors the real layout:
         artifacts/<target>/<arch>/images/<kernel>/[<variant>/]meta.json
+    ``arch`` defaults to the real host arch so commands that resolve
+    via ``host_arch()`` (cmd_target_show, build, fetch) read what's
+    seeded.  Tests that exercise ``cmd_targets`` -- which iterates
+    every target at its YAML-declared arch (``x86_64`` in the
+    fixture) -- must pass ``arch="x86_64"`` explicitly.
     Callers control whether the image declares Lustre (`with_lustre`
     and `lustre_version` -- None mimics the --no-lustre build path).
     Also seeds the paired kernel meta so cmd_targets sees the kernel
@@ -324,12 +340,12 @@ def _seed_image_meta(
     meta, not the image meta).
     """
     kdir = (
-        tmp_targets / "artifacts" / target / "x86_64" / "kernels" / kernel
+        tmp_targets / "artifacts" / target / arch / "kernels" / kernel
     )
     kdir.mkdir(parents=True, exist_ok=True)
     (kdir / "meta.json").write_text("{}")
     img_dir = (
-        tmp_targets / "artifacts" / target / "x86_64" / "images" / kernel
+        tmp_targets / "artifacts" / target / arch / "images" / kernel
     )
     if variant and variant != "base":
         img_dir = img_dir / variant
@@ -356,12 +372,15 @@ class TestCmdTargetsLustreMissing:
         variant_targets: Path,
     ) -> None:
         # Seed a built image WITHOUT lustre, and a second one WITH.
+        # cmd_targets iterates targets at their YAML-declared arch
+        # (x86_64 in the fixture); seed at that arch so the command
+        # actually finds these meta.json files.
         _seed_image_meta(
-            variant_targets, "rocky9", "5.14-rhel9.7",
+            variant_targets, "rocky9", "5.14-rhel9.7", arch="x86_64",
             with_lustre=None, lustre_version=None,  # --no-lustre build
         )
         _seed_image_meta(
-            variant_targets, "rocky9", "5.14-rhel9.5",
+            variant_targets, "rocky9", "5.14-rhel9.5", arch="x86_64",
             with_lustre="/some/tree",
             lustre_version="2.8.0",
         )
@@ -386,7 +405,7 @@ class TestCmdTargetsLustreMissing:
         """The Local column shows `\u2713*` for no-lustre images and the
         legend footer explains it.  `\u2713` (plain) for good images."""
         _seed_image_meta(
-            variant_targets, "rocky9", "5.14-rhel9.7",
+            variant_targets, "rocky9", "5.14-rhel9.7", arch="x86_64",
             with_lustre=None, lustre_version=None,
         )
         with _patch_cfg_paths(variant_targets), \
@@ -404,7 +423,7 @@ class TestCmdTargetsLustreMissing:
         variant_targets: Path,
     ) -> None:
         _seed_image_meta(
-            variant_targets, "rocky9", "5.14-rhel9.7",
+            variant_targets, "rocky9", "5.14-rhel9.7", arch="x86_64",
             with_lustre="/x", lustre_version="2.8.0",
         )
         with _patch_cfg_paths(variant_targets), \
@@ -610,7 +629,7 @@ class TestCmdTargetShow:
         an unbuilt kernel reports built=False."""
         # Pre-populate kernel meta for the default kernel only.
         kdir = (
-            variant_targets / "artifacts" / "rocky9" / "x86_64"
+            variant_targets / "artifacts" / "rocky9" / _HOST_ARCH
             / "kernels" / "5.14-rhel9.7"
         )
         kdir.mkdir(parents=True)
@@ -964,7 +983,7 @@ class TestCmdTargetExport:
         # path so the post-export stat() succeeds.
         kname = "5.14-rhel9.7"
         img_dir = (
-            variant_targets / "artifacts" / "rocky9" / "x86_64"
+            variant_targets / "artifacts" / "rocky9" / _HOST_ARCH
             / "images" / kname
         )
         img_dir.mkdir(parents=True)
@@ -996,7 +1015,7 @@ class TestCmdTargetExport:
         not .qcow2."""
         kname = "5.14-rhel9.7"
         img_dir = (
-            variant_targets / "artifacts" / "rocky9" / "x86_64"
+            variant_targets / "artifacts" / "rocky9" / _HOST_ARCH
             / "images" / kname
         )
         img_dir.mkdir(parents=True)

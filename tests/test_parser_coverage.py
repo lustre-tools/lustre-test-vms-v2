@@ -359,11 +359,7 @@ class TestCmdCreateIdempotence:
         "ost_disks": 5,
         "image": "/custom/base.ext4",
         "kernel": "5.14-rhel9.5",
-        # cmd_create (post-merge) reads the OS from args.target, not
-        # args.os.  The assertion below still checks vm.os_id against
-        # _FIELD_SENTINELS["os"], which is derived from args.target.
         "target": "ubuntu2404",
-        "os": "ubuntu2404",
         "arch": "aarch64",
         "disk_size": "1G",
         "disk_size_bytes": 1024 * 1024 * 1024,
@@ -465,9 +461,9 @@ class TestCmdCreateIdempotence:
                 f"disk_size: expected {self._FIELD_SENTINELS['disk_size_bytes']}, "
                 f"got {vm.disk_size}"
             )
-        if vm.os_id != self._FIELD_SENTINELS["os"]:
+        if vm.os_id != self._FIELD_SENTINELS["target"]:
             failures.append(
-                f"os (os_id): expected '{self._FIELD_SENTINELS['os']}', "
+                f"os (os_id): expected '{self._FIELD_SENTINELS['target']}', "
                 f"got '{vm.os_id}'"
             )
         if vm.image != self._FIELD_SENTINELS["image"]:

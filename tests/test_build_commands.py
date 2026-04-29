@@ -896,9 +896,8 @@ class TestVariantKernelPinPropagation:
             patch.object(cli_mod, "build_image") as bi,
         ):
             rc = _run_main(
-                ["build", "all", "rocky9",
+                ["build", "all", "rocky9", "--yes",
                  "--variant", "mofed-24",
-                 "--skip-lustre",
                  "--lustre-tree", str(lustre_tree)]
             )
         assert rc == EXIT_OK

@@ -40,13 +40,6 @@ from typing import Any
 
 log = logging.getLogger(__name__)
 
-# Grace period between initial cleanup attempt and the nuclear
-# `podman rm -f` fallback.  Kept short because the container's PID 1
-# (bash waiting on make children) typically ignores SIGTERM -- there's
-# no graceful shutdown to wait for, and a long grace just extends the
-# user-visible hang after Ctrl+C.
-_GRACE_SECONDS = 0.5
-
 # podman machine on macOS occasionally drops its socket while tearing
 # down a container that `podman run --rm` was waiting on.  The inner
 # workload exits 0, artifacts are on disk, and then podman's own
@@ -69,6 +62,13 @@ def _stderr_matches_cleanup_eof(stderr: str) -> bool:
     if not stderr or "EOF" not in stderr:
         return False
     return any(m.search(stderr) for m in _CLEANUP_EOF_MARKERS)
+
+# Grace period between initial cleanup attempt and the nuclear
+# `podman rm -f` fallback.  Kept short because the container's PID 1
+# (bash waiting on make children) typically ignores SIGTERM -- there's
+# no graceful shutdown to wait for, and a long grace just extends the
+# user-visible hang after Ctrl+C.
+_GRACE_SECONDS = 0.5
 
 
 def run_podman_with_cleanup(

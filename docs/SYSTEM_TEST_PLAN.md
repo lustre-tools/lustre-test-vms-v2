@@ -143,7 +143,7 @@ sudo ltvm destroy co1-t1 co1-t3 co1-t4 co1-t5
 
 ```bash
 sudo ltvm create co1-single
-sudo ltvm deploy-lustre co1-single --build ~/lustre-release --mount
+sudo ltvm deploy-lustre co1-single --lustre-tree ~/lustre-release --mount
 ssh co1-single 'lctl dl'
 ssh co1-single 'lctl get_param osd-*.*.mntdev'
 ssh co1-single 'lfs df /mnt/lustre'
@@ -157,22 +157,22 @@ ssh co1-single 'ls /proc/fs/lustre/'
 ```bash
 # 4.1. Fresh deploy on new VM
 sudo ltvm create co1-deploy
-sudo ltvm deploy-lustre co1-deploy --build ~/lustre-release --mount
+sudo ltvm deploy-lustre co1-deploy --lustre-tree ~/lustre-release --mount
 ssh co1-deploy 'lctl dl'
 ssh co1-deploy 'lfs df /mnt/lustre'
 
 # 4.2. Idempotency: re-deploy to same VM
-sudo ltvm deploy-lustre co1-deploy --build ~/lustre-release --mount
+sudo ltvm deploy-lustre co1-deploy --lustre-tree ~/lustre-release --mount
 ssh co1-deploy 'lctl dl'
 
 # 4.3. 4-OST VM
 sudo ltvm create co1-4ost --ost-disks 4
-sudo ltvm deploy-lustre co1-4ost --build ~/lustre-release --mount
+sudo ltvm deploy-lustre co1-4ost --lustre-tree ~/lustre-release --mount
 ssh co1-4ost 'lfs df /mnt/lustre'
 
 # 4.4. Deploy without --mount, then mount manually
 sudo ltvm create co1-nomount
-sudo ltvm deploy-lustre co1-nomount --build ~/lustre-release
+sudo ltvm deploy-lustre co1-nomount --lustre-tree ~/lustre-release
 ssh co1-nomount 'lctl dl | grep -c UP'
 ssh co1-nomount 'bash lustre/tests/llmount.sh'
 ssh co1-nomount 'lctl dl'
@@ -217,7 +217,7 @@ Client VM mounts a Lustre filesystem served by a rocky9 server VM.
 ```bash
 # Server: rocky9 (already tested in phase 3)
 sudo ltvm create co1-server
-sudo ltvm deploy-lustre co1-server --build ~/lustre-release --mount
+sudo ltvm deploy-lustre co1-server --lustre-tree ~/lustre-release --mount
 SERVER_IP=$(sudo ltvm list --json | python3 -c \
     "import sys,json; [print(v['ip']) for v in json.load(sys.stdin)['vms'] \
     if v['name']=='co1-server']")

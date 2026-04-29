@@ -221,24 +221,35 @@ def _tar_zstd(
 def _untar_zstd(tarball: Path, dest: Path) -> None:
     """Extract a .tar.zst into ``dest``.  ``dest`` must already exist.
 
-    tar auto-detects zstd via the ``--zstd`` flag; on ancient tar (<1.31)
-    we'd need ``--use-compress-program=zstd`` too.  All our supported
-    targets ship tar 1.34+.
+    Pipes ``zstd -dc`` into ``tar -x`` rather than using GNU tar's
+    ``--zstd``: BSD tar on macOS doesn't recognize ``--zstd`` (or
+    ``--overwrite`` / ``--no-same-owner``).  The pipe form works on
+    every host that has a tar at all.
+
+    Fetcher always overwrites because that's the point of refetching;
+    extraction runs as the invoking user (no SUDO_USER mapping
+    needed) so on-disk ownership is whatever tar's default does --
+    fine for an artifact tree only ltvm reads back.
     """
     _check_zstd()
-    subprocess.run(
-        [
-            "tar",
-            "--zstd",
-            "-xf",
-            str(tarball),
-            "-C",
-            str(dest),
-            "--overwrite",
-            "--no-same-owner",
-        ],
-        check=True,
-    )
+    with subprocess.Popen(
+        ["zstd", "-dc", str(tarball)],
+        stdout=subprocess.PIPE,
+    ) as p:
+        try:
+            subprocess.run(
+                ["tar", "-xf", "-", "-C", str(dest)],
+                stdin=p.stdout,
+                check=True,
+            )
+        finally:
+            if p.stdout is not None:
+                p.stdout.close()
+            p.wait()
+        if p.returncode != 0:
+            raise subprocess.CalledProcessError(
+                p.returncode, ["zstd", "-dc", str(tarball)]
+            )
 
 
 def _zstd_file(src: Path, dst: Path) -> None:
@@ -277,13 +288,33 @@ def _unzstd_file(src: Path, dst: Path) -> None:
 def _resolve_kernel(output_dir: Path, kernel: str | None) -> tuple[str, Path]:
     """Resolve kernel name and directory under ``output_dir/kernels``.
 
-    Exact match first; otherwise auto-detect by picking the lex-largest
-    subdirectory that contains a ``vmlinux``.
+    Disk dirs are named ``<short>-<fullkernel>`` (e.g.
+    ``5.14-rhel9.5-5.14.0-503.40.1.el9_5``); ``targets.yaml`` and most
+    user-facing args use just the short prefix (``5.14-rhel9.5``).
+    Accept either: exact match wins, then a prefix match against the
+    short name (lex-largest among matches, so the highest .elN_M
+    sibling gets picked when multiple coexist), then auto-detection
+    if no kernel was specified at all.
     """
     kernels_dir = output_dir / "kernels"
 
     if kernel is not None:
-        return kernel, kernels_dir / kernel
+        exact = kernels_dir / kernel
+        if exact.is_dir():
+            return kernel, exact
+        if kernels_dir.is_dir():
+            prefix = f"{kernel}-"
+            siblings = sorted(
+                d
+                for d in kernels_dir.iterdir()
+                if d.is_dir() and d.name.startswith(prefix)
+            )
+            if siblings:
+                chosen = siblings[-1]
+                return chosen.name, chosen
+        # No match -- return the exact path so the downstream "missing
+        # artifacts" error names what the caller asked for.
+        return kernel, exact
 
     if not kernels_dir.is_dir():
         raise ValueError(
@@ -445,18 +476,14 @@ def snapshot_lustre(
                 f"kernel meta.json missing kernel_version: {meta_file}"
             )
         sample = ko_files[0]
-        r = subprocess.run(
-            ["modinfo", "-F", "vermagic", str(sample)],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        if r.returncode != 0 or not r.stdout.strip():
+        from .paths import read_modinfo_field
+        vermagic = read_modinfo_field(sample, "vermagic")
+        if not vermagic:
             raise RuntimeError(
-                f"modinfo failed to read vermagic from {sample} "
-                f"(rc={r.returncode}): {r.stderr.strip()}"
+                f"could not read vermagic from {sample}; the file "
+                f"may not be a valid kernel module"
             )
-        parts = r.stdout.split()
+        parts = vermagic.split()
         actual_kver = parts[0] if parts else ""
         if actual_kver != expected_kver:
             raise ValueError(
@@ -595,11 +622,29 @@ def package_target(
             + (f" --variant {variant}" if variant != DEFAULT_VARIANT else "")
         )
 
-    image_ext4 = next(paths["image_dir"].glob("*.ext4"), None)
+    # Prefer the canonical base.ext4 -- mke2fs writes a temp
+    # ltvm-image-XXXXXXXX.ext4 first and renames it once the build is
+    # complete, but interrupted builds leave 0-byte (or stale, full-
+    # size but non-renamed) temp files alongside the real base.ext4.
+    # A naive glob("*.ext4") then picks one of those at random, and
+    # the published release ships a broken image asset.
+    base_ext4 = paths["image_dir"] / "base.ext4"
+    image_ext4 = (
+        base_ext4
+        if base_ext4.exists() and base_ext4.stat().st_size > 0
+        else next(
+            (
+                p
+                for p in paths["image_dir"].glob("*.ext4")
+                if p.stat().st_size > 0
+            ),
+            None,
+        )
+    )
     if image_ext4 is None:
         raise ValueError(
-            f"no *.ext4 in {paths['image_dir']} -- did `ltvm build image` "
-            f"finish successfully?"
+            f"no non-empty *.ext4 in {paths['image_dir']} -- did "
+            f"`ltvm build image` finish successfully?"
         )
 
     # Read version for naming.

@@ -117,7 +117,7 @@ ltvm build all rocky9 --lustre-tree ~/lustre-release --force-compat
 
 ```bash
 ltvm create co1-single --vcpus 2 --mem 4096 --mdt-disks 1 --ost-disks 3
-ltvm deploy-lustre co1-single --build ~/lustre-release --mount
+ltvm deploy-lustre co1-single --lustre-tree ~/lustre-release --mount
 ssh co1-single 'lctl dl'
 ltvm llmount co1-single [--cleanup]   # mount / unmount
 ltvm vm console-log co1-single
@@ -198,7 +198,7 @@ ltvm build shell rocky9
 ### Cross-building Lustre
 
 ```bash
-ltvm build lustre rocky9 ~/lustre-release
+ltvm build lustre rocky9 --lustre-tree ~/lustre-release
 ```
 
 Builds inside the target's build container against the

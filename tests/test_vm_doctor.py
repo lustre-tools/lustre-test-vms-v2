@@ -14,6 +14,7 @@ can't accidentally drop a case or mis-cite which --fix action was run.
 from __future__ import annotations
 
 import argparse
+import platform
 from pathlib import Path
 from typing import Iterator
 from unittest.mock import MagicMock, patch
@@ -295,6 +296,10 @@ class TestDoctorStaleSshConfig:
 # ── orphan TAPs ───────────────────────────────────────────
 
 
+@pytest.mark.skipif(
+    platform.system() == "Darwin",
+    reason="orphan-TAP probe is Linux-only; macOS uses socket_vmnet",
+)
 class TestDoctorOrphanTaps:
     """tap-* interfaces that don't belong to any running VM are orphans."""
 

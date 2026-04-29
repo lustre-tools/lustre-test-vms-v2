@@ -66,8 +66,8 @@ sudo ltvm deploy-lustre co1-single --mount
 To test your own Lustre changes, build from source and deploy:
 
 ```bash
-ltvm build lustre rocky9 ~/lustre-release
-sudo ltvm deploy-lustre co1-single --build ~/lustre-release --mount
+ltvm build lustre rocky9 --lustre-tree ~/lustre-release
+sudo ltvm deploy-lustre co1-single --lustre-tree ~/lustre-release --mount
 ```
 
 `build-lustre` runs inside the build container against the
@@ -86,7 +86,7 @@ ssh co1-single \
 Edit Lustre source, then:
 
 ```bash
-ltvm build lustre rocky9 ~/lustre-release
+ltvm build lustre rocky9 --lustre-tree ~/lustre-release
 sudo ltvm deploy-lustre co1-single --mount
 ```
 
@@ -138,7 +138,7 @@ to a raw ext4 filesystem via `mke2fs -d` under fakeroot
 ### 4. Build Lustre
 
 ```bash
-ltvm build lustre rocky9 ~/lustre-release
+ltvm build lustre rocky9 --lustre-tree ~/lustre-release
 ```
 
 ### 5. Create VM, deploy, test
@@ -147,7 +147,7 @@ ltvm build lustre rocky9 ~/lustre-release
 sudo ltvm vm ensure co1-single \
     --vcpus 2 --mem 4096 \
     --mdt-disks 1 --ost-disks 3
-sudo ltvm deploy-lustre co1-single --build ~/lustre-release --mount
+sudo ltvm deploy-lustre co1-single --lustre-tree ~/lustre-release --mount
 ```
 
 ### Shortcut: build-all
@@ -184,7 +184,7 @@ ltvm build kernel rocky9 --lustre-tree ~/lustre-release \
 Build Lustre against it:
 
 ```bash
-ltvm build lustre rocky9 ~/lustre-release --kernel 5.14-rhel9.5
+ltvm build lustre rocky9 --lustre-tree ~/lustre-release --kernel 5.14-rhel9.5
 ```
 
 Deploy with it:
@@ -277,8 +277,8 @@ The last build wins. If you need two Lustre versions simultaneously,
 use two source trees:
 
 ```bash
-ltvm build lustre rocky9 ~/lustre-v1    # staging overwritten
-ltvm build lustre rocky9 ~/lustre-v2    # staging overwritten again
+ltvm build lustre rocky9 --lustre-tree ~/lustre-v1    # staging overwritten
+ltvm build lustre rocky9 --lustre-tree ~/lustre-v2    # staging overwritten again
 ```
 
 In practice: build, deploy, test, iterate.

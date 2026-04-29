@@ -433,16 +433,7 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common, kernel_arg, force_arg, force_compat_arg, variant_arg],
         help="Build a Lustre source tree against the target kernel build-tree",
     )
-    # build lustre is a two-positional subcommand: <target> <lustre-tree>.
-    # --target also works for the first position.
     _add_target_arg(blp, required=True)
-    blp.add_argument(
-        "lustre_tree_pos",
-        nargs="?",
-        default=None,
-        metavar="lustre-tree",
-        help="Path to Lustre source tree (positional or --lustre-tree)",
-    )
     blp.add_argument(
         "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
     )
@@ -756,6 +747,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=False,
         help="Skip the Lustre asset even if staging is present on "
         "disk.  Kernel-only publish.",
+    )
+    tpbp.add_argument(
+        "--lustre-tree",
+        default=None,
+        help="Path to the Lustre source tree.  When given, publish "
+        "snapshots its .ltvm-staging/ into the artifacts dir before "
+        "packaging so the Lustre asset gets included automatically. "
+        "Without this, publish requires a prior `ltvm build all` (or "
+        "an explicit `--no-lustre`) -- silently dropping Lustre is a "
+        "footgun for releases.",
     )
     tpbp.add_argument(
         "--output",

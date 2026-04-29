@@ -59,7 +59,23 @@ if [[ "$CROSSING" == "1" ]]; then
 	# Cross-compiler may be stricter than native; demote -Werror
 	# variants to warnings so a clean native kernel build doesn't
 	# fail cross.  Applied for either direction.
-	MAKE_ARCH_FLAGS+=("KCFLAGS=-Wno-error -Wno-error=incompatible-pointer-types -Wno-error=missing-prototypes -Wno-error=enum-int-mismatch")
+	#
+	# Probe each `-Wno-error=<warning>` flag against the actual
+	# cross compiler before adding it: Rocky 9's
+	# gcc-x86_64-linux-gnu is 12.1.1, which doesn't know about
+	# `-Wenum-int-mismatch` (added in GCC 13) and rejects the
+	# whole compile with "no option '-Wenum-int-mismatch'".  The
+	# bare `-Wno-error` always works (no specific warning name);
+	# everything else is opt-in based on probe success.
+	cross_kcflags="-Wno-error"
+	for w in incompatible-pointer-types missing-prototypes enum-int-mismatch; do
+		if echo 'int main(void){return 0;}' | \
+				"${CROSS_TRIPLE}-gcc" "-Wno-error=${w}" -x c - \
+				-c -o /dev/null 2>/dev/null; then
+			cross_kcflags="${cross_kcflags} -Wno-error=${w}"
+		fi
+	done
+	MAKE_ARCH_FLAGS+=("KCFLAGS=${cross_kcflags}")
 	CONFIGURE_HOST="--host=${CROSS_TRIPLE}"
 else
 	CROSS_COMPILE=""

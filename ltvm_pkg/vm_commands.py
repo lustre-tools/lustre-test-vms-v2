@@ -642,6 +642,24 @@ def _validate_create_bounds(args: argparse.Namespace) -> tuple[list[str], list[s
     return extra_nic_types, passthrough_bdfs
 
 
+def _checked(cmd: list[str]) -> None:
+    """Run *cmd* with check=True and surface stderr if it fails.
+
+    subprocess.CalledProcessError's default str() is just rc + argv;
+    captured stderr is hidden on the .stderr attribute and never
+    printed.  Wrap so the actual tool error reaches the user.
+    """
+    try:
+        run(cmd, check=True)
+    except subprocess.CalledProcessError as e:
+        msg = (e.stderr or "").strip() or (e.stdout or "").strip()
+        if msg:
+            raise RuntimeError(
+                f"{cmd[0]} failed (rc={e.returncode}): {msg}"
+            ) from e
+        raise
+
+
 def _create_disks(vm: VMInfo, image: str) -> None:
     """Create overlay + backing disks for *vm*.  On any failure,
     unlink everything already created (best-effort) and re-raise so
@@ -649,8 +667,14 @@ def _create_disks(vm: VMInfo, image: str) -> None:
     to trip on.  The .info file isn't written yet so cmd_doctor can't
     see these orphans either, which makes manual recovery awkward.
     """
+    # The overlays/sockets dirs are normally created by `ltvm install`
+    # (host_setup.install_scripts).  vm_net._ip_lock() also auto-creates
+    # VM_DIR before we get here, so we can land in a state where VM_DIR
+    # exists but its subdirs don't.  Mirror that behavior so qemu-img
+    # doesn't fail with a bare ENOENT.
+    vm.overlay_path.parent.mkdir(parents=True, exist_ok=True)
     try:
-        run(
+        _checked(
             [
                 QEMU_IMG,
                 "create",
@@ -662,25 +686,18 @@ def _create_disks(vm: VMInfo, image: str) -> None:
                 "raw",
                 str(vm.overlay_path),
             ],
-            capture_output=True,
-            check=True,
         )
 
         # Grow the qcow2 virtual disk so the VM has room for Lustre
         # modules, logs, etc.  The ext4 filesystem is resized on first
         # boot (rc.local).
-        run(
-            [QEMU_IMG, "resize", str(vm.overlay_path), "8G"],
-            capture_output=True,
-            check=True,
-        )
+        _checked([QEMU_IMG, "resize", str(vm.overlay_path), "8G"])
 
         # Create backing disks
         total = vm.mdt_disks + vm.ost_disks
         for n in range(1, total + 1):
-            run(
+            _checked(
                 ["truncate", "-s", str(vm.disk_size), str(vm.disk_path(n))],
-                check=True,
             )
     except BaseException:
         try:
@@ -1753,34 +1770,40 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                         unregister_ssh_name(hname)
                         print("  fixed: removed from /etc/hosts")
 
-    r = run(["ip", "-o", "link", "show", "type", "tun"])
-    if r.returncode == 0:
-        # Build the set of TAPs owned by running VMs -- mgmt TAP plus
-        # every extra-NIC TAP.  Anything under tap-* that isn't in this
-        # set (and is currently visible to `ip link`) is an orphan.
-        live_taps: set[str] = set()
-        for name in VMInfo.all_names():
-            try:
-                vm = VMInfo.load(name)
-            except VMNotFound:
-                continue
-            if not is_running(vm):
-                continue
-            live_taps.add(vm.tap)
-            for _idx, _nic_type, _tap, _mac in vm.extra_nics():
-                live_taps.add(_tap)
-        for line in r.stdout.splitlines():
-            m = re.search(r":\s*(tap-\S+?)[@:]", line)
-            if not m:
-                continue
-            tap = m.group(1)
-            if tap in live_taps:
-                continue
-            print(f"orphan TAP: {tap}")
-            issues += 1
-            if args.fix:
-                run(["ip", "link", "del", tap])
-                print("  fixed: removed")
+    # Orphan TAP scan is Linux-only: macOS uses socket_vmnet (Unix
+    # sockets, not TAP devices), and `ip` isn't on the PATH there --
+    # without the gate this raised FileNotFoundError and aborted the
+    # rest of the doctor checks.
+    if not is_macos():
+        r = run(["ip", "-o", "link", "show", "type", "tun"])
+        if r.returncode == 0:
+            # Build the set of TAPs owned by running VMs -- mgmt TAP plus
+            # every extra-NIC TAP.  Anything under tap-* that isn't in
+            # this set (and is currently visible to `ip link`) is an
+            # orphan.
+            live_taps: set[str] = set()
+            for name in VMInfo.all_names():
+                try:
+                    vm = VMInfo.load(name)
+                except VMNotFound:
+                    continue
+                if not is_running(vm):
+                    continue
+                live_taps.add(vm.tap)
+                for _idx, _nic_type, _tap, _mac in vm.extra_nics():
+                    live_taps.add(_tap)
+            for line in r.stdout.splitlines():
+                m = re.search(r":\s*(tap-\S+?)[@:]", line)
+                if not m:
+                    continue
+                tap = m.group(1)
+                if tap in live_taps:
+                    continue
+                print(f"orphan TAP: {tap}")
+                issues += 1
+                if args.fix:
+                    run(["ip", "link", "del", tap])
+                    print("  fixed: removed")
 
     for line in _check_export_tools():
         print(line)

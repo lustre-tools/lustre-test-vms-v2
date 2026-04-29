@@ -15,17 +15,23 @@ COPY common/packages-base.txt /tmp/packages-base.txt
 COPY common/packages-test.txt /tmp/packages-test.txt
 COPY common/packages-debug.txt /tmp/packages-debug.txt
 COPY common/packages-server.txt /tmp/packages-server.txt
+COPY common/packages-skip-aarch64.txt /tmp/packages-skip-aarch64.txt
 COPY rocky9/packages-os.txt /tmp/packages-os.txt
 
-# Parse package lists (strip comments/blanks) and install.
-# Exclude kernel-devel -- Lustre builds on the host, not in VM.
-RUN cat /tmp/packages-base.txt \
+# Parse package lists (strip comments/blanks) and install.  Exclude
+# kernel-devel (Lustre builds on the host, not in VM) and any
+# packages-skip-<arch>.txt entries (known repo gaps for that arch --
+# e.g. numatop is x86_64-only on EL).  Avoiding `--skip-broken` so a
+# genuine typo / repo break still fails the build loudly.
+RUN ARCH=$(uname -m); SKIP=/tmp/packages-skip-$ARCH.txt; \
+    cat /tmp/packages-base.txt \
         /tmp/packages-test.txt \
         /tmp/packages-debug.txt \
         /tmp/packages-server.txt \
         /tmp/packages-os.txt \
     | grep -v '^\s*#' | grep -v '^\s*$' \
     | grep -v '^kernel-devel$' \
+    | { [ -s "$SKIP" ] && grep -vFxf "$SKIP" || cat; } \
     | sort -u \
     | xargs dnf -y --allowerasing install \
     && dnf clean all

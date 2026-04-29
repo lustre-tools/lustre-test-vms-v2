@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>io.github.ltvm.dnsmasq</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>@DNSMASQ_BIN@</string>
+    <string>--keep-in-foreground</string>
+    <string>--conf-file=@DNSMASQ_CONF@</string>
+    <string>--pid-file=@DNSMASQ_PID@</string>
+  </array>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/var/log/ltvm-dnsmasq/stdout</string>
+  <key>StandardErrorPath</key>
+  <string>/var/log/ltvm-dnsmasq/stderr</string>
+</dict>
+</plist>

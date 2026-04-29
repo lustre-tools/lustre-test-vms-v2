@@ -60,7 +60,7 @@ ltvm build image rocky9 --kernel 5.14-rhel9.5
 
 # Build Lustre against a specific kernel (staging lives at
 # <tree>/.ltvm-staging/<target>/<arch>/).
-ltvm build lustre rocky9 ~/lustre-release --kernel 5.14-rhel9.5
+ltvm build lustre rocky9 --lustre-tree ~/lustre-release --kernel 5.14-rhel9.5
 
 # See what's built (one image row per built kernel)
 ltvm build status
@@ -79,7 +79,7 @@ doesn't declare supported.
 ltvm target validate rocky9 --lustre-tree ~/lustre-release
 
 # Override a refusal for a one-off build
-ltvm build lustre rocky9 ~/lustre-release --force-compat
+ltvm build lustre rocky9 --lustre-tree ~/lustre-release --force-compat
 ```
 
 `--force-compat` is wired into `build-all`, `build-kernel`,
@@ -136,8 +136,8 @@ Never bare names like `testvm`.
 
 ```bash
 # Build Lustre, then copy modules + userland into a running VM
-ltvm build lustre rocky9 ~/lustre-release
-ltvm deploy-lustre co1-single --build ~/lustre-release
+ltvm build lustre rocky9 --lustre-tree ~/lustre-release
+ltvm deploy-lustre co1-single --lustre-tree ~/lustre-release
 ltvm llmount co1-single
 ```
 
@@ -218,7 +218,7 @@ ltvm build all <target>         Container + kernel + image (+ --kernel)
 ltvm build container <target>   Rebuild the build container
 ltvm build kernel <target>      Kernel (+ --kernel, --lustre-tree)
 ltvm build image <target>       Per-kernel VM image (+ --kernel)
-ltvm build lustre <t> <tree>    Lustre against target kernel (+ --kernel)
+ltvm build lustre <target>      Lustre against target kernel (+ --lustre-tree, --kernel)
 ltvm build status               Staleness table (one image row per kernel)
 ltvm build shell <target>       Interactive shell in build container
 
@@ -243,7 +243,7 @@ ltvm vm crash-collect <name>    Pull vmcore + run lustre_triage
 ltvm doctor [--fix]             Host-infra health check
 
 # Lustre in a VM
-ltvm deploy-lustre <vm> --build <tree>   Copy Lustre build into running VM
+ltvm deploy-lustre <vm> [--lustre-tree <tree>]   Copy Lustre build into running VM
 ltvm llmount <vm> [--cleanup]     Mount (or unmount) Lustre
 
 # Clusters

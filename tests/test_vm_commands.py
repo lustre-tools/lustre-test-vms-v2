@@ -665,6 +665,7 @@ class TestCmdLlmount:
         r.stderr = ""
         with (
             patch("ltvm_pkg.vm_commands.is_running", return_value=True),
+            patch("ltvm_pkg.vm_commands.configure_test_disks"),
             patch("ltvm_pkg.vm_commands.run_ssh", return_value=r),
             pytest.raises(SystemExit) as exc,
         ):

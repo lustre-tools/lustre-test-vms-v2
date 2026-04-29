@@ -124,6 +124,13 @@ SOCKET_VMNET_PLIST_PATH = Path(
     f"/Library/LaunchDaemons/{SOCKET_VMNET_PLIST_LABEL}.plist"
 )
 
+DNSMASQ_PLIST_LABEL = "io.github.ltvm.dnsmasq"
+DNSMASQ_PLIST_PATH = Path(
+    f"/Library/LaunchDaemons/{DNSMASQ_PLIST_LABEL}.plist"
+)
+DNSMASQ_CONF_PATH = Path("/usr/local/etc/ltvm-dnsmasq.conf")
+DNSMASQ_PID_PATH = Path("/var/run/ltvm-dnsmasq.pid")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 # ltvm_pkg/ holds scripts, host-config templates, etc.
 PKG_DIR = Path(__file__).resolve().parent
@@ -229,8 +236,16 @@ def _sudo_run(
 def _sudo_prime(reason: str) -> None:
     """Prompt for sudo credentials up front so later _sudo_run calls
     don't interrupt with a surprise password prompt mid-install.
+
+    Skips the prompt entirely when ``sudo -n true`` succeeds, which
+    covers both an unexpired sudo timestamp and ``NOPASSWD`` rules --
+    in those cases ``sudo -v`` would still try to authenticate and
+    fail in non-tty contexts (subshells, hooks, CI), aborting install
+    even though every later ``sudo`` would have worked.
     """
     if os.geteuid() == 0:
+        return
+    if _run_quiet(["sudo", "-n", "true"], check=False).returncode == 0:
         return
     log.info("%s -- prompting for sudo credentials now.", reason)
     _run(["sudo", "-v"])
@@ -649,6 +664,31 @@ def socket_vmnet_socket_path() -> Path:
     return Path("/var/run/socket_vmnet")
 
 
+def install_sshpass_macos(force: bool = False) -> None:
+    """Install sshpass on macOS via Homebrew.
+
+    sshpass is invoked by deploy/wait_for_ssh/run_ssh to talk to
+    freshly-booted VMs that only have password auth (root/initial0)
+    until ssh-key provisioning lands.  Without it, ``ltvm create``
+    fails right after boot with ``[Errno 2] No such file or directory:
+    'sshpass'`` and rolls back the whole VM.
+    """
+    if shutil.which("sshpass") and not force:
+        return
+    brew = shutil.which("brew")
+    if not brew:
+        raise RuntimeError(
+            "Homebrew not found. Install it from https://brew.sh, "
+            "then run: brew install sshpass"
+        )
+    log.info("Installing sshpass via Homebrew...")
+    _run([brew, "install", "sshpass"])
+    if not shutil.which("sshpass"):
+        raise RuntimeError(
+            "brew install sshpass succeeded but sshpass not on PATH"
+        )
+
+
 def install_socket_vmnet_macos(force: bool = False) -> None:
     """Install socket_vmnet on macOS via Homebrew.
 
@@ -746,6 +786,13 @@ def install_socket_vmnet_launchd_macos(force: bool = False) -> None:
             tmp_path = tf.name
         try:
             _sudo_run(["mkdir", "-p", "/var/log/socket_vmnet"])
+            # The socket_vmnet brew package doesn't create its var/run dir,
+            # but the daemon binds its Unix socket there -- without this
+            # mkdir the plist boots, fails ENOENT on bind(), and respawns
+            # forever ("ERROR| socket_bindlisten: No such file or directory").
+            _sudo_run(
+                ["mkdir", "-p", str(socket_vmnet_socket_path().parent)]
+            )
             _sudo_run(
                 [
                     "install",
@@ -776,6 +823,142 @@ def install_socket_vmnet_launchd_macos(force: bool = False) -> None:
         log.info("Loaded %s", SOCKET_VMNET_PLIST_LABEL)
     else:
         log.info("%s already loaded", SOCKET_VMNET_PLIST_LABEL)
+
+
+def _dnsmasq_daemon_loaded() -> bool:
+    r = _run_quiet(
+        ["launchctl", "print", f"system/{DNSMASQ_PLIST_LABEL}"],
+        check=False,
+    )
+    return r.returncode == 0
+
+
+def _brew_dnsmasq_bin() -> Path | None:
+    brew = shutil.which("brew")
+    if not brew:
+        return None
+    r = _run_quiet([brew, "--prefix", "dnsmasq"], check=False)
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    bin_path = Path(r.stdout.strip()) / "sbin" / "dnsmasq"
+    return bin_path if bin_path.exists() else None
+
+
+def install_dnsmasq_macos(force: bool = False) -> None:
+    """Install dnsmasq + a launchd job that binds it to the
+    socket_vmnet gateway IP, so guests can resolve each other by name.
+
+    Without this, VM ``resolv.conf`` points at fc_gw (192.168.105.1)
+    where nothing answers DNS on macOS, and ``ssh co1-mds`` from one
+    VM to another silently fails to resolve.  Linux uses the
+    qemu-bridge dnsmasq for the same job.
+    """
+    bin_path = _brew_dnsmasq_bin()
+    if bin_path is None or force:
+        brew = shutil.which("brew")
+        if not brew:
+            raise RuntimeError(
+                "Homebrew not found. Install it from https://brew.sh, "
+                "then run: brew install dnsmasq"
+            )
+        log.info("Installing dnsmasq via Homebrew...")
+        _run([brew, "install", "dnsmasq"])
+        bin_path = _brew_dnsmasq_bin()
+        if bin_path is None:
+            raise RuntimeError(
+                "brew install dnsmasq succeeded but dnsmasq binary "
+                "not found in the expected Homebrew prefix."
+            )
+
+    desired_conf = (
+        (HOST_CONFIG_DIR / "ltvm-dnsmasq-macos.conf")
+        .read_text()
+        .replace("@VMNET_GATEWAY@", DEFAULT_VMNET_GATEWAY)
+    )
+    desired_plist = (
+        (HOST_CONFIG_DIR / f"{DNSMASQ_PLIST_LABEL}.plist")
+        .read_text()
+        .replace("@DNSMASQ_BIN@", str(bin_path))
+        .replace("@DNSMASQ_CONF@", str(DNSMASQ_CONF_PATH))
+        .replace("@DNSMASQ_PID@", str(DNSMASQ_PID_PATH))
+    )
+
+    needs_reload = False
+
+    # Conf file: write under sudo with root:wheel 0644.
+    cur_conf = (
+        DNSMASQ_CONF_PATH.read_text()
+        if DNSMASQ_CONF_PATH.exists()
+        else ""
+    )
+    if cur_conf != desired_conf or force:
+        _sudo_prime(
+            f"Installing {DNSMASQ_CONF_PATH} requires root"
+        )
+        _sudo_run(
+            ["mkdir", "-p", str(DNSMASQ_CONF_PATH.parent)]
+        )
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".conf", delete=False
+        ) as tf:
+            tf.write(desired_conf)
+            tmp_conf = tf.name
+        try:
+            _sudo_run(
+                ["install", "-m", "0644", "-o", "root", "-g",
+                 "wheel", tmp_conf, str(DNSMASQ_CONF_PATH)]
+            )
+        finally:
+            Path(tmp_conf).unlink(missing_ok=True)
+        log.info("Installed %s", DNSMASQ_CONF_PATH)
+        needs_reload = True
+
+    # Plist: same pattern as socket_vmnet.  bootout-then-bootstrap
+    # when the plist contents change so launchd picks up the new
+    # ProgramArguments.
+    cur_plist = (
+        DNSMASQ_PLIST_PATH.read_text()
+        if DNSMASQ_PLIST_PATH.exists()
+        else ""
+    )
+    if cur_plist != desired_plist or force:
+        _sudo_prime(
+            f"Installing {DNSMASQ_PLIST_PATH} requires root"
+        )
+        _sudo_run(["mkdir", "-p", "/var/log/ltvm-dnsmasq"])
+        with tempfile.NamedTemporaryFile(
+            mode="w", suffix=".plist", delete=False
+        ) as tf:
+            tf.write(desired_plist)
+            tmp_plist = tf.name
+        try:
+            _sudo_run(
+                ["install", "-m", "0644", "-o", "root", "-g",
+                 "wheel", tmp_plist, str(DNSMASQ_PLIST_PATH)]
+            )
+        finally:
+            Path(tmp_plist).unlink(missing_ok=True)
+        if _dnsmasq_daemon_loaded():
+            _sudo_run(
+                ["launchctl", "bootout",
+                 f"system/{DNSMASQ_PLIST_LABEL}"],
+                check=False,
+            )
+        log.info("Installed %s", DNSMASQ_PLIST_PATH)
+        needs_reload = True
+
+    if not _dnsmasq_daemon_loaded():
+        _sudo_prime("Loading the ltvm-dnsmasq launchd job requires root")
+        _sudo_run(
+            ["launchctl", "bootstrap", "system",
+             str(DNSMASQ_PLIST_PATH)]
+        )
+        log.info("Loaded %s", DNSMASQ_PLIST_LABEL)
+    elif needs_reload:
+        _sudo_run(
+            ["launchctl", "kickstart", "-k",
+             f"system/{DNSMASQ_PLIST_LABEL}"]
+        )
 
 
 def ensure_socket_vmnet_running() -> None:
@@ -992,6 +1175,77 @@ def install_qemu_macos(force: bool = False) -> None:
     ver_m = re.search(r"version (\d+\.\d+\.\d+)", ver_r.stdout)
     ver = ver_m.group(1) if ver_m else "unknown"
     log.info("Using Homebrew QEMU %s (%s)", ver, brew_prefix)
+
+
+def install_image_tools_macos(force: bool = False) -> None:
+    """Install host tools needed by `ltvm build image` on macOS.
+
+    image_build assembles the ext4 rootfs on the host with `mke2fs -d`
+    plus the rest of e2fsprogs (`e2fsck`, `tune2fs`, `resize2fs`) and
+    `fakeroot`.  None ship in macOS.  Brew has all of them.
+    e2fsprogs is keg-only (its sbin/ collides with macOS's BSD
+    counterparts in /sbin), so we symlink each binary we use into
+    /usr/local/bin/ where shutil.which() will find it without
+    polluting all of e2fsprogs onto PATH.  fakeroot installs at
+    /opt/homebrew/bin which is already on PATH for typical Mac shells.
+    """
+    brew = shutil.which("brew")
+    if not brew:
+        raise RuntimeError(
+            "Homebrew not found.  Install it from https://brew.sh, "
+            "then run: brew install e2fsprogs fakeroot"
+        )
+
+    have_fakeroot = bool(shutil.which("fakeroot"))
+    if not have_fakeroot:
+        log.info("Installing fakeroot via Homebrew...")
+        _run([brew, "install", "fakeroot"])
+
+    # `fakeroot /bin/bash -c <script>` runs without DYLD_INSERT_LIBRARIES
+    # because SIP strips it from system bash, defeating the fakeroot
+    # uid spoof and producing ext4 images whose inodes carry the host
+    # uid (resulting in "must be owned by root" failures from sshd
+    # and friends at first boot).  A brew bash isn't SIP-protected,
+    # so we install it and image_build uses it explicitly.
+    if not Path("/opt/homebrew/bin/bash").exists() or force:
+        log.info("Installing bash via Homebrew (needed for fakeroot)...")
+        _run([brew, "install", "bash"])
+
+    e2fs_prefix: Path | None = None
+    r = _run_quiet([brew, "--prefix", "e2fsprogs"], check=False)
+    if r.returncode == 0 and r.stdout.strip():
+        candidate = Path(r.stdout.strip())
+        if (candidate / "sbin" / "mke2fs").exists():
+            e2fs_prefix = candidate
+    if not e2fs_prefix:
+        log.info("Installing e2fsprogs via Homebrew...")
+        _run([brew, "install", "e2fsprogs"])
+        r = _run_quiet([brew, "--prefix", "e2fsprogs"], check=True)
+        e2fs_prefix = Path(r.stdout.strip())
+
+    bin_dir = Path("/usr/local/bin")
+    primed_dir = False
+    # Tools image_build invokes by bare name -- needs to be findable
+    # via shutil.which / PATH.  e2fsck, tune2fs, resize2fs are used in
+    # the post-mke2fs check + reshrink + feature re-enable steps.
+    for tool in ("mke2fs", "e2fsck", "tune2fs", "resize2fs"):
+        src = e2fs_prefix / "sbin" / tool
+        if not src.exists():
+            continue
+        link = bin_dir / tool
+        need_link = (
+            force
+            or not link.is_symlink()
+            or link.resolve() != src.resolve()
+        )
+        if not need_link:
+            continue
+        if not primed_dir:
+            _sudo_run(["mkdir", "-p", str(bin_dir)], quiet=True)
+            primed_dir = True
+        _sudo_run(["rm", "-f", str(link)], quiet=True)
+        _sudo_run(["ln", "-s", str(src), str(link)], quiet=True)
+        log.info("%s symlinked at %s -> %s", tool, link, src)
 
 
 def install_qemu(host: HostInfo, force: bool = False) -> None:
@@ -1769,10 +2023,13 @@ def _run_setup_macos(
 
     if "qemu" in active:
         install_qemu_macos(force=force)
+        install_image_tools_macos(force=force)
 
     if "network" in active:
         install_socket_vmnet_macos(force=force)
         install_socket_vmnet_launchd_macos(force=force)
+        install_sshpass_macos(force=force)
+        install_dnsmasq_macos(force=force)
 
     if "podman" in active:
         install_podman_macos(force=force)
@@ -1787,8 +2044,9 @@ def _run_setup_macos(
         log.info("")
         log.info("Install complete.")
         log.info("")
-        log.info("Note: network bridge (fcbr0) and dnsmasq are not configured")
-        log.info("on macOS -- VMs use vmnet-shared or user networking instead.")
+        log.info("Note: VMs use socket_vmnet (vmnet-shared) for networking;")
+        log.info("a small dnsmasq is bound to %s for VM<->VM name resolution.",
+                 DEFAULT_VMNET_GATEWAY)
         log.info("")
         log.info("Next:")
         log.info("  ltvm target fetch rocky9")

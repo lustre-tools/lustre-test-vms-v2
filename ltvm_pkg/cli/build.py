@@ -175,9 +175,7 @@ def cmd_build_all(args: argparse.Namespace) -> int:
 
     "all" means all four cacheable artifacts.  The Lustre staging
     is snapshotted into ``artifacts/.../kernels/<kver>/lustre-artifacts/``
-    so ``ltvm target publish`` runs tree-free.  Pass --skip-lustre
-    for kernel-only iteration (no Lustre build, no snapshot, image
-    baked without modules).
+    so ``ltvm target publish`` runs tree-free.
     """
     use_json = args.json
     tc, err = _load_target_args(args, use_json)
@@ -199,9 +197,6 @@ def cmd_build_all(args: argparse.Namespace) -> int:
 def _cmd_build_all_body(
     args: argparse.Namespace, tc: TargetConfig, use_json: bool
 ) -> int:
-    # build-all always requires a Lustre tree -- even for deb targets
-    # where the kernel build itself doesn't need one, the surrounding
-    # workflow (image inject, optional Lustre build, packaging) does.
     lustre_tree, err_msg = _cli_attr("_resolve_lustre_tree")(args.lustre_tree)
     if err_msg:
         return _error(
@@ -282,35 +277,6 @@ def _cmd_build_all_body(
     # name as-is and looks up staging + kernel_dir directly -- so feed
     # it the resolved full name now that the directory exists.
     full_kernel = tc.resolve_kernel(getattr(args, "kernel", None))
-
-    lustre_build = not getattr(args, "skip_lustre", False)
-
-    if lustre_build:
-        # 3. Lustre.  Runs BEFORE the image so its per-kernel staging is
-        # in place for the image-bake step to auto-inject.
-        if not use_json:
-            print(
-                f"==> Building Lustre against {full_kernel} kernel tree..."
-            )
-        build_tree = tc.kernel_output_dir(kernel=full_kernel) / "build-tree"
-        try:
-            container_tag = tc.container_tag
-            lmeta = _cli_attr("build_lustre")(
-                lustre_tree,
-                build_tree,
-                container_tag=container_tag,
-                target=args.target,
-                enable_server=tc.lustre_mode != LustreMode.CLIENT,
-                extra_configure=list(tc.configure_args),
-                jobs=getattr(args, "jobs", None),
-                force=args.force,
-                arch=tc.arch,
-                kernel=full_kernel,
-                variant=tc.variant_name,
-            )
-            results["lustre"] = lmeta
-        except Exception as e:
-            return _error(f"Lustre build failed: {e}", use_json)
 
         # 4. Snapshot Lustre staging into the artifacts dir so
         # ``ltvm target publish`` can bundle it without re-visiting the
@@ -549,18 +515,32 @@ def cmd_build_image(args: argparse.Namespace) -> int:
             )
             build_tree = tc.kernel_output_dir(kernel=resolved_kernel) / "build-tree"
             if not candidate.exists():
+                hint_lines = [
+                    f"checked: {candidate}",
+                ]
+                if not args.lustre_tree:
+                    hint_lines.append(
+                        "(no --lustre-tree given; defaulted to cwd"
+                        f" {lustre_tree})"
+                    )
+                hint_lines += [
+                    "",
+                    "build Lustre first (point at your Lustre source tree):",
+                    f"  ltvm build lustre {args.target} --kernel "
+                    f"{resolved_kernel} --lustre-tree /path/to/lustre-release",
+                    "then re-run with the same --lustre-tree:",
+                    f"  ltvm build image {args.target} --kernel "
+                    f"{resolved_kernel} --lustre-tree /path/to/lustre-release",
+                    "",
+                    "or skip Lustre and bake a kernel-only image:",
+                    f"  ltvm build image {args.target} --kernel "
+                    f"{resolved_kernel} --no-lustre",
+                ]
                 return _error(
                     f"Lustre not built for {args.target} kernel "
-                    f"{resolved_kernel} -- no staging at {candidate}",
+                    f"{resolved_kernel}",
                     use_json,
-                    hint=(
-                        f"build Lustre first:\n"
-                        f"  ltvm build lustre {args.target} --kernel "
-                        f"{resolved_kernel} --lustre-tree <path>\n"
-                        f"or disable Lustre for a kernel-only image:\n"
-                        f"  ltvm build image {args.target} --kernel "
-                        f"{resolved_kernel} --no-lustre"
-                    ),
+                    hint="\n".join(hint_lines),
                 )
             _cli_attr("_gate_lustre_validation")(
                 tc,
