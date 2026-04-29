@@ -336,6 +336,9 @@ class TestCcacheVolumeArch:
     object files (and vice versa)."""
 
     def test_default_arch_volume_name(self) -> None:
+        # Post-0e4c1c9: ccache is a host bind-mount path under
+        # output_dir, not a named podman volume.  Native x86_64 has
+        # no arch suffix on the directory name.
         from ltvm_pkg.kernel_build import _ccache_volume
         from ltvm_pkg.target_config import TargetConfig
 
@@ -343,9 +346,11 @@ class TestCcacheVolumeArch:
             tc = TargetConfig("rocky9")
         except (ValueError, FileNotFoundError):
             pytest.skip("rocky9 target not available in this checkout")
-        assert _ccache_volume(tc) == "ltvm-ccache-rocky9"
+        assert _ccache_volume(tc) == str(tc.output_dir / "ccache")
 
     def test_aarch64_volume_name(self) -> None:
+        # Cross-arch builds get an arch-suffixed directory so
+        # native+cross don't share object files.
         from ltvm_pkg.kernel_build import _ccache_volume
         from ltvm_pkg.target_config import TargetConfig
 
@@ -353,7 +358,7 @@ class TestCcacheVolumeArch:
             tc = TargetConfig("rocky9", arch="aarch64")
         except (ValueError, FileNotFoundError):
             pytest.skip("rocky9 target not available in this checkout")
-        assert _ccache_volume(tc) == "ltvm-ccache-rocky9-aarch64"
+        assert _ccache_volume(tc) == str(tc.output_dir / "ccache-aarch64")
 
     def test_native_and_cross_volumes_differ(self) -> None:
         """The whole point of arch-qualifying the volume name."""

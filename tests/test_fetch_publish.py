@@ -494,6 +494,15 @@ class TestCmdPublishNoUpload:
         assets = {"manifest": tmp_path / "m.json"}
         assets["manifest"].write_text("{}")
 
+        # Seed a fake kernel + snapshot so cmd_publish's
+        # _resolve_kernel + snapshot-presence check both pass without
+        # touching a real build tree.
+        kdir = tc.output_dir / "kernels" / "5.14-rhel9.7"
+        snap_dir = kdir / "lustre-artifacts"
+        snap_dir.mkdir(parents=True)
+        (kdir / "vmlinux").write_text("")
+        (snap_dir / ".ltvm-snapshot.json").write_text("{}")
+
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
             patch.object(

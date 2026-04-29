@@ -321,6 +321,24 @@ def _list_releases(
     return result
 
 
+def _native_arch() -> str:
+    """Return the host machine's arch in ltvm's canonical naming.
+
+    Maps ``amd64`` -> ``x86_64`` and ``arm64`` -> ``aarch64`` so the
+    result is comparable to the ``arch`` field in ``targets.yaml``.
+    Unknown values fall through so a pass-through-and-let-lookup-fail
+    surfaces a useful error rather than a silent wrong default.
+    """
+    import platform
+
+    m = platform.machine().lower()
+    if m in ("x86_64", "amd64"):
+        return "x86_64"
+    if m in ("aarch64", "arm64"):
+        return "aarch64"
+    return m or "x86_64"
+
+
 def _lookup_release_date(release_tag: str) -> str:
     """Return ``YYYY-MM-DD`` for ``release_tag``, or ``""`` on failure.
 

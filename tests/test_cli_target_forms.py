@@ -113,14 +113,13 @@ class TestBuildTargetForms:
         )
         assert args.target == "rocky9"
 
-    def test_build_lustre_second_positional(self, tmp_path: Path) -> None:
-        # `build lustre <target> <lustre-tree>` is the documented shape
-        # (see ~/lustre-test-vms-v2/CLAUDE.md); the second positional
-        # binds to `lustre_tree_pos` and cmd_build_lustre falls back to
-        # it when --lustre-tree is not given.
-        args = _parse(["build", "lustre", "rocky9", str(tmp_path)])
-        assert args.target == "rocky9"
-        assert args.lustre_tree_pos == str(tmp_path)
+    def test_build_lustre_no_second_positional(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        # The old `build lustre <target> <lustre-tree>` form is gone;
+        # --lustre-tree is the only way to pass the tree.
+        with pytest.raises(SystemExit):
+            _parse(["build", "lustre", "rocky9", str(tmp_path)])
 
 
 # ---------------------------------------------------------------------------
