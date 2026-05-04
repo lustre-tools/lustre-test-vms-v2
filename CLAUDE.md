@@ -73,6 +73,25 @@ ltvm build mofed-kmods rocky9 --variant mofed-24 # MOFED kmods per variant
 All build commands accept `--arch <arch>` to override
 the target's configured architecture (e.g. `aarch64`).
 
+### Pruning stale artifacts
+
+`ltvm clean` walks `artifacts/` and previews superseded
+kernel builds, off-list kernel groups (no longer in
+`kernels.available`), and orphan images (no matching
+kernel).  Default is dry-run; pass `--apply` to delete.
+
+```bash
+ltvm clean                      # dry-run, all targets/arches
+ltvm clean rocky9               # one target
+ltvm clean --older-than 30 --apply
+ltvm clean --keep 2 --apply     # keep 2 most recent per group
+```
+
+Always preserved (unless `--force`): the target's default
+kernel and any variant-pinned kernel.  Distinct from
+`ltvm target clean`, which wipes a single target's whole
+arch dir in one shot.
+
 ### Kernel build inputs (from Lustre tree)
 
 `ltvm build kernel` parses the Lustre tree for the

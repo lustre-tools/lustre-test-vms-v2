@@ -103,6 +103,7 @@ from ltvm_pkg.cli import (  # noqa: E402
     cmd_list,
     cmd_llmount,
     cmd_nmi,
+    cmd_prune,
     cmd_publish,
     cmd_restore,
     cmd_setup,
@@ -1032,6 +1033,52 @@ def build_parser() -> argparse.ArgumentParser:
         help="Fix issues automatically",
     )
     sp.set_defaults(func=cmd_doctor)
+
+    # -- clean (smart prune of stale per-target artifacts) --
+    # Distinct from `target clean`, which wipes a single target's whole
+    # arch dir.  This walks artifacts/ and prunes superseded kernels,
+    # off-list groups, and orphan images.  Default is dry-run.
+    sp = sub.add_parser(
+        "clean",
+        parents=[common],
+        help="Prune stale per-target artifacts (default: dry-run preview)",
+    )
+    _clean_target = sp.add_argument(
+        "target",
+        nargs="?",
+        default=None,
+        help="Limit to one target (default: scan every target)",
+    )
+    _clean_target.completer = complete_targets  # type: ignore[attr-defined]
+    sp.add_argument(
+        "--apply",
+        action="store_true",
+        default=False,
+        help="Actually delete (default is dry-run preview)",
+    )
+    sp.add_argument(
+        "--keep",
+        type=int,
+        default=1,
+        metavar="N",
+        help="Keep N most recent kernel builds per declared "
+        "kernels.available group (default: 1)",
+    )
+    sp.add_argument(
+        "--older-than",
+        dest="older_than",
+        default=None,
+        metavar="DAYS",
+        help="Only consider entries older than DAYS days",
+    )
+    sp.add_argument(
+        "--force",
+        action="store_true",
+        default=False,
+        help="Allow pruning the latest entry of a default-kernel or "
+        "variant-pinned group",
+    )
+    sp.set_defaults(func=cmd_prune)
 
     # -- deploy-lustre --
     sp = sub.add_parser(

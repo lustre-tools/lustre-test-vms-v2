@@ -73,6 +73,7 @@ from ltvm_pkg.cli.build import (
     cmd_clean,
     cmd_status,
 )
+from ltvm_pkg.cli.clean import cmd_prune
 
 # GitHub repo for release downloads.  Override with LTVM_GITHUB_REPO
 # so a fork can use `ltvm fetch` / `ltvm publish` without editing
