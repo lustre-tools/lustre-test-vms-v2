@@ -1625,6 +1625,59 @@ def _check_export_tools() -> list[str]:
     return warnings
 
 
+def _format_bytes(n: int) -> str:
+    units = ["B", "KB", "MB", "GB", "TB"]
+    size = float(n)
+    for u in units:
+        if size < 1024 or u == units[-1]:
+            return f"{size:.1f} {u}" if u != "B" else f"{int(size)} B"
+        size /= 1024
+    return f"{int(n)} B"
+
+
+def _check_artifacts_disk_usage() -> tuple[list[str], str | None]:
+    """Disk-usage probe for the volume containing ``artifacts/``.
+
+    Returns (warnings, info_line).  ``warnings`` go into the doctor's
+    issue count; ``info_line`` is always printed regardless so the user
+    sees current capacity even when nothing is wrong.
+
+    We stat the volume itself rather than walking artifacts/ -- a 200GB+
+    artifact tree can hold millions of files (kernel module trees,
+    ccache shards) and a recursive walk would stall doctor for tens of
+    seconds.  ``ltvm clean`` already itemizes per-artifact bytes.
+    """
+    import shutil as _sh
+
+    from .target_config import ARTIFACTS_DIR
+
+    probe_path = ARTIFACTS_DIR if ARTIFACTS_DIR.exists() else ARTIFACTS_DIR.parent
+    if not probe_path.exists():
+        return [], None
+    try:
+        usage = _sh.disk_usage(probe_path)
+    except OSError:
+        return [], None
+
+    free_pct = usage.free / max(usage.total, 1) * 100
+    info = (
+        f"disk: {_format_bytes(usage.free)} free of "
+        f"{_format_bytes(usage.total)} ({free_pct:.0f}% free) on "
+        f"the volume holding artifacts/"
+    )
+
+    warnings: list[str] = []
+    LOW_FREE_BYTES = 20 * 1024**3  # 20 GiB
+    LOW_FREE_PCT = 10.0
+    if usage.free < LOW_FREE_BYTES or free_pct < LOW_FREE_PCT:
+        warnings.append(
+            f"low free disk: {_format_bytes(usage.free)} "
+            f"({free_pct:.0f}% free) -- run `ltvm clean` to "
+            "preview prunable artifacts"
+        )
+    return warnings, info
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     issues = 0
 
@@ -1808,6 +1861,17 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     for line in _check_export_tools():
         print(line)
         issues += 1
+
+    # Disk-usage probe.  Always prints the info line so the user has a
+    # capacity reference; counts as an issue only when free space is
+    # under the threshold.  No --fix here: cleanup is opinionated, the
+    # remedy is `ltvm clean`.
+    disk_warnings, disk_info = _check_artifacts_disk_usage()
+    for w in disk_warnings:
+        print(w)
+        issues += 1
+    if disk_info is not None:
+        print(disk_info)
 
     _, ssh_dir = _real_user_ssh_dir()
     ssh_cfg = ssh_dir / "config"

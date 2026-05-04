@@ -454,3 +454,69 @@ class TestDoctorInteractivePrompt:
         assert rc != 0
         # User said no -> file stays
         assert (tmp_vmdir / "overlays" / "promptkeep.qcow2").exists()
+
+
+# ── disk usage ────────────────────────────────────────────
+
+
+class TestDoctorDiskUsage:
+    """Doctor reports artifacts/-volume disk capacity always, and flags
+    a low-free condition as an issue."""
+
+    def test_info_line_always_printed(
+        self,
+        tmp_vmdir: Path,
+        doctor_env: dict,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from collections import namedtuple
+
+        Usage = namedtuple("Usage", "total used free")
+        # 500GB total, plenty free.
+        plenty = Usage(total=500 * 1024**3, used=100 * 1024**3, free=400 * 1024**3)
+        with patch("shutil.disk_usage", return_value=plenty):
+            rc = vm_commands.cmd_doctor(_make_args(fix=False))
+        out = capsys.readouterr().out
+        assert "disk:" in out
+        assert "free" in out
+        # No issue flagged when usage is healthy.
+        assert rc == 0
+        assert "no issues found" in out
+
+    def test_low_free_flagged(
+        self,
+        tmp_vmdir: Path,
+        doctor_env: dict,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        from collections import namedtuple
+
+        Usage = namedtuple("Usage", "total used free")
+        # 500GB total, 5GB free -> well below the 20GB / 10% thresholds.
+        tight = Usage(total=500 * 1024**3, used=495 * 1024**3, free=5 * 1024**3)
+        with patch("shutil.disk_usage", return_value=tight):
+            rc = vm_commands.cmd_doctor(_make_args(fix=False))
+        out = capsys.readouterr().out
+        assert "low free disk" in out
+        assert "ltvm clean" in out
+        # Counts as an issue -> non-zero exit (no --fix path here).
+        assert rc != 0
+
+    def test_helper_returns_warnings_and_info(self) -> None:
+        """Direct unit test of _check_artifacts_disk_usage so the
+        threshold logic doesn't depend on the broader doctor scaffolding.
+        """
+        from collections import namedtuple
+
+        Usage = namedtuple("Usage", "total used free")
+        from ltvm_pkg.vm_commands import _check_artifacts_disk_usage
+
+        # 8% free -> below the percentage threshold even though absolute
+        # bytes exceed 20GB.
+        skewed = Usage(
+            total=1000 * 1024**3, used=920 * 1024**3, free=80 * 1024**3
+        )
+        with patch("shutil.disk_usage", return_value=skewed):
+            warnings, info = _check_artifacts_disk_usage()
+        assert info is not None and "free" in info
+        assert warnings and "low free disk" in warnings[0]
