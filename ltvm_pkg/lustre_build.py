@@ -417,22 +417,77 @@ def _build_in_container(
     script_parts = ["set -e", "cd /lustre"]
 
     # Install cross-compiler and cross-arch dev libraries if needed.
+    #
+    # The shell branches export three vars used downstream by configure:
+    #   CROSS_CC_FLAGS       -- extra args appended to CC (e.g. --sysroot=...)
+    #   CROSS_PKG_CONFIG_LIBDIR    -- pkg-config search path for cross libs
+    #   CROSS_PKG_CONFIG_SYSROOT_DIR -- pkg-config sysroot prefix (empty on Debian)
+    #
+    # RHEL branch: cross-gcc + binutils have no sysroot of their own.  We
+    # install x86_64 (or aarch64) glibc + dev libs into /sysroot-<arch>
+    # via `dnf --forcearch --installroot`, then point CC at it via
+    # --sysroot.
+    #
+    # Debian branch: install cross gcc AND set up multiarch for cross-arch
+    # -dev packages.  Ubuntu 24.04 uses DEB822 .sources files: pin the
+    # native arch and add a separate sources file for the target arch
+    # pointing at ports.ubuntu.com for non-amd64 archs, or
+    # archive.ubuntu.com for amd64.  Multiarch -dev packages install
+    # under /usr/lib/<multiarch-triple>, so no separate sysroot is needed.
     if cross_compiling:
+        sysroot = f"/sysroot-{xinfo.target_arch}"
         script_parts.append(
             f"echo '--- Installing {xinfo.triple} cross-compiler "
             f"and dev libs...'"
         )
-        # RHEL branch: one-shot dnf install of cross-gcc + binutils.
-        # Debian branch: install cross gcc (works regardless of host
-        # arch) AND set up multiarch for cross-arch -dev packages.
-        # Ubuntu 24.04 uses DEB822 .sources files: pin the native
-        # arch and add a separate sources file for the target arch
-        # pointing at ports.ubuntu.com for non-amd64 archs, or
-        # archive.ubuntu.com for amd64.
         script_parts.append(
             f"if command -v dnf &>/dev/null; then "
             f"dnf -y install gcc-{xinfo.triple} binutils-{xinfo.triple} "
-            f"2>&1 | tail -3; "
+            f"2>&1 | tail -3 && "
+            f"RELEASE=$(rpm --eval %rhel) && "
+            f"dnf --forcearch={xinfo.target_arch} --releasever=$RELEASE "
+            f"--installroot={sysroot} -y "
+            f"--setopt=tsflags=nodocs --setopt=install_weak_deps=False "
+            f"install "
+            f"glibc-devel kernel-headers libgcc libmount-devel libyaml-devel "
+            f"libnl3-devel libaio-devel libselinux-devel zlib-devel "
+            f"json-c-devel keyutils-libs-devel libuuid-devel "
+            f"2>&1 | tail -5 && "
+            # CC flags:
+            #   --sysroot tells the linker / runtime probes where libc lives
+            #   -isystem  tells the preprocessor where to find <stdio.h>
+            #             etc.  Without this the EPEL gcc-x86_64-linux-gnu
+            #             ships an empty default include search list, so
+            #             even with --sysroot it never reaches glibc's
+            #             limits.h (which is what defines PATH_MAX via
+            #             linux/limits.h).
+            #
+            # PKG_CONFIG_LIBDIR covers both /usr/lib64/pkgconfig (RHEL
+            # convention, where dnf-installed -devel packages drop their
+            # .pc files) AND /usr/lib/pkgconfig (where source-built
+            # autotools packages like the WhamCloud e2fsprogs default,
+            # since their configure picks --libdir=${prefix}/lib).
+            f"export CROSS_CC_FLAGS=\"--sysroot={sysroot} "
+            f"-isystem {sysroot}/usr/include\" "
+            f"CROSS_PKG_CONFIG_LIBDIR=\"{sysroot}/usr/lib64/pkgconfig:"
+            f"{sysroot}/usr/lib/pkgconfig:"
+            f"{sysroot}/usr/share/pkgconfig\" "
+            f"CROSS_PKG_CONFIG_SYSROOT_DIR=\"{sysroot}\" && "
+            # Lustre's userspace links against the WhamCloud-patched
+            # ext2fs / libcom_err, which has no RHEL package -- the build
+            # container builds it natively from source at container-build
+            # time.  For cross-arch we have to repeat that build into the
+            # cross sysroot so configure's `pkg-config ext2fs >= 1.47.3-wc2`
+            # check finds the .pc file under {sysroot}/usr/lib64/pkgconfig.
+            # Skip if already present (incremental Lustre rebuilds).
+            # e2fsprogs's autotools default puts .pc under lib/pkgconfig
+            # (not lib64) regardless of host arch.
+            f"if [ ! -f {sysroot}/usr/lib/pkgconfig/ext2fs.pc ]; then "
+            f"echo '--- Cross-building e2fsprogs into {sysroot}...' && "
+            f"TARGET_ARCH={xinfo.target_arch} DESTDIR={sysroot} "
+            f"SYSROOT={sysroot} bash /ltvm-common/build-e2fsprogs.sh "
+            f"2>&1 | tail -5; "
+            f"fi; "
             f"elif command -v apt-get &>/dev/null; then "
             f"apt-get update -qq && "
             f"apt-get install -y gcc-{xinfo.apt_triple} 2>&1 | tail -3 && "
@@ -452,7 +507,10 @@ def _build_in_container(
             f"libselinux1-dev:{xinfo.deb_arch} zlib1g-dev:{xinfo.deb_arch} "
             f"libnl-3-dev:{xinfo.deb_arch} libnl-genl-3-dev:{xinfo.deb_arch} "
             f"libaio-dev:{xinfo.deb_arch} libkeyutils-dev:{xinfo.deb_arch} "
-            f"2>&1 | tail -5; "
+            f"2>&1 | tail -5 && "
+            f"export CROSS_CC_FLAGS=\"\" "
+            f"CROSS_PKG_CONFIG_LIBDIR=\"/usr/lib/{xinfo.multiarch_triple}/pkgconfig\" "
+            f"CROSS_PKG_CONFIG_SYSROOT_DIR=\"\"; "
             f"fi"
         )
 
@@ -507,14 +565,14 @@ def _build_in_container(
     )
     if cross_compiling:
         cfg += f" --host={xinfo.triple}"
-        cfg += f" CC={xinfo.triple}-gcc"
+        # CROSS_CC_FLAGS / CROSS_PKG_CONFIG_* come from the install branch
+        # above: RHEL points them at /sysroot-<arch>; Debian points them at
+        # the multiarch dirs.  Quote each value so spaces in CC (sysroot
+        # path + flag) survive the bash heredoc unchanged.
+        cfg += f' "CC={xinfo.triple}-gcc $CROSS_CC_FLAGS"'
         cfg += f" ARCH={xinfo.kbuild_arch} CROSS_COMPILE={xinfo.triple}-"
-        # Debian lays multiarch libs under /usr/lib/<multiarch-triple>;
-        # RHEL keeps arch-specific libs under the usual lib64/lib dirs.
-        # Set both search vars to the Debian path when crossing -- on
-        # RHEL they'll be empty search paths, which pkg-config tolerates.
-        cfg += f" PKG_CONFIG_PATH=/usr/lib/{xinfo.multiarch_triple}/pkgconfig"
-        cfg += f" PKG_CONFIG_LIBDIR=/usr/lib/{xinfo.multiarch_triple}/pkgconfig"
+        cfg += ' "PKG_CONFIG_LIBDIR=$CROSS_PKG_CONFIG_LIBDIR"'
+        cfg += ' "PKG_CONFIG_SYSROOT_DIR=$CROSS_PKG_CONFIG_SYSROOT_DIR"'
     if enable_server:
         cfg += " --enable-server"
     else:
@@ -641,6 +699,11 @@ fi""")
     # kernel-build ccache so a target's runs accumulate in one tree.
     ccache_dir = lustre_tree.parent / ".ltvm-ccache" / container_tag.removeprefix("ltvm-build-")
     ccache_dir.mkdir(parents=True, exist_ok=True)
+    # Cross-builds need access to common build helpers (build-e2fsprogs.sh
+    # is run in the cross sysroot to produce x86_64/aarch64 ext2fs.pc that
+    # Lustre's configure can find).  Bind read-only since we never write.
+    from .target_config import TARGETS_DIR
+
     cmd = [
         "podman",
         "run",
@@ -662,6 +725,8 @@ fi""")
         f"{host_staging}:/staging",
         "-v",
         f"{ccache_dir}:/ccache",
+        "-v",
+        f"{TARGETS_DIR / 'common'}:/ltvm-common:ro",
         container_tag,
         "-c",
         script,

@@ -11,6 +11,9 @@
 # Cross-compilation support:
 #   Set TARGET_ARCH to cross-compile (e.g. TARGET_ARCH=aarch64).
 #   Set DESTDIR to redirect installation (e.g. DESTDIR=/output).
+#   Set SYSROOT to point the cross compiler at a sysroot for headers
+#     and libs (required on RHEL where the cross-toolchain ships no
+#     glibc/headers; install via dnf --forcearch --installroot).
 #
 # Usage: build-e2fsprogs.sh [TAG|latest]
 set -euo pipefail
@@ -21,6 +24,7 @@ DEFAULT_E2FS_TAG="v1.47.3-wc2"
 TARGET_ARCH="${TARGET_ARCH:-$(uname -m)}"
 HOST_ARCH="$(uname -m)"
 DESTDIR="${DESTDIR:-}"
+SYSROOT="${SYSROOT:-}"
 
 E2FS_REPO=https://review.whamcloud.com/tools/e2fsprogs
 
@@ -40,12 +44,24 @@ fi
 
 # Cross-compilation setup
 CONFIGURE_HOST=""
+CROSS_TRIPLE=""
 if [[ "$TARGET_ARCH" == "aarch64" && "$HOST_ARCH" != "aarch64" ]]; then
-	CONFIGURE_HOST="--host=aarch64-linux-gnu"
-	export CC=aarch64-linux-gnu-gcc
+	CROSS_TRIPLE="aarch64-linux-gnu"
 elif [[ "$TARGET_ARCH" == "x86_64" && "$HOST_ARCH" != "x86_64" ]]; then
-	CONFIGURE_HOST="--host=x86_64-linux-gnu"
-	export CC=x86_64-linux-gnu-gcc
+	CROSS_TRIPLE="x86_64-linux-gnu"
+fi
+if [[ -n "$CROSS_TRIPLE" ]]; then
+	CONFIGURE_HOST="--host=$CROSS_TRIPLE"
+	if [[ -n "$SYSROOT" ]]; then
+		# RHEL cross-toolchains have no built-in sysroot; configure's
+		# "C compiler can create executables" probe fails without one.
+		# -isystem is also needed: the EPEL gcc-x86_64-linux-gnu ships
+		# an empty default include search list, so without it the
+		# preprocessor never finds glibc's headers (PATH_MAX, etc.).
+		export CC="${CROSS_TRIPLE}-gcc --sysroot=${SYSROOT} -isystem ${SYSROOT}/usr/include"
+	else
+		export CC="${CROSS_TRIPLE}-gcc"
+	fi
 fi
 
 echo "e2fsprogs: building tag $TAG"
@@ -54,14 +70,16 @@ cd /tmp/e2fsprogs
 
 if [[ -n "$DESTDIR" ]]; then
 	./configure --prefix=/usr --with-root-prefix="" \
-	    --enable-elf-shlibs --disable-uuidd $CONFIGURE_HOST
+	    --enable-elf-shlibs --disable-uuidd $CONFIGURE_HOST \
+	    CFLAGS="-fPIC -O2"
 	make -j"$(nproc)"
 	make install DESTDIR="$DESTDIR"
 	make install-libs DESTDIR="$DESTDIR"
 	echo "e2fsprogs: installed to $DESTDIR"
 else
 	./configure --prefix=/usr --with-root-prefix="" \
-	    --enable-elf-shlibs --disable-uuidd $CONFIGURE_HOST
+	    --enable-elf-shlibs --disable-uuidd $CONFIGURE_HOST \
+	    CFLAGS="-fPIC -O2"
 	make -j"$(nproc)"
 	make install
 	make install-libs
