@@ -1032,6 +1032,38 @@ def _podman_machine_list_macos() -> list[dict[str, Any]]:
     return parsed
 
 
+PODMAN_MACHINE_MEMORY_MIB = 4096
+"""Floor for podman machine memory (MiB).
+
+Cross-compiling a RHEL kernel with module BTF runs pahole on every .ko
+in parallel; peak RSS easily clears 3 GB on the largest modules
+(amdgpu.ko in particular).  At podman's 2 GB default the OOM killer
+takes out the BTF step and the build fails with cryptic Error 137.
+4 GB has headroom for parallel pahole + ld + cc1 without thrashing.
+"""
+
+
+def _podman_machine_memory(name: str) -> int | None:
+    try:
+        r = subprocess.run(
+            [
+                "podman", "machine", "inspect", name,
+                "--format", "{{.Resources.Memory}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if r.returncode != 0 or not r.stdout.strip():
+        return None
+    try:
+        return int(r.stdout.strip())
+    except ValueError:
+        return None
+
+
 def install_podman_macos(force: bool = False) -> bool:
     """Install podman on macOS and ensure a podman machine is running.
 
@@ -1052,9 +1084,36 @@ def install_podman_macos(force: bool = False) -> bool:
 
     machines = _podman_machine_list_macos()
     if not machines:
-        log.info("Initializing podman machine (podman machine init)...")
-        _run(["podman", "machine", "init"])
+        log.info(
+            "Initializing podman machine "
+            f"(podman machine init --memory={PODMAN_MACHINE_MEMORY_MIB})..."
+        )
+        _run([
+            "podman", "machine", "init",
+            "--memory", str(PODMAN_MACHINE_MEMORY_MIB),
+        ])
         machines = _podman_machine_list_macos()
+    else:
+        # Bump under-provisioned machines so cross kernel builds don't OOM.
+        for m in machines:
+            name = m.get("Name") or "podman-machine-default"
+            mem = _podman_machine_memory(name)
+            if mem is None or mem >= PODMAN_MACHINE_MEMORY_MIB:
+                continue
+            log.info(
+                f"Bumping {name} memory: {mem} -> "
+                f"{PODMAN_MACHINE_MEMORY_MIB} MiB (kernel BTF needs headroom)"
+            )
+            running = bool(m.get("Running"))
+            if running:
+                _run(["podman", "machine", "stop", name])
+            _run([
+                "podman", "machine", "set", name,
+                "--memory", str(PODMAN_MACHINE_MEMORY_MIB),
+            ])
+            if running:
+                _run(["podman", "machine", "start", name])
+                m["Running"] = True
 
     if any(m.get("Running") for m in machines):
         log.info("podman machine already running")
