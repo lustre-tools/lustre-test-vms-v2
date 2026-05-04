@@ -172,6 +172,83 @@ def test_prompt_never_persists(_config_dir: Path) -> None:
     assert cfg["update_check"]["mode"] == "never"
 
 
+class TestApplyUpdateInterpreterPinning:
+    """`_apply_update` must invoke the installer under the same Python
+    that's currently running ltvm -- not via the script's shebang.
+    Without this, on a host whose /usr/bin/env python3 falls below the
+    floor, the install step bombs and the update aborts mid-flight.
+    """
+
+    def test_install_step_uses_sys_executable(
+        self, _config_dir: Path, tmp_path: Path
+    ) -> None:
+        import sys
+        from unittest.mock import MagicMock
+
+        import ltvm_pkg.update_check as uc
+
+        # Fake repo with a .git dir + an `ltvm` script so _apply_update
+        # gets past its preconditions.
+        repo = tmp_path / "fakerepo"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "ltvm").write_text("# stub\n")
+
+        # Make _apply_update think *this* is its repo.
+        # update_check looks up `Path(__file__).resolve().parent.parent`,
+        # so we need to patch the module-level path lookup.  The
+        # cleanest seam is __file__ itself.
+        with (
+            patch.object(uc, "__file__", str(repo / "ltvm_pkg" / "update_check.py")),
+            patch.object(uc.subprocess, "run") as mock_run,
+            patch("platform.system", return_value="Linux"),
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            ok = uc._apply_update()
+
+        assert ok is True
+        # Two subprocess calls: git pull, then sudo <python> ltvm install.
+        # (We don't pin the order argument by argument -- just check the
+        # install command included sys.executable as the python.)
+        install_calls = [
+            c for c in mock_run.call_args_list
+            if "install" in c.args[0] and "git" not in c.args[0]
+        ]
+        assert install_calls, f"no install call seen in {mock_run.call_args_list}"
+        argv = install_calls[0].args[0]
+        assert argv[0] == "sudo"
+        assert argv[1] == sys.executable
+        assert argv[-1] == "install"
+
+    def test_install_step_macos_skips_sudo_but_pins_python(
+        self, _config_dir: Path, tmp_path: Path
+    ) -> None:
+        import sys
+        from unittest.mock import MagicMock
+
+        import ltvm_pkg.update_check as uc
+
+        repo = tmp_path / "fakerepo"
+        (repo / ".git").mkdir(parents=True)
+        (repo / "ltvm").write_text("# stub\n")
+
+        with (
+            patch.object(uc, "__file__", str(repo / "ltvm_pkg" / "update_check.py")),
+            patch.object(uc.subprocess, "run") as mock_run,
+            patch("platform.system", return_value="Darwin"),
+        ):
+            mock_run.return_value = MagicMock(returncode=0)
+            uc._apply_update()
+
+        install_calls = [
+            c for c in mock_run.call_args_list
+            if "install" in c.args[0] and "git" not in c.args[0]
+        ]
+        assert install_calls
+        argv = install_calls[0].args[0]
+        assert argv[0] == sys.executable
+        assert argv[-1] == "install"
+
+
 def test_auto_mode_no_prompt(_config_dir: Path) -> None:
     import ltvm_pkg.update_check as uc
 

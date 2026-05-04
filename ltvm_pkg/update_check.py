@@ -234,16 +234,24 @@ def _apply_update() -> bool:
     installer = repo / "ltvm"
     if not installer.exists():
         return False
+    # Pin the interpreter to whatever python is currently running ltvm
+    # (already known to meet the floor) instead of going through the
+    # script's shebang.  Without this, on a host whose
+    # /usr/bin/env python3 resolves to a sub-floor system Python (e.g.
+    # rocky9's 3.9), the install step bombs at the floor check and the
+    # update aborts mid-flight -- working tree pulled but
+    # _build_info.py / wrappers never refreshed.
+    py = sys.executable
     # macOS install runs as the invoking user (Homebrew refuses root)
     # and sudos selectively for the operations that need it; Linux
     # install needs root throughout.
     import platform
     if platform.system() == "Darwin":
         print(f"  Running {installer} install...")
-        cmd = [str(installer), "install"]
+        cmd = [py, str(installer), "install"]
     else:
         print(f"  Running {installer} install (will sudo)...")
-        cmd = ["sudo", str(installer), "install"]
+        cmd = ["sudo", py, str(installer), "install"]
     try:
         subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError:
