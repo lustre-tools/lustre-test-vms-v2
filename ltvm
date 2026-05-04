@@ -48,19 +48,96 @@ from pathlib import Path
 # with no visible output.
 _REPO_ROOT = Path(__file__).resolve().parent
 _VENV_PY = _REPO_ROOT / ".venv" / "bin" / "python"
-if (
-    __name__ == "__main__"
-    and _VENV_PY.exists()
-    and str(_VENV_PY) != sys.executable
-):
+_BOOT_FLOOR = (3, 10)
+
+
+def _venv_meets_floor(venv_py, floor):
+    """Return True if the venv's pyvenv.cfg reports a Python that meets
+    ``floor``.  False when the cfg explicitly reports an older version
+    (so we refuse to ``os.execv`` into a stale venv that would just
+    bounce off the version check).  Falls back to True when pyvenv.cfg
+    is missing or unparseable -- that's an unusual layout, and the
+    re-exec'd python's own floor check is the safety net for it.
+    """
+    cfg = venv_py.parent.parent / "pyvenv.cfg"
+    if not cfg.exists():
+        return True
     try:
-        import yaml  # noqa: F401
-        import argcomplete  # noqa: F401
-    except ImportError:
-        os.execv(
-            str(_VENV_PY),
-            [str(_VENV_PY), str(Path(__file__).resolve()), *sys.argv[1:]],
-        )
+        text = cfg.read_text()
+    except (OSError, UnicodeDecodeError):
+        return True
+    for line in text.splitlines():
+        if "=" not in line:
+            continue
+        key, _, val = line.partition("=")
+        if key.strip() not in ("version", "version_info"):
+            continue
+        parts = val.strip().split(".")
+        try:
+            return (int(parts[0]), int(parts[1])) >= floor
+        except (ValueError, IndexError):
+            return True
+    return True
+
+
+# Self-bootstrap into the project venv when invoked via system Python
+# (e.g. `sudo ltvm`, which strips PATH and bypasses any active venv).
+# We resolve symlinks on __file__ so /usr/local/bin/ltvm -> repo/ltvm
+# works, but compare _VENV_PY against sys.executable as literal strings
+# -- uv venvs symlink .venv/bin/python to /usr/bin/python3, so .resolve()
+# would make them equal even though running via the venv symlink path
+# causes Python to use the venv's site-packages.
+#
+# Gate on __name__ == "__main__" so pytest-side importlib.SourceFileLoader
+# loads of this script (see tests/test_build_commands.py,
+# tests/test_parser_coverage.py) don't trigger the os.execv.  Without
+# this guard, any pytest invocation whose system-python lacks argcomplete
+# would re-exec `ltvm` with pytest's argv ('ltvm tests/...'), hit the
+# argparse "invalid choice" path, and exit the whole pytest run rc=2
+# with no visible output.
+#
+# Refuse to exec into a venv whose pyvenv.cfg reports a Python below
+# the floor: that's the "ltvm-floor moved past the venv-creation
+# Python" footgun.  Without this guard, `python3.11 ./ltvm` on a host
+# whose .venv was created with the system 3.9 silently bounces back
+# into 3.9 and reports "requires Python 3.10+" -- after the user already
+# obtained a newer interpreter -- with no path forward.
+if __name__ == "__main__" and _VENV_PY.exists():
+    _venv_ok = _venv_meets_floor(_VENV_PY, _BOOT_FLOOR)
+    if _venv_ok and str(_VENV_PY) != sys.executable:
+        try:
+            import yaml  # noqa: F401
+            import argcomplete  # noqa: F401
+        except ImportError:
+            os.execv(
+                str(_VENV_PY),
+                [str(_VENV_PY), str(Path(__file__).resolve()), *sys.argv[1:]],
+            )
+    elif not _venv_ok:
+        # Probe whether the current interpreter has the deps.  If it
+        # does, the stale venv is harmless (we just won't exec into it).
+        # If it doesn't, surface actionable guidance instead of the
+        # cryptic "requires Python 3.10+" loop.
+        try:
+            import yaml  # noqa: F401
+            import argcomplete  # noqa: F401
+        except ImportError:
+            _venv_dir = _VENV_PY.parent.parent
+            sys.stderr.write(
+                "error: ltvm's venv at %s was created with a Python "
+                "older than %d.%d and cannot be used.\n"
+                "hint: rm -rf %s && python%d.%d -m venv %s && "
+                "%s/bin/pip install pyyaml argcomplete\n"
+                % (
+                    _venv_dir,
+                    _BOOT_FLOOR[0], _BOOT_FLOOR[1],
+                    _venv_dir,
+                    _BOOT_FLOOR[0], _BOOT_FLOOR[1] + 1,
+                    _venv_dir,
+                    _venv_dir,
+                )
+            )
+            sys.exit(1)
 
 # NOTE: argparse/logging/cli imports are intentionally below the venv
 # bootstrap above -- the bootstrap may os.execv into the venv python, in
