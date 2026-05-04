@@ -905,14 +905,43 @@ def _download(url: str, dest: Path, *, quiet: bool = False) -> None:
         raise RuntimeError(f"Download failed (rc={r.returncode}): {url}")
 
 
-def _expect_sha256(path: Path, expected: str) -> None:
+def _expect_sha256(
+    path: Path, expected: str, expected_size: int | None = None
+) -> None:
+    """Verify ``path`` matches the manifest's recorded sha256.
+
+    When ``expected_size`` is also passed and disagrees with the file
+    size on disk, append a stale-manifest hint -- the most common cause
+    of this failure isn't network corruption but an asset that was
+    re-uploaded out-of-band (or a partial republish) leaving the
+    manifest pointing at a different upload than the one GitHub now
+    serves.  Surfacing the size delta saves the user from chasing the
+    sha through GitHub's UI to find the root cause.
+    """
     actual = _sha256(path)
-    if actual != expected:
-        raise RuntimeError(
-            f"sha256 mismatch for {path.name}\n"
-            f"  expected: {expected}\n"
-            f"  got:      {actual}"
+    if actual == expected:
+        return
+    actual_size = path.stat().st_size if path.exists() else 0
+    msg = (
+        f"sha256 mismatch for {path.name}\n"
+        f"  expected: {expected}\n"
+        f"  got:      {actual}"
+    )
+    if expected_size is not None and actual_size != expected_size:
+        msg += (
+            f"\n  size: manifest says {expected_size} bytes, "
+            f"downloaded {actual_size} bytes."
+            f"\n  hint: the asset was likely re-uploaded after the "
+            f"manifest was published.  Ask whoever owns the release to "
+            f"re-run `ltvm target publish` so the manifest's sha256 + "
+            f"size are refreshed."
         )
+    else:
+        msg += (
+            f"\n  hint: size matches, so this is most likely a "
+            f"network corruption -- retry the fetch."
+        )
+    raise RuntimeError(msg)
 
 
 def fetch_target(
@@ -982,7 +1011,7 @@ def fetch_target(
                 f"({size / (1024 * 1024):.0f} MB)"
             )
             _download(url_prefix + name, tarball)
-            _expect_sha256(tarball, sha)
+            _expect_sha256(tarball, sha, expected_size=size)
             _untar_zstd(tarball, output_base)
             tarball.unlink()  # free disk eagerly on a multi-GB fetch
 
