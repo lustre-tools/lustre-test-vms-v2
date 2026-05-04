@@ -170,6 +170,31 @@ def _do_build_container(target_config: TargetConfig) -> str:
     return tag
 
 
+def _cross_arch_warning(host: str, target: str) -> str:
+    """Banner shown for cross-arch builds.
+
+    Lists the build-tools artifacts that ``targets/common/build-tools.sh``
+    skips on cross-compile so a user invoking ``ltvm build all --arch
+    <other>`` knows what won't be in the resulting image.  If a tool here
+    grows cross support (e.g. someone adds a cross openmpi bundle), drop
+    it from this list.
+    """
+    skipped = [
+        "ior, mdtest -- depend on MPI; no cross-arch openmpi in the "
+        "build container",
+        "drgn -- target-arch Python C extensions can't be cross-built "
+        "without a target Python toolchain",
+    ]
+    bullets = "\n".join(f"  - {s}" for s in skipped)
+    return (
+        f"\n!!  Cross-compiling: host={host} target={target}\n"
+        f"!!  These VM-image tools will be missing from the resulting "
+        f"image:\n"
+        f"{bullets}\n"
+        f"!!  Install them inside the VM via dnf if needed at test time.\n"
+    )
+
+
 def cmd_build_all(args: argparse.Namespace) -> int:
     """Build container + kernel + Lustre + image for a target.
 
@@ -226,7 +251,7 @@ def _cmd_build_all_body(
     )
 
     if not use_json:
-        from ltvm_pkg.cli.util import _lustre_tree_version
+        from ltvm_pkg.cli.util import _lustre_tree_version, host_arch
 
         _print_target_header(
             tc,
@@ -235,6 +260,8 @@ def _cmd_build_all_body(
             action="Building",
             lustre_version=_lustre_tree_version(lustre_tree),
         )
+        if tc.arch != host_arch():
+            print(_cross_arch_warning(host_arch(), tc.arch))
         if not getattr(args, "yes", False) and sys.stdin.isatty():
             try:
                 reply = input("Proceed? [Y/n]: ").strip().lower()

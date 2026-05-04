@@ -29,14 +29,25 @@ PREFIX="${DESTDIR}/usr/local"
 # leave them unset for native builds so mpicc wrappers work)
 CONFIGURE_HOST=""
 
+CROSS_TRIPLE=""
 if [[ "$TARGET_ARCH" == "aarch64" && "$HOST_ARCH" != "aarch64" ]]; then
-	CONFIGURE_HOST="--host=aarch64-linux-gnu"
-	export CC="aarch64-linux-gnu-gcc" CXX="aarch64-linux-gnu-g++"
-	echo "--- Cross-compiling tools: ${HOST_ARCH} -> aarch64"
+	CROSS_TRIPLE="aarch64-linux-gnu"
 elif [[ "$TARGET_ARCH" == "x86_64" && "$HOST_ARCH" != "x86_64" ]]; then
-	CONFIGURE_HOST="--host=x86_64-linux-gnu"
-	export CC="x86_64-linux-gnu-gcc" CXX="x86_64-linux-gnu-g++"
-	echo "--- Cross-compiling tools: ${HOST_ARCH} -> x86_64"
+	CROSS_TRIPLE="x86_64-linux-gnu"
+fi
+if [[ -n "$CROSS_TRIPLE" ]]; then
+	CONFIGURE_HOST="--host=$CROSS_TRIPLE"
+	# RHEL cross gccs ship without a sysroot or default include path;
+	# point them at one if the caller provides it.  The Debian path
+	# uses multiarch, so SYSROOT stays unset there.
+	if [[ -n "${SYSROOT:-}" ]]; then
+		export CC="${CROSS_TRIPLE}-gcc --sysroot=${SYSROOT} -isystem ${SYSROOT}/usr/include"
+		export CXX="${CROSS_TRIPLE}-g++ --sysroot=${SYSROOT} -isystem ${SYSROOT}/usr/include"
+	else
+		export CC="${CROSS_TRIPLE}-gcc"
+		export CXX="${CROSS_TRIPLE}-g++"
+	fi
+	echo "--- Cross-compiling tools: ${HOST_ARCH} -> ${TARGET_ARCH}"
 fi
 
 # Ensure build deps are present (may have been skipped by --skip-broken)
@@ -70,15 +81,31 @@ mkdir -p "$PREFIX/bin"
 cd /tmp
 
 # IOR + mdtest
-# Add openmpi to PATH if available (EL installs to /usr/lib64/openmpi/bin)
-if [[ -d /usr/lib64/openmpi/bin ]]; then
-	export PATH=/usr/lib64/openmpi/bin:$PATH
-	export LD_LIBRARY_PATH="/usr/lib64/openmpi/lib:${LD_LIBRARY_PATH:-}"
+#
+# IOR's configure auto-detects MPI via mpicc.  We have no cross-arch
+# MPI in the build container (cross-building openmpi means cross-building
+# libfabric + ucx + ...), so skip IOR/mdtest on cross builds; install
+# them inside the VM via dnf if they're needed at test time.
+#
+# When the previous form of this section failed during `./configure`,
+# `set -e` did *not* abort because a failing middle clause in a
+# `cd && configure && make` chain is shielded by &&.  The chain has
+# been split into separate commands so any failure is caught.
+if [[ -z "$CROSS_TRIPLE" ]]; then
+	# Add openmpi to PATH if available (EL installs to /usr/lib64/openmpi/bin)
+	if [[ -d /usr/lib64/openmpi/bin ]]; then
+		export PATH=/usr/lib64/openmpi/bin:$PATH
+		export LD_LIBRARY_PATH="/usr/lib64/openmpi/lib:${LD_LIBRARY_PATH:-}"
+	fi
+	curl -fsSL "https://github.com/hpc/ior/releases/download/${IOR_VERSION}/ior-${IOR_VERSION}.tar.gz" | tar xz
+	cd "ior-${IOR_VERSION}"
+	./configure
+	make -j"$(nproc)"
+	cp src/ior src/mdtest "$PREFIX/bin/"
+	cd /tmp && rm -rf "ior-${IOR_VERSION}"
+else
+	echo "--- Skipping IOR/mdtest (cross-compile; no cross-arch MPI toolchain)"
 fi
-curl -fsSL "https://github.com/hpc/ior/releases/download/${IOR_VERSION}/ior-${IOR_VERSION}.tar.gz" | tar xz
-cd "ior-${IOR_VERSION}" && ./configure ${CONFIGURE_HOST:+"$CONFIGURE_HOST"} && make -j"$(nproc)"
-cp src/ior src/mdtest "$PREFIX/bin/"
-cd /tmp && rm -rf "ior-${IOR_VERSION}"
 
 # iozone (needs -Wno-error=implicit-* for GCC 14+)
 curl -fsSL "http://www.iozone.org/src/current/iozone${IOZONE_VERSION}.tar" | tar xf -
@@ -98,7 +125,10 @@ cd /tmp && rm -rf "iozone${IOZONE_VERSION}"
 
 # pjdfstest
 git clone https://github.com/pjd/pjdfstest.git
-cd pjdfstest && autoreconf -ifs && ./configure ${CONFIGURE_HOST:+"$CONFIGURE_HOST"} && make -j"$(nproc)"
+cd pjdfstest
+autoreconf -ifs
+./configure ${CONFIGURE_HOST:+"$CONFIGURE_HOST"}
+make -j"$(nproc)"
 cp pjdfstest "$PREFIX/bin/"
 cd /tmp && rm -rf pjdfstest
 

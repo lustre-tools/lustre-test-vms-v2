@@ -170,8 +170,23 @@ def _prebuild_tools_native(
         build_tag,
     )
 
+    # On RHEL the cross gcc-<arch>-linux-gnu ships with no sysroot at
+    # all (no glibc, no headers), so build-e2fsprogs.sh's configure step
+    # would fail "C compiler cannot create executables".  Install a
+    # cross sysroot first via dnf --forcearch + --installroot, then
+    # point both scripts at it via SYSROOT.  glibc-devel is required
+    # for crt*.o / libc.so / headers; kernel-headers provides
+    # <linux/limits.h> (PATH_MAX); libuuid-devel is needed for
+    # e2fsprogs's lib/ext2fs/blkid.
     script = (
         f"export TARGET_ARCH={arch} DESTDIR=/output\n"
+        "if command -v dnf >/dev/null; then\n"
+        f"  RELEASE=$(rpm --eval %rhel) && SYSROOT=/sysroot-{arch} && "
+        f"dnf --forcearch={arch} --releasever=$RELEASE --installroot=$SYSROOT "
+        f"-y --setopt=tsflags=nodocs --setopt=install_weak_deps=False "
+        f"install glibc-devel kernel-headers libgcc libuuid-devel "
+        f"2>&1 | tail -3 && export SYSROOT\n"
+        "fi\n"
         "bash /input/build-tools.sh\n"
         "bash /input/build-e2fsprogs.sh\n"
     )
