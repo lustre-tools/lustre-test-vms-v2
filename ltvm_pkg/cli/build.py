@@ -261,7 +261,11 @@ def _cmd_build_all_body(
             lustre_version=_lustre_tree_version(lustre_tree),
         )
         if tc.arch != host_arch():
-            print(_cross_arch_warning(host_arch(), tc.arch))
+            # flush=True so the warning lands at the start of the log,
+            # not at the end after Python exits and finally drains the
+            # default fully-buffered stdout (which happens when stdout
+            # is a file, e.g. nohup-redirected runs).
+            print(_cross_arch_warning(host_arch(), tc.arch), flush=True)
         if not getattr(args, "yes", False) and sys.stdin.isatty():
             try:
                 reply = input("Proceed? [Y/n]: ").strip().lower()

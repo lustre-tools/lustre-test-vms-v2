@@ -108,20 +108,30 @@ else
 fi
 
 # iozone (needs -Wno-error=implicit-* for GCC 14+)
-curl -fsSL "http://www.iozone.org/src/current/iozone${IOZONE_VERSION}.tar" | tar xf -
-cd "iozone${IOZONE_VERSION}/src/current"
-EXTRA_CFLAGS="-Wno-error=implicit-int -Wno-error=implicit-function-declaration"
-# iozone uses arch-specific make targets
-case "$TARGET_ARCH" in
-	aarch64) IOZONE_TARGET="linux-arm" ;;
-	*)       IOZONE_TARGET="linux-AMD64" ;;
-esac
-make -j"$(nproc)" "$IOZONE_TARGET" \
-	CC="${CC:-cc}" \
-	CFLAGS="-O3 $EXTRA_CFLAGS" \
-	C_OPT="-O3 $EXTRA_CFLAGS"
-cp iozone "$PREFIX/bin/"
-cd /tmp && rm -rf "iozone${IOZONE_VERSION}"
+#
+# Skipped on cross builds: the linux-AMD64 target's Makefile has a
+# literal `x86_64` token (TARGET-substitution) that the cross gcc
+# treats as an input filename and aborts; the linux-arm target works
+# native but we'd need to special-case the cross side anyway.  Drop
+# iozone in cross images; install via dnf inside the VM.
+if [[ -z "$CROSS_TRIPLE" ]]; then
+	curl -fsSL "http://www.iozone.org/src/current/iozone${IOZONE_VERSION}.tar" | tar xf -
+	cd "iozone${IOZONE_VERSION}/src/current"
+	EXTRA_CFLAGS="-Wno-error=implicit-int -Wno-error=implicit-function-declaration"
+	# iozone uses arch-specific make targets
+	case "$TARGET_ARCH" in
+		aarch64) IOZONE_TARGET="linux-arm" ;;
+		*)       IOZONE_TARGET="linux-AMD64" ;;
+	esac
+	make -j"$(nproc)" "$IOZONE_TARGET" \
+		CC="${CC:-cc}" \
+		CFLAGS="-O3 $EXTRA_CFLAGS" \
+		C_OPT="-O3 $EXTRA_CFLAGS"
+	cp iozone "$PREFIX/bin/"
+	cd /tmp && rm -rf "iozone${IOZONE_VERSION}"
+else
+	echo "--- Skipping iozone (cross-compile; linux-AMD64 Makefile mishandles cross gcc)"
+fi
 
 # pjdfstest
 git clone https://github.com/pjd/pjdfstest.git
