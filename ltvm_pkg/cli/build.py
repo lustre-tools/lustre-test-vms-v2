@@ -178,21 +178,46 @@ def _cross_arch_warning(host: str, target: str) -> str:
     <other>`` knows what won't be in the resulting image.  If a tool here
     grows cross support (e.g. someone adds a cross openmpi bundle), drop
     it from this list.
+
+    The aarch64 -> x86_64 direction additionally gets an EXPERIMENTAL
+    label: artifacts build cleanly but booting them on the Mac requires
+    TCG emulation (no nested virt for x86_64 on Apple Silicon HVF), which
+    is slow (~10x) and surfaces guest issues that don't appear under
+    KVM.  Native aarch64 -> x86_64 cross-builds on a Linux x86 host are
+    not affected.
     """
     skipped = [
         "ior, mdtest -- depend on MPI; no cross-arch openmpi in the "
         "build container",
+        "iozone -- linux-AMD64 Makefile mishandles cross gcc",
         "drgn -- target-arch Python C extensions can't be cross-built "
         "without a target Python toolchain",
     ]
     bullets = "\n".join(f"  - {s}" for s in skipped)
-    return (
-        f"\n!!  Cross-compiling: host={host} target={target}\n"
+    lines = [
+        "",
+        f"!!  Cross-compiling: host={host} target={target}",
         f"!!  These VM-image tools will be missing from the resulting "
-        f"image:\n"
-        f"{bullets}\n"
-        f"!!  Install them inside the VM via dnf if needed at test time.\n"
-    )
+        f"image:",
+        bullets,
+        "!!  Install them inside the VM via dnf if needed at test time.",
+    ]
+    if host in ("aarch64", "arm64") and target == "x86_64":
+        lines += [
+            "",
+            "!!  EXPERIMENTAL: aarch64 -> x86_64 path.  Artifacts build "
+            "fine, but",
+            "!!  booting them needs QEMU TCG emulation (Apple Silicon "
+            "HVF can't",
+            "!!  run x86_64 guests).  Expect ~10x slower boot, longer "
+            "SSH waits",
+            "!!  (LTVM_SSH_TIMEOUT=600 recommended), and occasional "
+            "guest-side",
+            "!!  oddities that don't appear under KVM.  Use the native "
+            "aarch64",
+            "!!  path for routine work.",
+        ]
+    return "\n".join(lines) + "\n"
 
 
 def cmd_build_all(args: argparse.Namespace) -> int:
