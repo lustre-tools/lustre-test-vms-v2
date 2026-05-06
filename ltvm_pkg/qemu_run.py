@@ -312,6 +312,14 @@ def launch_qemu(vm: VMInfo) -> None:
     rng_driver = "virtio-rng-pci"
 
     # KVM allows -cpu host; TCG (cross-arch emulation) needs a real model.
+    #
+    # For x86_64 TCG we use Nehalem rather than the default qemu64.  Rocky
+    # 9 (and any EL9-derived userspace) ships glibc compiled for the
+    # x86-64-v2 microarchitecture level, which requires CMPXCHG16B, LAHF
+    # /SAHF, POPCNT, SSE3/SSSE3/SSE4.1/SSE4.2.  qemu64 exposes none of
+    # those, so /sbin/init aborts with "Fatal glibc error: CPU does not
+    # support x86-64-v2" and the kernel panics.  Nehalem (Intel 2008) is
+    # the baseline CPU model that satisfies v2 in full.
     host_arch = _platform.machine()
     if (arch == "x86_64" and host_arch in ("x86_64", "amd64")) or (
         arch == "aarch64" and host_arch in ("aarch64", "arm64")
@@ -320,7 +328,7 @@ def launch_qemu(vm: VMInfo) -> None:
     elif arch == "aarch64":
         cpu_model = "cortex-a57"
     else:
-        cpu_model = "qemu64"
+        cpu_model = "Nehalem"
 
     qemu_args = [
         qemu_bin,
