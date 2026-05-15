@@ -109,6 +109,11 @@ class TestImageSize:
 
 
 class TestWriteGrubCfg:
+    """_write_grub_cfg uses _ensure_dir / _write_text helpers which
+    try as the current user first and only fall back to sudo on
+    PermissionError; with user-owned tmpdir paths these tests stay
+    fully unprivileged."""
+
     def test_menuentry_points_at_fs_uuid(self, tmp_path: Path) -> None:
         import ltvm_pkg.image_export as ie
 
@@ -237,17 +242,36 @@ class TestCliWiring:
         assert ns.format == "raw"
         assert ns.output == "/tmp/x.raw"
 
-    def test_requires_root(self, tmp_path: Path) -> None:
+    def test_non_root_primes_sudo_instead_of_refusing(
+        self, tmp_path: Path
+    ) -> None:
+        """Non-root invocation no longer hard-fails: we prime sudo
+        instead, then let sudo_run elevate the specific losetup/mount
+        calls.  Verifies the unified-privilege contract (priv.sudo_prime
+        is invoked) without exercising the full export pipeline."""
         import argparse
 
-        from ltvm_pkg import cli
+        from ltvm_pkg import cli, priv
+        from ltvm_pkg.cli import targets as cli_targets
 
+        tc = _make_target_config(tmp_path)
         args = argparse.Namespace(
             target="rocky9", arch=None, kernel=None,
-            output=None, format="qcow2", force=False, json=True,
+            output=str(tmp_path / "out.qcow2"), format="qcow2",
+            force=False, json=False,
         )
-        with patch.object(cli.os, "getuid", return_value=1000):
+        # Make _load_target_args succeed so we reach sudo_prime, then
+        # short-circuit export_image with a clean error to avoid
+        # touching real losetup/mount.
+        import ltvm_pkg.image_export as ie
+
+        with patch.object(priv, "sudo_prime") as sp, \
+             patch.object(cli_targets, "_load_target_args",
+                          return_value=(tc, None)), \
+             patch.object(ie, "export_image",
+                          side_effect=RuntimeError("stubbed")):
             rc = cli.cmd_target_export(args)
+        sp.assert_called_once()
         assert rc == cli.EXIT_ERROR
 
 

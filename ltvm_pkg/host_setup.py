@@ -222,33 +222,12 @@ def _run_quiet(
     return _run(cmd, check=check, quiet=True)
 
 
-def _sudo_run(
-    cmd: list[str],
-    check: bool = True,
-    quiet: bool = False,
-) -> subprocess.CompletedProcess[str]:
-    """Run a command under sudo (no-op prefix if already root)."""
-    if os.geteuid() == 0:
-        return _run(cmd, check=check, quiet=quiet)
-    return _run(["sudo", *cmd], check=check, quiet=quiet)
-
-
-def _sudo_prime(reason: str) -> None:
-    """Prompt for sudo credentials up front so later _sudo_run calls
-    don't interrupt with a surprise password prompt mid-install.
-
-    Skips the prompt entirely when ``sudo -n true`` succeeds, which
-    covers both an unexpired sudo timestamp and ``NOPASSWD`` rules --
-    in those cases ``sudo -v`` would still try to authenticate and
-    fail in non-tty contexts (subshells, hooks, CI), aborting install
-    even though every later ``sudo`` would have worked.
-    """
-    if os.geteuid() == 0:
-        return
-    if _run_quiet(["sudo", "-n", "true"], check=False).returncode == 0:
-        return
-    log.info("%s -- prompting for sudo credentials now.", reason)
-    _run(["sudo", "-v"])
+# Privilege helpers live in ltvm_pkg.priv so vm_commands, vm_net,
+# qemu_run, image_export, and vm_cluster can import them without
+# pulling in the rest of host_setup.  The module-private aliases
+# below keep host_setup's existing call sites stable.
+from ltvm_pkg.priv import sudo_prime as _sudo_prime  # noqa: E402
+from ltvm_pkg.priv import sudo_run as _sudo_run  # noqa: E402
 
 
 def _pkg_install(host: HostInfo, *pkgs: str) -> None:

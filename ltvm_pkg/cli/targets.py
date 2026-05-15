@@ -29,7 +29,6 @@ from ltvm_pkg.cli.util import (
     _error,
     _load_target_args,
     _output,
-    _require_root,
 )
 
 
@@ -562,17 +561,23 @@ def cmd_target_show(args: argparse.Namespace) -> int:
 
 def cmd_target_export(args: argparse.Namespace) -> int:
     use_json = args.json
-    err = _require_root(
-        use_json,
-        hint="export uses losetup + mount; run: sudo ltvm target export ...",
-    )
-    if err is not None:
-        return err
 
     tc, terr = _load_target_args(args, use_json)
     if terr is not None:
         return terr
     assert tc is not None
+
+    # losetup + mount need root; prime sudo up front (single password
+    # prompt) instead of demanding the whole command run under sudo.
+    # JSON mode skips the prompt since interactive auth would clobber
+    # the JSON stream -- sudo_run will then prompt mid-flow if needed,
+    # which is acceptable for the structured-output path.
+    if not use_json:
+        from ltvm_pkg.priv import sudo_prime
+
+        sudo_prime(
+            "ltvm target export needs root for losetup/mount"
+        )
 
     from ltvm_pkg.cli.util import _print_target_header
     from ltvm_pkg.image_export import export_image

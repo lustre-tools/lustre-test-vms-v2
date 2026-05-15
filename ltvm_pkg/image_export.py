@@ -9,7 +9,9 @@ inside the image).
 GRUB2 bootloader into a single bootable disk image (qcow2 by default)
 that any plain QEMU or libvirt can boot with just `-drive file=...`.
 
-Requires root on the host (uses losetup + mount).  Tooling: parted,
+Uses losetup + mount, so every external command is invoked through
+``sudo_run`` from ``ltvm_pkg.priv``.  The CLI wrapper primes sudo
+upfront so the user gets a single password prompt.  Tooling: parted,
 mkfs.ext4, grub2-install (grub-install on Debian), qemu-img.
 """
 
@@ -22,6 +24,8 @@ import tempfile
 import time
 from pathlib import Path
 from typing import TYPE_CHECKING
+
+from ltvm_pkg.priv import sudo_run
 
 if TYPE_CHECKING:
     from .target_config import TargetConfig
@@ -36,9 +40,47 @@ _HEADROOM_MB = 512
 _PART_OFFSET_MIB = 1
 
 
-def _run(cmd: list[str], **kw: object) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str], quiet: bool = False
+) -> subprocess.CompletedProcess[str]:
+    """Run *cmd* under sudo (no-op prefix if already root).
+
+    Export touches /dev/loopN, mounts and root-owned fs contents, so
+    every external command goes through sudo regardless of euid.
+    """
     log.info("Running: %s", " ".join(str(c) for c in cmd))
-    return subprocess.run(cmd, check=True, text=True, **kw)  # type: ignore[arg-type]
+    return sudo_run(cmd, check=True, quiet=quiet)
+
+
+def _ensure_dir(path: Path) -> None:
+    """``mkdir -p`` *path*, falling back to sudo only when the user
+    can't create it directly (e.g. inside a root-owned mount)."""
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        return
+    except PermissionError:
+        pass
+    sudo_run(["mkdir", "-p", str(path)], quiet=True)
+
+
+def _sudo_write_text(path: Path, text: str, mode: int = 0o644) -> None:
+    """Write *text* to *path*, falling back to sudo only when the
+    user can't write directly (e.g. inside a root-owned mount)."""
+    try:
+        path.write_text(text)
+        path.chmod(mode)
+        return
+    except PermissionError:
+        pass
+    log.info("Writing (sudo): %s", path)
+    subprocess.run(
+        ["sudo", "tee", str(path)],
+        input=text,
+        text=True,
+        check=True,
+        stdout=subprocess.DEVNULL,
+    )
+    subprocess.run(["sudo", "chmod", f"{mode:o}", str(path)], check=True)
 
 
 def _which_or_die(names: list[str]) -> str:
@@ -81,15 +123,15 @@ def _image_size_mb(rootfs: Path, kernel_dir: Path) -> int:
 
 def _losetup_attach(image: Path) -> str:
     """losetup --partscan and return the /dev/loopN device."""
-    r = subprocess.run(
+    r = sudo_run(
         ["losetup", "--show", "-f", "-P", str(image)],
-        check=True, capture_output=True, text=True,
+        check=True, quiet=True,
     )
     return r.stdout.strip()
 
 
 def _losetup_detach(dev: str) -> None:
-    subprocess.run(["losetup", "-d", dev], check=False)
+    sudo_run(["losetup", "-d", dev], check=False, quiet=True)
 
 
 def _write_grub_cfg(
@@ -110,9 +152,8 @@ def _write_grub_cfg(
     """
     subdir = "grub" if Path(grub_install).name == "grub-install" else "grub2"
     cfg_dir = boot_dir / subdir
-    cfg_dir.mkdir(parents=True, exist_ok=True)
-    cfg = cfg_dir / "grub.cfg"
-    cfg.write_text(
+    _ensure_dir(cfg_dir)
+    cfg_text = (
         "set timeout=2\n"
         "serial --unit=0 --speed=115200\n"
         "terminal_input console serial\n"
@@ -126,12 +167,13 @@ def _write_grub_cfg(
         f"    initrd /boot/initramfs-{kver}.img\n"
         "}\n"
     )
+    _sudo_write_text(cfg_dir / "grub.cfg", cfg_text)
 
 
 def _fs_uuid(dev: str) -> str:
-    r = subprocess.run(
+    r = sudo_run(
         ["blkid", "-s", "UUID", "-o", "value", dev],
-        check=True, capture_output=True, text=True,
+        check=True, quiet=True,
     )
     uuid = r.stdout.strip()
     if not uuid:
@@ -241,18 +283,23 @@ def export_image(
             "cp", "-a", "--reflink=auto",
             f"{src_mnt}/.", str(dst_mnt),
         ])
-        subprocess.run(["umount", str(src_mnt)], check=True)
+        _run(["umount", str(src_mnt)])
         _losetup_detach(src_loop)
         src_loop = None
 
         # 4. Drop in kernel + initramfs.  image_build bakes these into
         #    /boot already; re-copy defensively so older images also work.
+        #    dst_mnt is a root-owned mount, so the mkdir and cp's run via
+        #    sudo.
         boot = dst_mnt / "boot"
-        boot.mkdir(exist_ok=True)
-        shutil.copy2(vmlinuz, boot / f"vmlinuz-{kver}")
+        _run(["mkdir", "-p", str(boot)], quiet=True)
+        _run(["cp", "-p", str(vmlinuz), str(boot / f"vmlinuz-{kver}")])
         initramfs_src = kdir / f"initramfs-{kver}.img"
         if initramfs_src.exists():
-            shutil.copy2(initramfs_src, boot / f"initramfs-{kver}.img")
+            _run([
+                "cp", "-p", str(initramfs_src),
+                str(boot / f"initramfs-{kver}.img"),
+            ])
         elif not (boot / f"initramfs-{kver}.img").exists():
             log.warning(
                 "No initramfs for %s; boot will likely fail. "
@@ -273,10 +320,10 @@ def export_image(
         ])
 
         # 6. Tidy up.
-        subprocess.run(["umount", str(dst_mnt)], check=True)
+        _run(["umount", str(dst_mnt)])
         _losetup_detach(loop)
         loop = None
-        subprocess.run(["e2fsck", "-fy", part], capture_output=True)
+        sudo_run(["e2fsck", "-fy", part], check=False, quiet=True)
 
         # 7. Convert to final format.
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -299,7 +346,7 @@ def export_image(
 
     finally:
         for m in (src_mnt, dst_mnt):
-            subprocess.run(["umount", str(m)], capture_output=True)
+            sudo_run(["umount", str(m)], check=False, quiet=True)
         for d in (src_loop, loop):
             if d:
                 _losetup_detach(d)

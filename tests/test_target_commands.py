@@ -887,30 +887,46 @@ class TestCmdTargetExport:
     defaulting, error mapping).  All disk work is mocked -- the
     image_export internals are exercised in test_image_export.py."""
 
-    def test_requires_root_first(
+    def test_non_root_primes_sudo_in_interactive_mode(
         self,
-        capsys: pytest.CaptureFixture[str],
         variant_targets: Path,
     ) -> None:
-        """Non-root invocation must be rejected before any target
-        lookup happens (so a typoed target name as non-root still
-        prints the friendly 'needs sudo' hint)."""
-        with patch.object(cli.os, "getuid", return_value=1000):
-            rc = cmd_target_export(_ns(target="anything"))
-        assert rc == EXIT_ERROR
-        err = capsys.readouterr().err
-        assert "root" in err.lower()
+        """Non-root invocation no longer refuses up front.  The CLI
+        primes sudo (single password prompt) and lets sudo_run elevate
+        the individual losetup/mount calls."""
+        from ltvm_pkg import priv
 
-    def test_requires_root_json_envelope(
-        self,
-        capsys: pytest.CaptureFixture[str],
-    ) -> None:
-        """JSON mode reports the root requirement as a JSON error."""
-        with patch.object(cli.os, "getuid", return_value=1000):
-            rc = cmd_target_export(_ns(target="anything", json=True))
+        with _patch_cfg_paths(variant_targets), \
+                patch.object(cli.os, "getuid", return_value=1000), \
+                patch.object(priv, "sudo_prime") as sp, \
+                patch(
+                    "ltvm_pkg.image_export.export_image",
+                    side_effect=RuntimeError("stubbed"),
+                ):
+            rc = cmd_target_export(_ns(target="rocky9"))
+        sp.assert_called_once()
+        # Downstream error surfaces normally; no early "needs root" exit.
         assert rc == EXIT_ERROR
-        payload = json.loads(capsys.readouterr().err)
-        assert "error" in payload
+
+    def test_non_root_json_mode_skips_sudo_prime(
+        self,
+        variant_targets: Path,
+    ) -> None:
+        """JSON output skips the interactive sudo_prime so the
+        password prompt doesn't clobber the structured stream;
+        sudo_run will still elevate individual operations if needed."""
+        from ltvm_pkg import priv
+
+        with _patch_cfg_paths(variant_targets), \
+                patch.object(cli.os, "getuid", return_value=1000), \
+                patch.object(priv, "sudo_prime") as sp, \
+                patch(
+                    "ltvm_pkg.image_export.export_image",
+                    side_effect=RuntimeError("stubbed"),
+                ):
+            rc = cmd_target_export(_ns(target="rocky9", json=True))
+        sp.assert_not_called()
+        assert rc == EXIT_ERROR
 
     def test_unknown_target_returns_not_found(
         self,
