@@ -17,13 +17,17 @@ COPY common/packages-debug.txt /tmp/packages-debug.txt
 COPY common/packages-server.txt /tmp/packages-server.txt
 COPY common/packages-skip-aarch64.txt /tmp/packages-skip-aarch64.txt
 COPY rocky10/packages-os.txt /tmp/packages-os.txt
+COPY rocky10/packages-skip.txt /tmp/packages-skip-target.txt
 
 # Parse package lists (strip comments/blanks) and install.  Exclude
-# kernel-devel (Lustre builds on the host, not in VM) and any
-# packages-skip-<arch>.txt entries (known repo gaps for that arch --
-# e.g. numatop is x86_64-only on EL).  Avoiding `--skip-broken` so a
-# genuine typo / repo break still fails the build loudly.
-RUN ARCH=$(uname -m); SKIP=/tmp/packages-skip-$ARCH.txt; \
+# kernel-devel (Lustre builds on the host, not in VM), any
+# packages-skip-<arch>.txt entries (known per-arch repo gaps -- e.g.
+# numatop is x86_64-only on EL), and any per-target skip entries
+# (known gaps in this target's repos -- e.g. EPEL10 doesn't yet ship
+# pdsh).  Avoiding `--skip-broken` so a genuine typo / repo break
+# still fails the build loudly.
+RUN ARCH=$(uname -m); SKIP_ARCH=/tmp/packages-skip-$ARCH.txt; \
+    SKIP_TARGET=/tmp/packages-skip-target.txt; \
     cat /tmp/packages-base.txt \
         /tmp/packages-test.txt \
         /tmp/packages-debug.txt \
@@ -31,7 +35,8 @@ RUN ARCH=$(uname -m); SKIP=/tmp/packages-skip-$ARCH.txt; \
         /tmp/packages-os.txt \
     | grep -v '^\s*#' | grep -v '^\s*$' \
     | grep -v '^kernel-devel$' \
-    | { [ -s "$SKIP" ] && grep -vFxf "$SKIP" || cat; } \
+    | { [ -s "$SKIP_ARCH" ] && grep -vFxf "$SKIP_ARCH" || cat; } \
+    | { [ -s "$SKIP_TARGET" ] && grep -vFxf "$SKIP_TARGET" || cat; } \
     | sort -u \
     | xargs dnf -y --allowerasing install \
     && dnf clean all

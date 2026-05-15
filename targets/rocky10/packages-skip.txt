@@ -1,0 +1,18 @@
+# packages-skip.txt -- rocky10
+#
+# Per-target package skip list, applied on top of the per-arch
+# packages-skip-<arch>.txt.  Used for packages from the common lists
+# that exist on other RHEL/EPEL generations but aren't available on
+# this target (typically because EPEL10 is still catching up).
+#
+# Rationale matches the per-arch skip file: an explicit allowlist
+# preserves error signal -- a typo or genuine repo break still fails
+# the build instead of being silently dropped along with the known
+# gaps.
+#
+# One package per line.  Comments (#) and blank lines ignored.
+# Revisit when EPEL10 ships these.
+
+# Not yet built for EPEL10 (present in EPEL8/9).
+pdsh
+pdsh-rcmd-ssh
